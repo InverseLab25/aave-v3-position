@@ -289,7 +289,7 @@ export function DexDiscovery() {
 
         {/* Main content when adapters exist */}
         {adapters.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: '280px minmax(0, 1fr)', gap: '40px' }}>
+          <div className="dex-grid">
 
             {/* COLUMN 1: Config */}
             <div style={{ paddingRight: '20px', borderRight: '1px solid var(--border-color)' }}>

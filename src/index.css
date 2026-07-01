@@ -189,3 +189,134 @@ tr:last-child td {
   max-width: 500px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
+
+/* DexDiscovery: two-column config/results on desktop, stacked on mobile. */
+.dex-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 40px;
+}
+@media (max-width: 768px) {
+  .dex-grid {
+    grid-template-columns: 1fr;
+    gap: 24px;
+  }
+  /* Undo the desktop right-border/right-padding on the config column when stacked. */
+  .dex-grid > div:first-child {
+    padding-right: 0 !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 20px;
+  }
+}
+
+/* Desktop: normal table. Mobile: each row collapses into a card. */
+.table-scroll {
+  width: 100%;
+}
+
+@media (max-width: 768px) {
+  /* Reset table semantics to blocks so each row is a card. */
+  .table-scroll table,
+  .table-scroll thead,
+  .table-scroll tbody,
+  .table-scroll tr,
+  .table-scroll td {
+    display: block;
+    width: 100%;
+  }
+  /* Column headers hidden — we use per-cell data-labels instead. */
+  .table-scroll thead {
+    display: none;
+  }
+  /* Card: two-column grid for compact scanning; asset symbol spans full width. */
+  .table-scroll tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 16px;
+    row-gap: 12px;
+    background: #fff;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .table-scroll td {
+    padding: 0;
+    border-bottom: none;
+    text-align: left;
+    min-width: 0; /* allow flex/grid children to shrink instead of overflowing */
+  }
+  /* Label above value for each field. */
+  .table-scroll td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  /* First cell (asset symbol) — card header spans full width, no label prefix. */
+  .table-scroll td:first-child {
+    grid-column: 1 / -1;
+    font-size: 1.1rem;
+    font-weight: 600;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-color);
+  }
+  /* Force nested content to wrap inside the 2-col grid cells. */
+  .table-scroll td * {
+    max-width: 100%;
+    word-break: break-word;
+  }
+}
+
+@media (max-width: 768px) {
+  body {
+    padding: 1rem 0.75rem;
+  }
+  /* Tighten the gap between the app header (Ethereum pill) and main content (Viewing banner). */
+  .container > header {
+    margin-bottom: 1px;
+  }
+  .container > header h1 {
+    margin-bottom: 0;
+  }
+  .container > main {
+    margin-top: 1px;
+  }
+  .card {
+    padding: 1rem;
+    border-radius: 6px;
+  }
+  .header {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.75rem;
+  }
+  .header h1 {
+    font-size: 1.15rem;
+  }
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .stat div {
+    font-size: 1rem;
+  }
+  .stat label {
+    font-size: 0.7rem;
+  }
+  .asset-tables {
+    gap: 1.25rem;
+    margin-top: 1.25rem;
+  }
+  th, td {
+    padding: 0.5rem 0.4rem;
+  }
+}
+

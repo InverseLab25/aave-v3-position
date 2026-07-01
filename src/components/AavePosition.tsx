@@ -119,9 +119,12 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
     const isOverride = !!r?.isOverride
     return (
-      <td className="number">
+      <td className="number" data-label="Value (USD)">
         ${a.valueUsd.toFixed(2)}
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+          @ ${Number(a.priceInUsd).toFixed(2)}
+        </div>
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
           <button
             type="button"
             onClick={() => openEditor(rowKey, effectiveAvgEntry)}
@@ -178,11 +181,11 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   /** P&L cell with breakdown on separate lines. Shared by both tables. */
   const PnlCell = ({ r, side }: { r: ReturnType<typeof applyOverride>; side: 'supply' | 'borrow' }) => {
     if (!r || r.effectiveAvgEntry <= 0) {
-      return <td className="number"><span style={{ color: 'var(--text-secondary)' }}>—</span></td>
+      return <td className="number" data-label="Position P&L"><span style={{ color: 'var(--text-secondary)' }}>—</span></td>
     }
     const yieldLabel = side === 'supply' ? 'Yield' : 'Cost'
     return (
-      <td className="number">
+      <td className="number" data-label="Position P&L">
         <div className={r.totalPnlUsd >= 0 ? 'text-success' : 'text-danger'}>
           {fmtSigned(r.totalPnlUsd)}
         </div>
@@ -286,6 +289,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
           {suppliedAssets.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>No assets supplied.</p>
           ) : (
+            <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -308,11 +312,11 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                   return (
                     <tr key={i}>
                       <td>{a.symbol}</td>
-                      <td className="number">{a.amount.toFixed(4)}</td>
+                      <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                       <ValueCell a={a} side="supply" r={r} />
-                      <td className="number text-success">{a.apy.toFixed(2)}%</td>
-                      <td className="number">${liquidationPrice > 0 ? liquidationPrice.toFixed(2) : 'Safe'}</td>
-                      <td className="number text-success">
+                      <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
+                      <td className="number" data-label="Liquidation Price">${liquidationPrice > 0 ? liquidationPrice.toFixed(2) : 'Safe'}</td>
+                      <td className="number text-success" data-label="Interest Earned">
                         {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
                         <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                           +${a.interestEarnedUsd.toFixed(2)}
@@ -324,6 +328,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -334,6 +339,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
           {borrowedAssets.length === 0 ? (
             <p style={{ color: 'var(--text-secondary)' }}>No assets borrowed.</p>
           ) : (
+            <div className="table-scroll">
             <table>
               <thead>
                 <tr>
@@ -351,10 +357,10 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                   return (
                     <tr key={i}>
                       <td>{a.symbol}</td>
-                      <td className="number">{a.amount.toFixed(4)}</td>
+                      <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                       <ValueCell a={a} side="borrow" r={r} />
-                      <td className="number text-danger">{a.apy.toFixed(2)}%</td>
-                      <td className="number text-danger">
+                      <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
+                      <td className="number text-danger" data-label="Interest Paid">
                         {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
                         <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                           -${a.interestPaidUsd.toFixed(2)}
@@ -366,6 +372,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
       </div>
