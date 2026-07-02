@@ -9,19 +9,20 @@ export function WalletConnect() {
 
   if (isConnected) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        flexDirection: 'column', 
-        gap: '10px', 
-        padding: '12px 16px', 
-        border: '1px solid var(--border-color)', 
+      <div style={{
+        display: 'flex',
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: '15px',
+        padding: '8px 16px',
+        border: '1px solid var(--border-color)',
         borderRadius: '8px',
         background: 'var(--bg-color)'
       }}>
         <div style={{ fontSize: '14px' }}>
           <strong>Connected:</strong> {address?.slice(0, 6)}...{address?.slice(-4)}
         </div>
-        <button onClick={() => disconnect()} className="disconnect-btn" style={{ alignSelf: 'flex-start' }}>Disconnect</button>
+        <button onClick={() => disconnect()} className="disconnect-btn">Disconnect</button>
       </div>
     )
   }
