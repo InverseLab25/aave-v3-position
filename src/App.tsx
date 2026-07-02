@@ -5,9 +5,17 @@ import { AavePosition } from './components/AavePosition'
 import { DexDiscovery } from './components/DexDiscovery'
 import { getChainConfig } from './config/chains'
 import { useViewMode } from './hooks/useViewMode'
+import { useEthPrice } from './hooks/useEthPrice'
+import { useAavePositions } from './hooks/useAavePositions'
 
 function App() {
   const { viewAddress, viewChainId } = useViewMode()
+  const apiEthPrice = useEthPrice()
+  const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
+  
+  const wethAsset = suppliedAssets.find((a: any) => a.symbol === 'WETH')
+  const ethPrice = wethAsset ? Number(wethAsset.priceInUsd) : apiEthPrice
+
   const isViewMode = !!viewAddress
   const [activeTab, setActiveTab] = useState<'aave' | 'dex'>('aave')
   // Force Aave tab while in view mode — DEX Discovery is for the connected wallet only.
@@ -75,6 +83,21 @@ function App() {
             }}></div>
             {chainName}
           </div>
+          {ethPrice !== null && (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              padding: '4px 12px',
+              borderRadius: '20px',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              backgroundColor: '#f3f4f6',
+              color: '#374151',
+              border: '1px solid #d1d5db'
+            }}>
+              ETH: ${ethPrice.toFixed(2)}
+            </div>
+          )}
           {!isViewMode && <WalletConnect />}
         </div>
       </header>

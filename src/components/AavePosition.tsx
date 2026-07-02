@@ -207,10 +207,10 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
       <div className="dashboard-container">
         {isViewMode && viewedAddress && (
           <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '14px', color: '#1e40af' }}>
+            <span style={{ fontSize: '14px', color: '#1e40af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
             </span>
-            <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500 }}>
+            <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500, flexShrink: 0, marginLeft: '8px' }}>
               Exit view mode
             </button>
           </div>
@@ -226,10 +226,10 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     <div className="dashboard-container">
       {isViewMode && viewedAddress && (
         <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '14px', color: '#1e40af' }}>
+          <span style={{ fontSize: '14px', color: '#1e40af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
           </span>
-          <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500 }}>
+          <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500, flexShrink: 0, marginLeft: '8px' }}>
             Exit view mode
           </button>
         </div>
@@ -283,7 +283,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
 
       <div className="asset-tables">
         <div className="card">
-          <div className="header">
+          <div className="header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
             <h1 style={{ fontSize: '1.25rem' }}>Supplied Assets</h1>
           </div>
           {suppliedAssets.length === 0 ? (
@@ -333,7 +333,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
         </div>
 
         <div className="card">
-          <div className="header">
+          <div className="header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
             <h1 style={{ fontSize: '1.25rem' }}>Borrowed Assets</h1>
           </div>
           {borrowedAssets.length === 0 ? (

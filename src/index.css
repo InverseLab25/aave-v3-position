@@ -277,15 +277,15 @@ tr:last-child td {
   body {
     padding: 1rem 0.75rem;
   }
-  /* Tighten the gap between the app header (Ethereum pill) and main content (Viewing banner). */
+  /* Add gap between the app header (Ethereum pill) and main content (Viewing banner). */
   .container > header {
-    margin-bottom: 1px;
+    margin-bottom: 16px;
   }
   .container > header h1 {
     margin-bottom: 0;
   }
   .container > main {
-    margin-top: 1px;
+    margin-top: 16px;
   }
   .card {
     padding: 1rem;
