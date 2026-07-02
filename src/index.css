@@ -56,16 +56,49 @@ h1, h2, h3, h4 {
 
 .header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 15px;
   margin-bottom: 2rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--border-color);
 }
 
-.header h1 {
+.header-logo {
   margin: 0;
   font-size: 1.5rem;
+}
+
+.header-tabs {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+  margin-left: 10px;
+}
+
+.header-network {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.header-wallet {
+  display: flex;
+  align-items: center;
+}
+
+.wallet-container {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 15px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-color);
+}
+
+.show-on-mobile {
+  display: none;
 }
 
 button {
@@ -205,8 +238,8 @@ tr:last-child td {
   .dex-grid > div:first-child {
     padding-right: 0 !important;
     border-right: none !important;
-    border-bottom: 1px solid var(--border-color);
-    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-color) !important;
+    padding-bottom: 20px !important;
   }
 }
 
@@ -288,17 +321,74 @@ tr:last-child td {
     margin-top: 16px;
   }
   .card {
-    padding: 1rem;
+    padding: 0.75rem;
     border-radius: 6px;
   }
   .header {
-    flex-wrap: wrap;
-    gap: 0.75rem;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    gap: 12px;
+    align-items: center;
     margin-bottom: 1.25rem;
     padding-bottom: 0.75rem;
   }
-  .header h1 {
+  .wallet-container {
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-color);
+  }
+  .header-logo {
+    grid-column: 1;
+    grid-row: 1;
     font-size: 1.15rem;
+    margin-left: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .header-tabs button {
+    padding: 6px 10px;
+    font-size: 12px;
+    white-space: normal !important;
+    text-align: center;
+    line-height: 1.1;
+  }
+  .disconnect-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+  .header-wallet {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .header-tabs {
+    grid-column: 1;
+    grid-row: 2;
+    margin-left: 0;
+    display: flex;
+    gap: 8px;
+  }
+  .header-network {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+    flex-wrap: nowrap;
+    display: flex;
+    gap: 6px;
+  }
+  .hide-on-mobile {
+    display: none !important;
+  }
+  .show-on-mobile {
+    display: inline !important;
   }
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);

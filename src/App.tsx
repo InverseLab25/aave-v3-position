@@ -32,37 +32,35 @@ function App() {
 
   return (
     <div className="container">
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
-          <h1>DeFi Dashboard</h1>
-          <nav style={{ display: 'flex', gap: '10px' }}>
-            <button 
-              onClick={() => setActiveTab('aave')}
+      <header className="header">
+        <h1 className="header-logo">DeFi Dashboard</h1>
+        <nav className="header-tabs">
+          <button 
+            onClick={() => setActiveTab('aave')}
+            style={{
+              background: activeTab === 'aave' ? '#111' : 'transparent',
+              color: activeTab === 'aave' ? '#fff' : 'var(--text-secondary)',
+              border: 'none',
+              fontWeight: activeTab === 'aave' ? 'bold' : 'normal',
+            }}
+          >
+            Aave <br className="show-on-mobile" />Portfolio
+          </button>
+          {!isViewMode && (
+            <button
+              onClick={() => setActiveTab('dex')}
               style={{
-                background: activeTab === 'aave' ? '#111' : 'transparent',
-                color: activeTab === 'aave' ? '#fff' : 'var(--text-secondary)',
+                background: activeTab === 'dex' ? '#111' : 'transparent',
+                color: activeTab === 'dex' ? '#fff' : 'var(--text-secondary)',
                 border: 'none',
-                fontWeight: activeTab === 'aave' ? 'bold' : 'normal'
+                fontWeight: activeTab === 'dex' ? 'bold' : 'normal',
               }}
             >
-              Aave Portfolio
+              DEX <br className="show-on-mobile" />Discovery
             </button>
-            {!isViewMode && (
-              <button
-                onClick={() => setActiveTab('dex')}
-                style={{
-                  background: activeTab === 'dex' ? '#111' : 'transparent',
-                  color: activeTab === 'dex' ? '#fff' : 'var(--text-secondary)',
-                  border: 'none',
-                  fontWeight: activeTab === 'dex' ? 'bold' : 'normal'
-                }}
-              >
-                DEX Discovery
-              </button>
-            )}
-          </nav>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+          )}
+        </nav>
+        <div className="header-network">
           <div style={{ 
             display: 'flex', 
             alignItems: 'center', 
@@ -73,7 +71,8 @@ function App() {
             fontWeight: 'bold',
             backgroundColor: isTestnet ? '#fef3c7' : '#ecfdf5',
             color: isTestnet ? '#92400e' : '#065f46',
-            border: `1px solid ${isTestnet ? '#fbbf24' : '#6ee7b7'}`
+            border: `1px solid ${isTestnet ? '#fbbf24' : '#6ee7b7'}`,
+            whiteSpace: 'nowrap'
           }}>
             <div style={{ 
               width: '8px', 
@@ -93,13 +92,18 @@ function App() {
               fontWeight: 'bold',
               backgroundColor: '#f3f4f6',
               color: '#374151',
-              border: '1px solid #d1d5db'
+              border: '1px solid #d1d5db',
+              whiteSpace: 'nowrap'
             }}>
               ETH: ${ethPrice.toFixed(2)}
             </div>
           )}
-          {!isViewMode && <WalletConnect />}
         </div>
+        {!isViewMode && (
+          <div className="header-wallet">
+            <WalletConnect />
+          </div>
+        )}
       </header>
       <main>
         <div style={{ display: activeTab === 'aave' ? 'block' : 'none' }}>

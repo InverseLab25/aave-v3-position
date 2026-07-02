@@ -9,18 +9,10 @@ export function WalletConnect() {
 
   if (isConnected) {
     return (
-      <div style={{
-        display: 'flex',
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: '15px',
-        padding: '8px 16px',
-        border: '1px solid var(--border-color)',
-        borderRadius: '8px',
-        background: 'var(--bg-color)'
-      }}>
-        <div style={{ fontSize: '14px' }}>
-          <strong>Connected:</strong> {address?.slice(0, 6)}...{address?.slice(-4)}
+      <div className="wallet-container">
+        <div style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>
+          <strong className="hide-on-mobile">Connected: </strong> 
+          {address?.slice(0, 6)}...{address?.slice(-4)}
         </div>
         <button onClick={() => disconnect()} className="disconnect-btn">Disconnect</button>
       </div>
