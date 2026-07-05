@@ -1,8 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { useChainId } from 'wagmi'
 import { WalletConnect } from './components/WalletConnect'
 import { AavePosition } from './components/AavePosition'
-import { DexDiscovery } from './components/DexDiscovery'
+// Lazy: the DEX tab (and its swap adapters/executor) loads only when opened,
+// and no longer runs its own position fetch in the background on the Aave tab.
+const DexDiscovery = lazy(() =>
+  import('./components/DexDiscovery').then((m) => ({ default: m.DexDiscovery })),
+)
 import { getChainConfig } from './config/chains'
 import { useViewMode } from './hooks/useViewMode'
 import { useEthPrice } from './hooks/useEthPrice'
@@ -109,10 +113,10 @@ function App() {
         <div style={{ display: activeTab === 'aave' ? 'block' : 'none' }}>
           <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} />
         </div>
-        {!isViewMode && (
-          <div style={{ display: activeTab === 'dex' ? 'block' : 'none' }}>
+        {!isViewMode && activeTab === 'dex' && (
+          <Suspense fallback={<div style={{ padding: '20px' }}>Loading DEX Discovery…</div>}>
             <DexDiscovery />
-          </div>
+          </Suspense>
         )}
       </main>
     </div>
