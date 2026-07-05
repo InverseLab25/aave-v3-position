@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { useChainId } from 'wagmi'
 import { WalletConnect } from './components/WalletConnect'
 import { AavePosition } from './components/AavePosition'
@@ -21,11 +21,10 @@ function App() {
   const ethPrice = wethAsset ? Number(wethAsset.priceInUsd) : apiEthPrice
 
   const isViewMode = !!viewAddress
-  const [activeTab, setActiveTab] = useState<'aave' | 'dex'>('aave')
-  // Force Aave tab while in view mode — DEX Discovery is for the connected wallet only.
-  useEffect(() => {
-    if (isViewMode) setActiveTab('aave')
-  }, [isViewMode])
+  const [selectedTab, setSelectedTab] = useState<'aave' | 'dex'>('aave')
+  // DEX Discovery is for the connected wallet only, so force the Aave tab while
+  // viewing another address — derived, not synced via an effect.
+  const activeTab = isViewMode ? 'aave' : selectedTab
   const connectedChainId = useChainId()
   // In view mode, display the chain from the URL rather than the wallet's chain.
   const chainId = viewChainId ?? connectedChainId
@@ -40,7 +39,7 @@ function App() {
         <h1 className="header-logo">DeFi Dashboard</h1>
         <nav className="header-tabs">
           <button 
-            onClick={() => setActiveTab('aave')}
+            onClick={() => setSelectedTab('aave')}
             style={{
               background: activeTab === 'aave' ? '#111' : 'transparent',
               color: activeTab === 'aave' ? '#fff' : 'var(--text-secondary)',
@@ -52,7 +51,7 @@ function App() {
           </button>
           {!isViewMode && (
             <button
-              onClick={() => setActiveTab('dex')}
+              onClick={() => setSelectedTab('dex')}
               style={{
                 background: activeTab === 'dex' ? '#111' : 'transparent',
                 color: activeTab === 'dex' ? '#fff' : 'var(--text-secondary)',

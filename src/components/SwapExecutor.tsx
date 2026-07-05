@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { useAccount, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi';
 import { parseUnits } from 'viem';
 import type { TransactionPayload, Asset } from '../adapters/types';
@@ -42,9 +42,6 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   const chainConfig = getChainConfig(chainId);
   const explorerUrl = chainConfig?.explorerUrl ?? 'https://etherscan.io';
 
-  const [step, setStep] = useState<ExecutionStep>('check_allowance');
-  const [errorMsg, setErrorMsg] = useState('');
-
   const amountInBigInt = parseUnits(amountIn, fromAsset.decimals);
 
   // 1. Read current allowance
@@ -61,7 +58,8 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     mutate: writeApprove,
     data: approveHash,
     isPending: isApprovePending,
-    error: approveError
+    error: approveError,
+    reset: resetApprove
   } = useWriteContract();
 
   // 3. Wait for approve confirmation
@@ -74,7 +72,8 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     mutate: sendTransaction,
     data: swapHash,
     isPending: isSwapPending,
-    error: swapError
+    error: swapError,
+    reset: resetSwap
   } = useSendTransaction();
 
   // 5. Wait for swap confirmation
@@ -82,50 +81,46 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     hash: swapHash,
   });
 
-  // Check allowance on mount
+  // Keep the on-chain allowance fresh once an approval confirms.
+  // Pure side effect (a refetch) — no setState, so the UI step stays derived below.
   useEffect(() => {
-    if (allowanceData !== undefined) {
-      const currentAllowance = allowanceData as bigint;
-      if (currentAllowance >= amountInBigInt) {
-        setStep('approved');
-      } else {
-        setStep('needs_approval');
-      }
-    }
-  }, [allowanceData]);
+    if (isApproveConfirmed) refetchAllowance();
+  }, [isApproveConfirmed, refetchAllowance]);
 
-  // After approve is confirmed, re-check allowance and move to approved
-  useEffect(() => {
-    if (isApproveConfirmed) {
-      refetchAllowance();
-      setStep('approved');
-    }
-  }, [isApproveConfirmed]);
+  // Derive the UI step from wallet/tx state rather than mirroring it into state via
+  // effects. Ordered most-advanced-first so the latest phase wins each render.
+  const hasAllowance =
+    allowanceData !== undefined && (allowanceData as bigint) >= amountInBigInt;
+  const step: ExecutionStep = swapError
+    ? 'error'
+    : isSwapConfirmed
+    ? 'success'
+    : swapHash || isSwapPending
+    ? 'executing'
+    : approveError
+    ? 'error'
+    : isApprovePending || (!!approveHash && !isApproveConfirmed)
+    ? 'approving'
+    : allowanceData === undefined
+    ? 'check_allowance'
+    : hasAllowance || isApproveConfirmed
+    ? 'approved'
+    : 'needs_approval';
 
-  // After swap confirmed
-  useEffect(() => {
-    if (isSwapConfirmed) {
-      setStep('success');
-    }
-  }, [isSwapConfirmed]);
+  const errorMsg = swapError
+    ? `Swap failed: ${swapError.message.slice(0, 120)}`
+    : approveError
+    ? `Approval failed: ${approveError.message.slice(0, 120)}`
+    : '';
 
-  // Handle errors
-  useEffect(() => {
-    if (approveError) {
-      setStep('error');
-      setErrorMsg(`Approval failed: ${approveError.message.slice(0, 120)}`);
-    }
-  }, [approveError]);
-
-  useEffect(() => {
-    if (swapError) {
-      setStep('error');
-      setErrorMsg(`Swap failed: ${swapError.message.slice(0, 120)}`);
-    }
-  }, [swapError]);
+  // Retry clears the failed mutation(s); the step then re-derives back to the
+  // right phase (needs_approval / approved).
+  const handleRetry = () => {
+    resetApprove();
+    resetSwap();
+  };
 
   const handleApprove = () => {
-    setStep('approving');
     writeApprove({
       address: fromAsset.underlyingAsset as `0x${string}`,
       abi: ERC20_ABI,
@@ -135,7 +130,6 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   };
 
   const handleExecute = () => {
-    setStep('executing');
     sendTransaction({
       to: txPayload.to as `0x${string}`,
       data: txPayload.data as `0x${string}`,
@@ -224,7 +218,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
             <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', padding: '8px', backgroundColor: '#fee2e2', borderRadius: '8px' }}>
               {errorMsg}
             </div>
-            <button onClick={() => { setStep('needs_approval'); setErrorMsg(''); }} style={{
+            <button onClick={handleRetry} style={{
               width: '100%', padding: '16px', backgroundColor: '#ef4444', color: '#fff',
               border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
               cursor: 'pointer'
@@ -364,7 +358,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
         <div style={{ fontSize: '12px', color: '#991b1b', padding: '8px', backgroundColor: '#fee2e2', borderRadius: '4px' }}>
           {errorMsg}
           <button 
-            onClick={() => { setStep('needs_approval'); setErrorMsg(''); }}
+            onClick={handleRetry}
             style={{ display: 'block', marginTop: '8px', padding: '6px 12px', backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
           >
             Retry

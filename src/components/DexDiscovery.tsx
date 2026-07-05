@@ -214,12 +214,16 @@ export function DexDiscovery() {
     }
   };
 
-  // Auto-refresh every 2s while the modal is open.
+  // Auto-refresh while the modal is open: kick off an immediate refresh (deferred
+  // so no setState runs synchronously in the effect), then poll every 2s.
   useEffect(() => {
     if (!activeAggregator) return;
-    setActiveQuoteRefreshedAt(Date.now());
+    const kickoff = setTimeout(refreshActiveQuote, 0);
     const id = setInterval(refreshActiveQuote, 2000);
-    return () => clearInterval(id);
+    return () => {
+      clearTimeout(kickoff);
+      clearInterval(id);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeAggregator, address, fromAsset?.underlyingAsset, toAsset?.underlyingAsset, amountStr, slippage, chainId]);
 
