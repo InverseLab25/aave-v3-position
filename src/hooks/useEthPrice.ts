@@ -20,7 +20,10 @@ export function useEthPrice() {
     };
 
     fetchPrice();
-    const interval = setInterval(fetchPrice, 5000);
+    // ETH price for a header badge doesn't need 5s granularity; 30s cuts the
+    // Etherscan request volume ~6x (and the on-chain WETH price is preferred
+    // when a position is loaded — see App.tsx).
+    const interval = setInterval(fetchPrice, 30000);
     return () => clearInterval(interval);
   }, []);
 
