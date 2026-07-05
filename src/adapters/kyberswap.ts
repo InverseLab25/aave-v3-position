@@ -1,6 +1,9 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 
+// KyberSwap requires an x-client-id header on both /routes and /route/build.
+const KYBER_CLIENT_ID = 'defi-route';
+
 const getKyberChain = (chainId: number): string => {
   switch (chainId) {
     case 1: return 'ethereum';
@@ -22,7 +25,7 @@ export const kyberSwapAdapter: Adapter = {
     try {
       const chainStr = getKyberChain(chainId);
       const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/routes?tokenIn=${fromAsset.underlyingAsset}&tokenOut=${toAsset.underlyingAsset}&amountIn=${amountIn}&gasInclude=true`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { 'x-client-id': KYBER_CLIENT_ID } });
       const json = await res.json();
       if (json.code !== 0 || !json.data?.routeSummary) return null;
 
@@ -57,7 +60,7 @@ export const kyberSwapAdapter: Adapter = {
     const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/route/build`;
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'x-client-id': KYBER_CLIENT_ID },
       body: JSON.stringify({
         routeSummary: quote.rawQuote,
         sender: walletAddress,
@@ -67,11 +70,11 @@ export const kyberSwapAdapter: Adapter = {
     });
     const json = await res.json();
     if (json.code !== 0) throw new Error(json.message);
-    
+
     return {
       to: json.data.routerAddress,
       data: json.data.data,
-      value: "0",
+      value: json.data.transactionValue ?? "0",
       spender: json.data.routerAddress
     };
   }
