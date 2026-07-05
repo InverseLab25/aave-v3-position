@@ -10,33 +10,43 @@ import { getChainConfig } from '../config/chains'
 export function NetworkSwitcher() {
   const { isConnected } = useAccount()
   const chainId = useChainId()
-  const { chains, switchChain, isPending } = useSwitchChain()
+  const { chains, switchChain, isPending, error } = useSwitchChain()
 
   if (!isConnected) return null
 
   return (
-    <select
-      aria-label="Switch network"
-      value={chainId}
-      disabled={isPending}
-      onChange={(e) => switchChain({ chainId: Number(e.target.value) })}
-      style={{
-        padding: '4px 10px',
-        borderRadius: '20px',
-        fontSize: '12px',
-        fontWeight: 'bold',
-        border: '1px solid #d1d5db',
-        backgroundColor: '#fff',
-        color: '#374151',
-        cursor: isPending ? 'wait' : 'pointer',
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {chains.map((c) => (
-        <option key={c.id} value={c.id}>
-          {getChainConfig(c.id)?.name ?? c.name}
-        </option>
-      ))}
-    </select>
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+      <select
+        aria-label="Switch network"
+        value={chainId}
+        disabled={isPending}
+        onChange={(e) => switchChain({ chainId: Number(e.target.value) })}
+        style={{
+          padding: '4px 10px',
+          borderRadius: '20px',
+          fontSize: '12px',
+          fontWeight: 'bold',
+          border: `1px solid ${error ? '#ef4444' : '#d1d5db'}`,
+          backgroundColor: '#fff',
+          color: '#374151',
+          cursor: isPending ? 'wait' : 'pointer',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {chains.map((c) => (
+          <option key={c.id} value={c.id}>
+            {getChainConfig(c.id)?.name ?? c.name}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <span
+          title={error.message}
+          style={{ color: '#ef4444', fontSize: '12px', cursor: 'help' }}
+        >
+          ⚠
+        </span>
+      )}
+    </span>
   )
 }
