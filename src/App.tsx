@@ -28,7 +28,7 @@ function App() {
   const chainConfig = getChainConfig(chainId)
 
   const chainName = chainConfig?.name ?? `Chain ${chainId}`
-  const isTestnet = chainId === 11155111
+  const isTestnet = chainId === 11155111 || chainId === 84532
 
   return (
     <div className="container">
