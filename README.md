@@ -38,6 +38,10 @@ A comprehensive decentralized finance (DeFi) dashboard built with React and Vite
    ```
 3. Create a `.env` file in the root directory if you need to configure any API keys (e.g., 1inch API key, WalletConnect Project ID).
 
+### Environment Variables
+
+- `VITE_DELEVERAGER_ADDRESS_1` — deployed `AaveV3Deleverager` address on Ethereum mainnet. Leave empty until deployed; the one-click close button is hidden while it is unset.
+
 ### Running Locally
 
 To start the development server:

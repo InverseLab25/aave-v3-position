@@ -8,6 +8,7 @@ export interface ChainConfig {
     poolAddress: `0x${string}`;
     uiPoolDataProvider: `0x${string}`;
     poolAddressesProvider: `0x${string}`;
+    deleverager?: `0x${string}`;
   };
   adapters: string[];
   defaultTokens: Asset[];
@@ -22,6 +23,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddress: '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
       uiPoolDataProvider: '0x2dAd8162A989cd99D673dE4425Bb2298Db1E1aA2',
       poolAddressesProvider: '0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e',
+      deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_1 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap'],
     defaultTokens: [
@@ -47,4 +49,13 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
 export function getChainConfig(chainId: number | undefined): ChainConfig | null {
   if (!chainId) return null;
   return CHAIN_CONFIGS[chainId] ?? null;
+}
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/** The configured deleverager for a chain, or null when unset/zero/malformed. */
+export function getDeleveragerAddress(chainId: number | undefined): `0x${string}` | null {
+  const addr = getChainConfig(chainId)?.aave.deleverager;
+  if (!addr || addr === ZERO_ADDRESS || addr.length !== 42) return null;
+  return addr;
 }
