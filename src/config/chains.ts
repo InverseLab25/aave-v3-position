@@ -25,7 +25,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_1 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', decimals: 6 },
@@ -42,7 +42,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_10 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607', symbol: 'USDC', decimals: 6 },
@@ -59,7 +59,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xff75B6da14FfbbfD355Daf7a2731456b3562Ba6D',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_56 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', symbol: 'WBNB', decimals: 18 },
       { underlyingAsset: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', symbol: 'USDC', decimals: 18 },
@@ -76,7 +76,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_137 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', symbol: 'WPOL', decimals: 18 },
       { underlyingAsset: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', symbol: 'USDC', decimals: 6 },
@@ -93,7 +93,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_8453 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 },
@@ -109,7 +109,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_42161 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', symbol: 'USDC', decimals: 6 },
@@ -126,7 +126,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_43114 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap'],
+    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos'],
     defaultTokens: [
       { underlyingAsset: '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', symbol: 'WAVAX', decimals: 18 },
       { underlyingAsset: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', symbol: 'USDC', decimals: 6 },

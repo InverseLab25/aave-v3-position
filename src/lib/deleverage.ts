@@ -2,12 +2,15 @@ import type { Address } from 'viem'
 import type { QuoteResponse } from '../adapters/types'
 
 /**
- * Aggregators whose ERC20 approval-spender equals their call target AND that
- * can direct swap output to an arbitrary recipient. AaveV3Deleverager approves
- * `router` and calls `router`, then expects the output on itself, so only these
- * are usable. ParaSwap (separate TokenTransferProxy) and CowSwap (off-chain) are not.
+ * Aggregators whose ERC20 approval-spender equals their call target, that need
+ * no per-swap signature, AND that can direct swap output to an arbitrary
+ * recipient. AaveV3Deleverager approves `router`, calls `router`, and expects
+ * the output on itself, so only these are usable. Excluded: ParaSwap (separate
+ * TokenTransferProxy), CowSwap (off-chain intent), and any Permit2-signature
+ * flow (1inch/0x) a contract can't sign. Odos qualifies: spender === to,
+ * Permit2 is opt-in only, and /sor/assemble takes a `receiver`.
  */
-export const COMPATIBLE_ADAPTERS = ['KyberSwap', 'OpenOcean'] as const
+export const COMPATIBLE_ADAPTERS = ['KyberSwap', 'OpenOcean', 'Odos'] as const
 
 /** Minimal ABI: the single entry point + the contract's custom errors (for decoding reverts). */
 export const DELEVERAGER_ABI = [
