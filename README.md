@@ -42,7 +42,7 @@ A comprehensive decentralized finance (DeFi) dashboard built with React and Vite
 
 - `VITE_DELEVERAGER_ADDRESS_<chainId>` — deployed `AaveV3Deleverager` address for a given network, one per chain (e.g. `VITE_DELEVERAGER_ADDRESS_1` for Ethereum, `_42161` for Arbitrum, `_10` Optimism, `_137` Polygon, `_8453` Base, `_43114` Avalanche, `_56` BNB Chain). Leave empty until deployed on that network; the one-click close button is hidden per-chain while its address is unset.
 
-- `VITE_ODOS_API_KEY` — optional. The Odos aggregator works without it but the public endpoint is heavily rate-limited; set a key for production. Passed in the `Authorization` header. Public frontend value.
+- `VITE_DEFILLAMA_API_KEY` — optional but recommended. Powers the Odos aggregator, which is routed through DefiLlama's swap API (`dexAggregatorQuote?protocol=Odos`) so **no separate Odos key is needed**. Without it the endpoint is rate-limited. Public frontend value.
 
 ### Supported networks
 

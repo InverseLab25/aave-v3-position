@@ -1,30 +1,51 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 
-const ODOS_BASE = 'https://api.odos.xyz';
+// Odos routed through DefiLlama's meta-aggregator, so only the DefiLlama key is
+// required (no separate Odos key). DefiLlama's dexAggregatorQuote is one-shot:
+// the userAddress is baked into the returned calldata, so getQuote fetches price
+// only and buildTransaction re-fetches with the real caller.
+//
+// Deleverager-compatible: for Odos the approval spender (tokenApprovalAddress)
+// equals the router call target, and no per-swap signature is needed
+// (isSignatureNeededForSwap === false). The contract's minOut check backstops
+// any bad/mis-shaped quote — a wrong output reverts rather than losing funds.
+const DEFILLAMA_BASE = 'https://swap-api.defillama.com';
+const DEFILLAMA_API_KEY = import.meta.env.VITE_DEFILLAMA_API_KEY as string | undefined;
 
-// Chains where Odos is live (superset of the Aave V3 networks we configure).
-const ODOS_CHAINS = new Set([1, 10, 56, 137, 250, 324, 5000, 8453, 34443, 42161, 43114, 59144, 534352]);
-
-// Optional Odos API key (public frontend var). Without it the endpoint works but
-// is heavily rate-limited. Odos passes the key in the Authorization header.
-const ODOS_API_KEY = import.meta.env.VITE_ODOS_API_KEY as string | undefined;
-const odosHeaders = (): Record<string, string> => {
-  const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (ODOS_API_KEY) h['Authorization'] = ODOS_API_KEY;
-  return h;
+// DefiLlama chain slugs for the networks we configure.
+const DEFILLAMA_CHAIN: Record<number, string> = {
+  1: 'ethereum',
+  10: 'optimism',
+  56: 'bsc',
+  137: 'polygon',
+  8453: 'base',
+  42161: 'arbitrum',
+  43114: 'avax',
 };
 
-/**
- * Odos aggregator. Two-step API: POST /sor/quote/v3 returns a `pathId`, then
- * POST /sor/assemble turns that pathId into an executable transaction.
- *
- * Deleverager-compatible: the assembled tx's approval spender equals its call
- * target (`transaction.to` is both the router and the ERC20 spender), it needs
- * no per-swap signature (Permit2 is opt-in only), and `receiver` directs the
- * output to any address — so the contract can approve `to`, call `to`, and
- * receive the output itself.
- */
+interface DefiLlamaReq {
+  chain: string;
+  from: string;
+  to: string;
+  amount: string;
+  slippage: number;
+}
+
+function buildUrl(req: DefiLlamaReq, userAddress?: string): string {
+  const params = new URLSearchParams({
+    protocol: 'Odos',
+    chain: req.chain,
+    from: req.from,
+    to: req.to,
+    amount: req.amount,
+    slippage: String(req.slippage),
+  });
+  if (userAddress) params.set('userAddress', userAddress);
+  if (DEFILLAMA_API_KEY) params.set('api_key', DEFILLAMA_API_KEY);
+  return `${DEFILLAMA_BASE}/dexAggregatorQuote?${params.toString()}`;
+}
+
 export const odosAdapter: Adapter = {
   name: 'Odos',
   supportsExecution: true,
@@ -37,42 +58,38 @@ export const odosAdapter: Adapter = {
     chainId: number,
   ): Promise<QuoteResponse | null> => {
     try {
-      if (!ODOS_CHAINS.has(chainId)) return null;
-      const res = await fetch(`${ODOS_BASE}/sor/quote/v3`, {
-        method: 'POST',
-        headers: odosHeaders(),
-        body: JSON.stringify({
-          chainId,
-          inputTokens: [{ tokenAddress: fromAsset.underlyingAsset, amount: amountIn }],
-          outputTokens: [{ tokenAddress: toAsset.underlyingAsset, proportion: 1 }],
-          slippageLimitPercent: slippage,
-          disableRFQs: true,
-          compact: true,
-        }),
-      });
+      const chain = DEFILLAMA_CHAIN[chainId];
+      if (!chain) return null;
+      const req: DefiLlamaReq = {
+        chain,
+        from: fromAsset.underlyingAsset,
+        to: toAsset.underlyingAsset,
+        amount: amountIn,
+        slippage,
+      };
+      const res = await fetch(buildUrl(req));
       if (!res.ok) return null;
       const json = await res.json();
-      const amountOut = json?.outAmounts?.[0];
-      if (!json?.pathId || !amountOut) return null;
+      const amountOut = json?.amountReturned;
+      // Skip if Odos would need a signature the deleverager can't produce.
+      if (!amountOut || json.isSignatureNeededForSwap === true) return null;
 
       const amountOutEth = Number(formatUnits(BigInt(amountOut), toAsset.decimals));
-      const amountOutUsd = toAsset.priceInUsd
-        ? amountOutEth * Number(toAsset.priceInUsd)
-        : Number(json.outValues?.[0] ?? 0);
-      const gasUsd = Number(json.gasEstimateValue ?? 0);
+      const amountOutUsd = toAsset.priceInUsd ? amountOutEth * Number(toAsset.priceInUsd) : 0;
 
       return {
         aggregator: 'Odos',
         amountIn,
         amountOut: amountOut.toString(),
         amountOutUsd: amountOutUsd.toFixed(2),
-        gasUsd: gasUsd.toFixed(2),
-        netReturnUsd: amountOutUsd - gasUsd,
-        rawQuote: json, // holds pathId, needed by /sor/assemble
-        routeDetails: { type: 'odos', pathId: json.pathId },
+        // DefiLlama returns gas in units, not USD here; rank on output.
+        gasUsd: '0',
+        netReturnUsd: amountOutUsd,
+        rawQuote: { req }, // enough to re-fetch with userAddress in buildTransaction
+        routeDetails: { type: 'odos-defillama' },
       };
     } catch (e) {
-      console.error('Odos fetch error', e);
+      console.error('Odos (DefiLlama) fetch error', e);
       return null;
     }
   },
@@ -82,26 +99,23 @@ export const odosAdapter: Adapter = {
     _slippage: number,
     walletAddress: string,
   ): Promise<TransactionPayload> => {
-    const res = await fetch(`${ODOS_BASE}/sor/assemble`, {
-      method: 'POST',
-      headers: odosHeaders(),
-      body: JSON.stringify({
-        userAddr: walletAddress,
-        pathId: quote.rawQuote.pathId,
-        receiver: walletAddress, // send output to the caller (the deleverager on the close path)
-        simulate: false, // caller may not hold the input yet (flash-loan flow) — skip the balance sim
-      }),
-    });
-    if (!res.ok) throw new Error(`Odos assemble failed: ${res.status}`);
+    const { req } = quote.rawQuote as { req: DefiLlamaReq };
+    const res = await fetch(buildUrl(req, walletAddress));
+    if (!res.ok) throw new Error(`Odos (DefiLlama) build failed: ${res.status}`);
     const json = await res.json();
-    const tx = json?.transaction;
-    if (!tx?.to || !tx?.data) throw new Error('Odos assemble returned no transaction');
-
+    if (json?.isSignatureNeededForSwap === true) {
+      throw new Error('Odos quote unexpectedly requires a signature');
+    }
+    const tx = json?.rawQuote?.transaction;
+    const spender = json?.tokenApprovalAddress;
+    if (!tx?.to || !tx?.data || !spender) {
+      throw new Error('Odos (DefiLlama) returned no transaction');
+    }
     return {
       to: tx.to,
       data: tx.data,
       value: tx.value != null ? tx.value.toString() : '0',
-      spender: tx.to, // Odos: approval target === router === transaction.to
+      spender, // Odos: tokenApprovalAddress === router === transaction.to
     };
   },
 };
