@@ -1,0 +1,204 @@
+import { useCallback, useState } from 'react'
+import { useAccount, useChainId, usePublicClient, useWalletClient } from 'wagmi'
+import { erc20Abi, parseSignature, type Address } from 'viem'
+import { getChainConfig, getDeleveragerAddress } from '../config/chains'
+import { getAdaptersForChain } from '../adapters'
+import type { Asset } from '../adapters/types'
+import {
+  DELEVERAGER_ABI,
+  COMPATIBLE_ADAPTERS,
+  pickBestRoute,
+  computeMinOut,
+  buildPermitTypedData,
+} from '../lib/deleverage'
+
+const PROVIDER_ABI = [
+  {
+    type: 'function',
+    name: 'getPoolDataProvider',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
+] as const
+
+const DATA_PROVIDER_ABI = [
+  {
+    type: 'function',
+    name: 'getReserveTokensAddresses',
+    stateMutability: 'view',
+    inputs: [{ name: 'asset', type: 'address' }],
+    outputs: [
+      { name: 'aTokenAddress', type: 'address' },
+      { name: 'stableDebtTokenAddress', type: 'address' },
+      { name: 'variableDebtTokenAddress', type: 'address' },
+    ],
+  },
+] as const
+
+const NONCES_ABI = [
+  {
+    type: 'function',
+    name: 'nonces',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+] as const
+
+export interface CloseInput {
+  collateral: Asset
+  debtAsset: Asset
+  slippagePercent: number
+}
+
+export type CloseStep = 'idle' | 'running' | 'done' | 'error'
+
+export function useDeleverageClose() {
+  const { address } = useAccount()
+  const chainId = useChainId()
+  const publicClient = usePublicClient()
+  const { data: walletClient } = useWalletClient()
+  const [logs, setLogs] = useState<string[]>([])
+  const [step, setStep] = useState<CloseStep>('idle')
+
+  const log = useCallback((m: string) => setLogs((prev) => [...prev, m]), [])
+
+  const close = useCallback(
+    async ({ collateral, debtAsset, slippagePercent }: CloseInput) => {
+      setLogs([])
+      setStep('running')
+      try {
+        if (!address || !publicClient || !walletClient) throw new Error('Wallet not connected')
+        const deleverager = getDeleveragerAddress(chainId)
+        if (!deleverager) throw new Error('One-click close is not available on this network')
+        const chainConfig = getChainConfig(chainId)
+        if (!chainConfig) throw new Error('Unsupported chain')
+
+        const collateralAddr = collateral.underlyingAsset as Address
+        const debtAddr = debtAsset.underlyingAsset as Address
+
+        // 1. Resolve Aave token addresses via the ProtocolDataProvider.
+        log('Reading Aave reserve token addresses…')
+        const dataProvider = await publicClient.readContract({
+          address: chainConfig.aave.poolAddressesProvider,
+          abi: PROVIDER_ABI,
+          functionName: 'getPoolDataProvider',
+        })
+        const [aToken] = await publicClient.readContract({
+          address: dataProvider,
+          abi: DATA_PROVIDER_ABI,
+          functionName: 'getReserveTokensAddresses',
+          args: [collateralAddr],
+        })
+        const [, , vDebt] = await publicClient.readContract({
+          address: dataProvider,
+          abi: DATA_PROVIDER_ABI,
+          functionName: 'getReserveTokensAddresses',
+          args: [debtAddr],
+        })
+
+        // 2. Live balances (wei): debt to repay, collateral to swap.
+        const debt = await publicClient.readContract({
+          address: vDebt,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [address],
+        })
+        const collAmount = await publicClient.readContract({
+          address: aToken,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [address],
+        })
+        if (debt === 0n) throw new Error('No debt to close')
+        if (collAmount === 0n) throw new Error('No collateral to withdraw')
+
+        // 3. Quote collateral -> debt on the compatible aggregators, pick the best.
+        log('Fetching swap routes (KyberSwap, OpenOcean)…')
+        const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
+          (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
+        )
+        const quotes = await Promise.all(
+          adapters.map((a) =>
+            a.getQuote(collateral, debtAsset, collAmount.toString(), slippagePercent, chainId),
+          ),
+        )
+        const best = pickBestRoute(quotes)
+        if (!best) throw new Error('No compatible swap route available')
+        const adapter = adapters.find((a) => a.name === best.aggregator)
+        if (!adapter) throw new Error('Selected adapter unavailable')
+        log(`Best route: ${best.aggregator}`)
+
+        // 4. Build router calldata with the DELEVERAGER as the swap recipient.
+        const tx = await adapter.buildTransaction(best, slippagePercent, deleverager, chainId)
+        const router = tx.to as Address
+        const swapData = tx.data as `0x${string}`
+
+        // 5. Slippage floor + coverage. Block underwater closes before signing.
+        const slippageBps = Math.round(slippagePercent * 100)
+        const { minOut, covered } = computeMinOut(BigInt(best.amountOut), debt, slippageBps)
+        if (!covered) {
+          throw new Error('Collateral will not cover the debt at this slippage (position underwater)')
+        }
+
+        // 6. EIP-2612 permit on the collateral aToken (spender = deleverager).
+        log('Requesting permit signature…')
+        const aTokenName = await publicClient.readContract({
+          address: aToken,
+          abi: erc20Abi,
+          functionName: 'name',
+        })
+        const nonce = await publicClient.readContract({
+          address: aToken,
+          abi: NONCES_ABI,
+          functionName: 'nonces',
+          args: [address],
+        })
+        const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
+        const typedData = buildPermitTypedData({
+          aToken,
+          aTokenName,
+          chainId,
+          owner: address,
+          spender: deleverager,
+          value: collAmount,
+          nonce,
+          deadline,
+        })
+        const signature = await walletClient.signTypedData({ account: address, ...typedData })
+        const sig = parseSignature(signature)
+        const v = sig.v !== undefined ? Number(sig.v) : sig.yParity + 27
+
+        // 7. Fire the one-tx close.
+        log('Submitting close transaction…')
+        const hash = await walletClient.writeContract({
+          address: deleverager,
+          abi: DELEVERAGER_ABI,
+          functionName: 'closePositionWithPermit',
+          args: [collateralAddr, debtAddr, minOut, router, swapData, { value: collAmount, deadline, v, r: sig.r, s: sig.s }],
+          account: address,
+          chain: walletClient.chain,
+        })
+        log(`Tx submitted: ${hash}`)
+        const receipt = await publicClient.waitForTransactionReceipt({ hash })
+        if (receipt.status === 'success') {
+          log('Position closed ✓')
+          setStep('done')
+        } else {
+          log('Transaction reverted')
+          setStep('error')
+        }
+        return { hash, status: receipt.status }
+      } catch (e: unknown) {
+        const err = e as { shortMessage?: string; message?: string }
+        log(`Error: ${err.shortMessage || err.message || String(e)}`)
+        setStep('error')
+        return { hash: null, status: 'error' as const }
+      }
+    },
+    [address, chainId, publicClient, walletClient, log],
+  )
+
+  return { close, logs, step }
+}
