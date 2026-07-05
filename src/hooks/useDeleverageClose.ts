@@ -85,32 +85,38 @@ export function useDeleverageClose() {
           abi: PROVIDER_ABI,
           functionName: 'getPoolDataProvider',
         })
-        const [aToken] = await publicClient.readContract({
-          address: dataProvider,
-          abi: DATA_PROVIDER_ABI,
-          functionName: 'getReserveTokensAddresses',
-          args: [collateralAddr],
-        })
-        const [, , vDebt] = await publicClient.readContract({
-          address: dataProvider,
-          abi: DATA_PROVIDER_ABI,
-          functionName: 'getReserveTokensAddresses',
-          args: [debtAddr],
-        })
+        const [collTokens, debtTokens] = await Promise.all([
+          publicClient.readContract({
+            address: dataProvider,
+            abi: DATA_PROVIDER_ABI,
+            functionName: 'getReserveTokensAddresses',
+            args: [collateralAddr],
+          }),
+          publicClient.readContract({
+            address: dataProvider,
+            abi: DATA_PROVIDER_ABI,
+            functionName: 'getReserveTokensAddresses',
+            args: [debtAddr],
+          }),
+        ])
+        const aToken = collTokens[0]
+        const vDebt = debtTokens[2]
 
         // 2. Live balances (wei): debt to repay, collateral to swap.
-        const debt = await publicClient.readContract({
-          address: vDebt,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [address],
-        })
-        const collAmount = await publicClient.readContract({
-          address: aToken,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [address],
-        })
+        const [debt, collAmount] = await Promise.all([
+          publicClient.readContract({
+            address: vDebt,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [address],
+          }),
+          publicClient.readContract({
+            address: aToken,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [address],
+          }),
+        ])
         if (debt === 0n) throw new Error('No debt to close')
         if (collAmount === 0n) throw new Error('No collateral to withdraw')
 
@@ -134,9 +140,18 @@ export function useDeleverageClose() {
         const tx = await adapter.buildTransaction(best, slippagePercent, deleverager, chainId)
         const router = tx.to as Address
         const swapData = tx.data as `0x${string}`
+        // The contract approves `router` and calls `router`, so the aggregator's approval
+        // spender must equal its call target. True for KyberSwap/OpenOcean; guard in case a
+        // future adapter with a separate spender is added to COMPATIBLE_ADAPTERS.
+        if (tx.to.toLowerCase() !== tx.spender.toLowerCase()) {
+          throw new Error('Router approval target and call target differ; incompatible with deleverager')
+        }
 
         // 5. Slippage floor + coverage. Block underwater closes before signing.
         const slippageBps = Math.round(slippagePercent * 100)
+        if (slippageBps < 0 || slippageBps >= 10000) {
+          throw new Error('Slippage must be between 0% and 100%')
+        }
         const { minOut, covered } = computeMinOut(BigInt(best.amountOut), debt, slippageBps)
         if (!covered) {
           throw new Error('Collateral will not cover the debt at this slippage (position underwater)')

@@ -56,6 +56,6 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 /** The configured deleverager for a chain, or null when unset/zero/malformed. */
 export function getDeleveragerAddress(chainId: number | undefined): `0x${string}` | null {
   const addr = getChainConfig(chainId)?.aave.deleverager;
-  if (!addr || addr === ZERO_ADDRESS || addr.length !== 42) return null;
+  if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
   return addr;
 }
