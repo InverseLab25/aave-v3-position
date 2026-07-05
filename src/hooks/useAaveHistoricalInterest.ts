@@ -1,8 +1,10 @@
-import { gql, useQuery } from '@apollo/client'
+import { useQuery } from '@tanstack/react-query'
 import { useAccount, useChainId } from 'wagmi'
 import { getChainConfig } from '../config/chains'
 
-const GET_USER_TRANSACTIONS = gql`
+const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
+
+const GET_USER_TRANSACTIONS = `
   query GetUserTransactions($user: EvmAddress!, $chainId: ChainId!, $market: EvmAddress!) {
     userTransactionHistory(request: { user: $user, chainId: $chainId, market: $market }) {
       items {
@@ -42,6 +44,41 @@ const GET_USER_TRANSACTIONS = gql`
     }
   }
 `
+
+interface TxAmount {
+  amount: { value: string }
+  usd?: number
+  usdPerToken?: number
+}
+interface TxReserve {
+  underlyingToken: { address: string }
+}
+interface TxItem {
+  __typename: string
+  amount?: TxAmount
+  reserve?: TxReserve
+  collateral?: { amount: TxAmount; reserve: TxReserve }
+  debtRepaid?: { amount: TxAmount; reserve: TxReserve }
+}
+interface TxResponse {
+  userTransactionHistory?: { items?: TxItem[] }
+}
+
+async function fetchUserTransactions(variables: {
+  user: string
+  chainId: number
+  market: string
+}): Promise<TxResponse> {
+  const res = await fetch(AAVE_GRAPHQL_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: GET_USER_TRANSACTIONS, variables }),
+  })
+  if (!res.ok) throw new Error(`Aave GraphQL ${res.status}`)
+  const json = await res.json()
+  if (json.errors?.length) throw new Error(json.errors[0]?.message ?? 'Aave GraphQL error')
+  return json.data as TxResponse
+}
 
 export type CostBasis = {
   /** Weighted-average USD entry price of the tokens still held/owed. */
@@ -102,43 +139,48 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   const hasAaveConfig = !!chainConfig?.aave
 
   const targetAddress = userAddress || connectedAddress
+  const market = chainConfig?.aave.poolAddress
 
-  const { data, loading, error } = useQuery(GET_USER_TRANSACTIONS, {
-    variables: {
-      user: targetAddress,
-      chainId: chainId,
-      market: chainConfig?.aave.poolAddress
-    },
-    skip: !targetAddress || !hasAaveConfig,
-    fetchPolicy: 'cache-first'
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['aaveUserTx', targetAddress, chainId, market],
+    queryFn: () =>
+      fetchUserTransactions({ user: targetAddress as string, chainId, market: market as string }),
+    enabled: !!targetAddress && hasAaveConfig,
+    // History changes slowly; cache for 5 min (Apollo used cache-first).
+    staleTime: 5 * 60 * 1000,
   })
 
   const supplyAcc: Record<string, Accumulator> = {}
   const borrowAcc: Record<string, Accumulator> = {}
 
-  if (data?.userTransactionHistory?.items) {
-    for (const tx of data.userTransactionHistory.items) {
+  const items = data?.userTransactionHistory?.items
+  if (items) {
+    for (const tx of items) {
       switch (tx.__typename) {
         case 'UserSupplyTransaction': {
-          const asset = tx.reserve.underlyingToken.address.toLowerCase()
+          const asset = tx.reserve?.underlyingToken.address.toLowerCase()
+          if (!asset || !tx.amount) break
           const acc = (supplyAcc[asset] ??= newAcc())
           addEntry(acc, Number(tx.amount.amount.value), Number(tx.amount.usdPerToken || 0))
           break
         }
         case 'UserWithdrawTransaction': {
-          const asset = tx.reserve.underlyingToken.address.toLowerCase()
+          const asset = tx.reserve?.underlyingToken.address.toLowerCase()
+          if (!asset || !tx.amount) break
           const acc = (supplyAcc[asset] ??= newAcc())
           realizeExit(acc, Number(tx.amount.amount.value), Number(tx.amount.usdPerToken || 0), 'sell')
           break
         }
         case 'UserBorrowTransaction': {
-          const asset = tx.reserve.underlyingToken.address.toLowerCase()
+          const asset = tx.reserve?.underlyingToken.address.toLowerCase()
+          if (!asset || !tx.amount) break
           const acc = (borrowAcc[asset] ??= newAcc())
           addEntry(acc, Number(tx.amount.amount.value), Number(tx.amount.usdPerToken || 0))
           break
         }
         case 'UserRepayTransaction': {
-          const asset = tx.reserve.underlyingToken.address.toLowerCase()
+          const asset = tx.reserve?.underlyingToken.address.toLowerCase()
+          if (!asset || !tx.amount) break
           const acc = (borrowAcc[asset] ??= newAcc())
           realizeExit(acc, Number(tx.amount.amount.value), Number(tx.amount.usdPerToken || 0), 'cover')
           break
@@ -197,7 +239,7 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   return {
     netPrincipals,
     costBasis,
-    isLoadingHistory: loading,
+    isLoadingHistory: isLoading,
     errorHistory: error
   }
 }
