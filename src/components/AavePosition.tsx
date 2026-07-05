@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
+import { ClosePositionModal } from './ClosePositionModal'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 
@@ -26,6 +27,8 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     suppliedAssets,
     borrowedAssets
   } = useAavePositions({ viewAddress, viewChainId })
+
+  const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
 
   const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
 
@@ -349,6 +352,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                   <th>APY</th>
                   <th>Interest Paid</th>
                   <th>Position P&amp;L</th>
+                  {!isViewMode && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -367,6 +371,25 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                         </span>
                       </td>
                       <PnlCell r={r} side="borrow" />
+                      {!isViewMode && (
+                        <td data-label="Actions">
+                          <button
+                            onClick={() => setCloseTarget(a)}
+                            style={{
+                              padding: '6px 12px',
+                              border: 'none',
+                              borderRadius: '6px',
+                              background: '#111',
+                              color: '#fff',
+                              cursor: 'pointer',
+                              fontSize: '0.8rem',
+                              fontWeight: 600,
+                            }}
+                          >
+                            Close
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   )
                 })}
@@ -475,6 +498,14 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
             </div>
           </div>
         </div>
+      )}
+
+      {closeTarget && (
+        <ClosePositionModal
+          borrowedAsset={closeTarget}
+          suppliedAssets={suppliedAssets}
+          onClose={() => setCloseTarget(null)}
+        />
       )}
     </div>
   )
