@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
 import { NetworkSwitcher } from './NetworkSwitcher'
 
 export function WalletConnect() {
   const { address, isConnected } = useAccount()
-  const { connectors, connect } = useConnect()
-  const { disconnect } = useDisconnect()
+  const connectors = useConnectors()
+  const { mutate: connect } = useConnect()
+  const { mutate: disconnect } = useDisconnect()
   const [showModal, setShowModal] = useState(false)
 
   if (isConnected) {

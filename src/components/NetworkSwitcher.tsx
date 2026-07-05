@@ -1,4 +1,4 @@
-import { useAccount, useChainId, useSwitchChain } from 'wagmi'
+import { useAccount, useChainId, useChains, useSwitchChain } from 'wagmi'
 import { getChainConfig } from '../config/chains'
 
 /**
@@ -10,7 +10,8 @@ import { getChainConfig } from '../config/chains'
 export function NetworkSwitcher() {
   const { isConnected } = useAccount()
   const chainId = useChainId()
-  const { chains, switchChain, isPending, error } = useSwitchChain()
+  const chains = useChains()
+  const { mutate: switchChain, isPending, error } = useSwitchChain()
 
   if (!isConnected) return null
 

@@ -40,7 +40,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const [step, setStep] = useState<number>(0)
   const [logs, setLogs] = useState<string[]>([])
 
-  const { writeContractAsync } = useWriteContract()
+  const { mutateAsync: writeContractAsync } = useWriteContract()
   const deleverage = useDeleverageClose()
 
   const isSameAsset =

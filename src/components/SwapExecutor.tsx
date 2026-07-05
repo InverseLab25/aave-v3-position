@@ -57,11 +57,11 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   });
 
   // 2. Approve hook
-  const { 
-    writeContract: writeApprove, 
-    data: approveHash, 
+  const {
+    mutate: writeApprove,
+    data: approveHash,
     isPending: isApprovePending,
-    error: approveError 
+    error: approveError
   } = useWriteContract();
 
   // 3. Wait for approve confirmation
@@ -70,11 +70,11 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   });
 
   // 4. Send swap tx hook
-  const { 
-    sendTransaction, 
-    data: swapHash, 
+  const {
+    mutate: sendTransaction,
+    data: swapHash,
     isPending: isSwapPending,
-    error: swapError 
+    error: swapError
   } = useSendTransaction();
 
   // 5. Wait for swap confirmation
