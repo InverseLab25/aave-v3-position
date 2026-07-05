@@ -1,46 +1,27 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount } from 'wagmi'
+import { useWriteContract, useAccount, useChainId } from 'wagmi'
 import { parseUnits, maxUint256 } from 'viem'
+import { getDeleveragerAddress } from '../config/chains'
+import { useDeleverageClose } from '../hooks/useDeleverageClose'
 
 const AAVE_POOL_ADDRESS = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
 
-// Minimal ABI for the Aave V3 Pool functions we need
+// Minimal ABI for the same-asset Aave repay path.
 const poolAbi = [
   {
     inputs: [
       { internalType: 'address', name: 'asset', type: 'address' },
       { internalType: 'uint256', name: 'amount', type: 'uint256' },
-      { internalType: 'uint256', name: 'interestRateMode', type: 'uint256' }
+      { internalType: 'uint256', name: 'interestRateMode', type: 'uint256' },
     ],
     name: 'repayWithATokens',
     outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
     stateMutability: 'nonpayable',
-    type: 'function'
+    type: 'function',
   },
-  {
-    inputs: [
-      { internalType: 'address', name: 'asset', type: 'address' },
-      { internalType: 'uint256', name: 'amount', type: 'uint256' },
-      { internalType: 'address', name: 'to', type: 'address' }
-    ],
-    name: 'withdraw',
-    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-    stateMutability: 'nonpayable',
-    type: 'function'
-  },
-  {
-    inputs: [
-      { internalType: 'address', name: 'asset', type: 'address' },
-      { internalType: 'uint256', name: 'amount', type: 'uint256' },
-      { internalType: 'uint256', name: 'interestRateMode', type: 'uint256' },
-      { internalType: 'address', name: 'onBehalfOf', type: 'address' }
-    ],
-    name: 'repay',
-    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-    stateMutability: 'nonpayable',
-    type: 'function'
-  }
 ] as const
+
+const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
 
 interface ClosePositionModalProps {
   borrowedAsset: any
@@ -50,118 +31,84 @@ interface ClosePositionModalProps {
 
 export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: ClosePositionModalProps) {
   const { address } = useAccount()
+  const chainId = useChainId()
   const [selectedCollateral, setSelectedCollateral] = useState<any>(suppliedAssets[0] || null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [isMax, setIsMax] = useState<boolean>(false)
-  
+  const [slippage, setSlippage] = useState<number>(0.5)
+
   const [step, setStep] = useState<number>(0)
   const [logs, setLogs] = useState<string[]>([])
-  
+
   const { writeContractAsync } = useWriteContract()
+  const deleverage = useDeleverageClose()
 
-  const isSameAsset = selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
+  const isSameAsset =
+    selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
+  const deleveragerAvailable = getDeleveragerAddress(chainId) !== null
 
-  const log = (msg: string) => setLogs(prev => [...prev, msg])
+  const log = (msg: string) => setLogs((prev) => [...prev, msg])
 
   const executeClose = async () => {
-    if (!amountStr || !address) return
-    
-    try {
-      setStep(1)
-      const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
-      const finalAmount = isMax ? maxUint256 : amountParsed
-      
-      if (isSameAsset) {
-        log(`Executing repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}...`)
+    if (!address || !selectedCollateral) return
+
+    if (isSameAsset) {
+      if (!amountStr) return
+      try {
+        setStep(1)
+        const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
+        const finalAmount = isMax ? maxUint256 : amountParsed
+        log(`Executing repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
         const txHash = await writeContractAsync({
           address: AAVE_POOL_ADDRESS,
           abi: poolAbi,
           functionName: 'repayWithATokens',
-          args: [borrowedAsset.underlyingAsset, finalAmount, 2n] // rateMode 2 = Variable
+          args: [borrowedAsset.underlyingAsset, finalAmount, 2n],
         })
         log(`Transaction submitted! Hash: ${txHash}`)
         setStep(2)
-      } else {
-        // Multi-Step DefiLlama Flow
-        log(`WARNING: Multi-step cross-asset repayment initiated. Ensure your Health Factor remains > 1.0!`)
-        
-        // 1. Withdraw Collateral
-        const collateralToWithdraw = parseUnits(amountStr, selectedCollateral.decimals) // simplified estimation
-        log(`1. Withdrawing ${amountStr} ${selectedCollateral.symbol} collateral to wallet...`)
-        const withdrawHash = await writeContractAsync({
-          address: AAVE_POOL_ADDRESS,
-          abi: poolAbi,
-          functionName: 'withdraw',
-          args: [selectedCollateral.underlyingAsset, collateralToWithdraw, address]
-        })
-        log(`Withdrawal TX submitted: ${withdrawHash}. (Waiting for confirmation before swap... in a real app)`)
-        
-        // 2. Fetch DefiLlama Swap Quote
-        log(`2. Fetching DefiLlama Swap Route (${selectedCollateral.symbol} -> ${borrowedAsset.symbol})...`)
-        const res = await fetch(`https://aggregator-api.llama.fi/swap?fromToken=${selectedCollateral.underlyingAsset}&toToken=${borrowedAsset.underlyingAsset}&amount=${collateralToWithdraw.toString()}&fromAddress=${address}&slippage=1`)
-        const swapData = await res.json()
-        
-        if (!swapData || !swapData.tx) {
-          throw new Error("Failed to get swap route from DefiLlama")
-        }
-        
-        // 3. Approve Router
-        log(`3. Approving DefiLlama Router to spend ${selectedCollateral.symbol}...`)
-        /* await writeContractAsync({
-          address: selectedCollateral.underlyingAsset,
-          abi: erc20Abi,
-          functionName: 'approve',
-          args: [swapData.tx.to, collateralToWithdraw]
-        }) */
-        log(`Approval TX submitted.`)
-
-        // 4. Swap
-        log(`4. Executing Swap via DefiLlama Aggregator...`)
-        /* await sendTransactionAsync({
-          to: swapData.tx.to,
-          data: swapData.tx.data,
-          value: BigInt(swapData.tx.value || 0)
-        }) */
-        log(`Swap TX submitted.`)
-
-        // 5. Approve Pool
-        log(`5. Approving Aave Pool to spend ${borrowedAsset.symbol} for repayment...`)
-        /* await writeContractAsync({
-          address: borrowedAsset.underlyingAsset,
-          abi: erc20Abi,
-          functionName: 'approve',
-          args: [AAVE_POOL_ADDRESS, amountParsed]
-        }) */
-        log(`Approval TX submitted.`)
-
-        // 6. Repay
-        log(`6. Repaying Aave Debt...`)
-        /* await writeContractAsync({
-          address: AAVE_POOL_ADDRESS,
-          abi: poolAbi,
-          functionName: 'repay',
-          args: [borrowedAsset.underlyingAsset, finalAmount, 2n, address]
-        }) */
-        log(`Repayment TX submitted! Position closed.`)
-        setStep(2)
+      } catch (e: any) {
+        log(`Error: ${e.message || e}`)
+        setStep(0)
       }
-    } catch (e: any) {
-      log(`Error: ${e.message || e}`)
-      setStep(0)
+      return
     }
+
+    // Cross-asset: one-transaction close via the deleverager contract.
+    if (!deleveragerAvailable) return
+    const result = await deleverage.close({
+      collateral: selectedCollateral,
+      debtAsset: borrowedAsset,
+      slippagePercent: slippage,
+    })
+    setStep(result.status === 'success' ? 2 : 0)
   }
+
+  // Cross-asset progress comes from the hook; same-asset uses local logs.
+  const shownLogs = isSameAsset ? logs : deleverage.logs
+  const isProcessing = isSameAsset ? step === 1 : deleverage.step === 'running'
+  const canExecute = isSameAsset
+    ? !!amountStr && parseFloat(amountStr) > 0
+    : deleveragerAvailable
 
   return (
     <div className="modal-overlay">
       <div className="modal-content">
         <h2>Close Borrow Position</h2>
-        <p>Debt to Close: <strong>{borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}</strong></p>
-        
+        <p>
+          Debt to Close:{' '}
+          <strong>
+            {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}
+          </strong>
+        </p>
+
         <div style={{ marginTop: '20px' }}>
           <label>Select Collateral to Use:</label>
-          <select 
-            value={selectedCollateral?.underlyingAsset || ''} 
-            onChange={e => setSelectedCollateral(suppliedAssets.find(a => a.underlyingAsset === e.target.value))}
+          <select
+            value={selectedCollateral?.underlyingAsset || ''}
+            onChange={(e) =>
+              setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value))
+            }
             style={{ display: 'block', width: '100%', padding: '10px', marginTop: '10px' }}
           >
             {suppliedAssets.map((asset, i) => (
@@ -172,68 +119,104 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
           </select>
         </div>
 
-        <div style={{ marginTop: '20px' }}>
-          <label style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span>Amount to Repay (in {borrowedAsset.symbol}):</span>
-            <button 
-              onClick={() => {
-                setAmountStr(borrowedAsset.amount.toString())
-                setIsMax(true)
+        {isSameAsset ? (
+          <div style={{ marginTop: '20px' }}>
+            <label style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Amount to Repay (in {borrowedAsset.symbol}):</span>
+              <button
+                onClick={() => {
+                  setAmountStr(borrowedAsset.amount.toString())
+                  setIsMax(true)
+                }}
+                style={{ fontSize: '10px', padding: '2px 6px', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}
+              >
+                MAX
+              </button>
+            </label>
+            <input
+              type="number"
+              value={amountStr}
+              onChange={(e) => {
+                setAmountStr(e.target.value)
+                setIsMax(false)
               }}
-              style={{ fontSize: '10px', padding: '2px 6px', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}
-            >
-              MAX
-            </button>
-          </label>
-          <input 
-            type="number" 
-            value={amountStr} 
-            onChange={e => {
-              setAmountStr(e.target.value)
-              setIsMax(false)
-            }} 
-            placeholder="0.00" 
-            style={{ display: 'block', width: '100%', padding: '10px', marginTop: '10px' }}
-          />
-        </div>
+              placeholder="0.00"
+              style={{ display: 'block', width: '100%', padding: '10px', marginTop: '10px' }}
+            />
+          </div>
+        ) : (
+          <div style={{ marginTop: '20px' }}>
+            <label style={{ display: 'block', marginBottom: '8px' }}>Max Slippage:</label>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {SLIPPAGE_PRESETS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setSlippage(p)}
+                  style={{
+                    padding: '6px 12px',
+                    border: '1px solid #333',
+                    borderRadius: '6px',
+                    background: slippage === p ? '#111' : 'transparent',
+                    color: slippage === p ? '#fff' : 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {p}%
+                </button>
+              ))}
+              <input
+                type="number"
+                step="any"
+                value={slippage}
+                onChange={(e) => setSlippage(Math.max(0, parseFloat(e.target.value) || 0))}
+                style={{ width: '80px', padding: '6px', marginLeft: 'auto' }}
+              />
+              <span>%</span>
+            </div>
+          </div>
+        )}
 
         <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#111', borderRadius: '8px' }}>
           <h4>Execution Path</h4>
           {isSameAsset ? (
-            <p style={{ color: '#4ade80', fontSize: '14px' }}>✅ Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)</p>
-          ) : (
+            <p style={{ color: '#4ade80', fontSize: '14px' }}>
+              ✅ Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)
+            </p>
+          ) : deleveragerAvailable ? (
             <div>
-              <p style={{ color: '#fbbf24', fontSize: '14px' }}>⚠️ Multi-Step DefiLlama Route (Requires multiple transactions)</p>
-              <ol style={{ fontSize: '12px', paddingLeft: '15px', marginTop: '5px' }}>
-                <li>Withdraw {selectedCollateral?.symbol} from Aave</li>
-                <li>Approve DefiLlama Router</li>
-                <li>Swap {selectedCollateral?.symbol} for {borrowedAsset.symbol}</li>
-                <li>Approve Aave Pool</li>
-                <li>Repay {borrowedAsset.symbol} Debt</li>
-              </ol>
+              <p style={{ color: '#4ade80', fontSize: '14px' }}>
+                ✅ One transaction — Uniswap V4 flash loan (best of KyberSwap / OpenOcean)
+              </p>
+              <p style={{ fontSize: '12px', color: '#9ca3af', marginTop: '5px' }}>
+                Full close: repays all {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol} using your{' '}
+                {selectedCollateral?.symbol}. Any remainder is returned to your wallet.
+              </p>
             </div>
+          ) : (
+            <p style={{ color: '#fbbf24', fontSize: '14px' }}>
+              ⚠️ One-click close is not available on this network yet.
+            </p>
           )}
         </div>
 
-        {logs.length > 0 && (
+        {shownLogs.length > 0 && (
           <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#000', color: '#0f0', fontSize: '12px', fontFamily: 'monospace', maxHeight: '150px', overflowY: 'auto' }}>
-            {logs.map((l, i) => <div key={i}>{l}</div>)}
+            {shownLogs.map((l, i) => (
+              <div key={i}>{l}</div>
+            ))}
           </div>
         )}
 
         <div style={{ marginTop: '30px', display: 'flex', gap: '10px' }}>
-          <button 
-            onClick={onClose} 
-            style={{ flex: 1, padding: '10px', backgroundColor: '#333', color: 'white', border: 'none' }}
-          >
+          <button onClick={onClose} style={{ flex: 1, padding: '10px', backgroundColor: '#333', color: 'white', border: 'none' }}>
             Cancel
           </button>
-          <button 
-            onClick={executeClose} 
-            disabled={step === 1 || !amountStr || parseFloat(amountStr) <= 0}
+          <button
+            onClick={executeClose}
+            disabled={isProcessing || !canExecute}
             style={{ flex: 1, padding: '10px', backgroundColor: '#e2e2e2', color: 'black', border: 'none', fontWeight: 'bold' }}
           >
-            {step === 1 ? 'Processing...' : 'Execute'}
+            {isProcessing ? 'Processing…' : 'Execute'}
           </button>
         </div>
       </div>
