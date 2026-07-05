@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useChainId } from 'wagmi'
 import { WalletConnect } from './components/WalletConnect'
+import { NetworkSwitcher } from './components/NetworkSwitcher'
 import { AavePosition } from './components/AavePosition'
 import { DexDiscovery } from './components/DexDiscovery'
 import { getChainConfig } from './config/chains'
@@ -61,8 +62,9 @@ function App() {
           )}
         </nav>
         <div className="header-network">
-          <div style={{ 
-            display: 'flex', 
+          {!isViewMode && <NetworkSwitcher />}
+          <div style={{
+            display: 'flex',
             alignItems: 'center', 
             gap: '6px', 
             padding: '4px 12px', 
