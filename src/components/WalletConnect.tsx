@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { NetworkSwitcher } from './NetworkSwitcher'
 
 export function WalletConnect() {
   const { address, isConnected } = useAccount()
@@ -10,8 +11,9 @@ export function WalletConnect() {
   if (isConnected) {
     return (
       <div className="wallet-container">
+        <NetworkSwitcher />
         <div style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>
-          <strong className="hide-on-mobile">Connected: </strong> 
+          <strong className="hide-on-mobile">Connected: </strong>
           {address?.slice(0, 6)}...{address?.slice(-4)}
         </div>
         <button onClick={() => disconnect()} className="disconnect-btn">Disconnect</button>
