@@ -512,6 +512,10 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
           asset={supplyWithdrawTarget.asset}
           initialTab={supplyWithdrawTarget.tab}
           ethPriceUsd={ethPriceUsd}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
+          availableReserves={availableReserves}
           onClose={() => setSupplyWithdrawTarget(null)}
         />
       )}
@@ -521,6 +525,9 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
           chainId={chainId}
           availableReserves={availableReserves}
           ethPriceUsd={ethPriceUsd}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
           onClose={() => setIsAssetsToSupplyModalOpen(false)}
         />
       )}
@@ -543,6 +550,9 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
           asset={borrowRepayTarget.asset}
           initialTab={borrowRepayTarget.tab}
           ethPriceUsd={ethPriceUsd}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
           onClose={() => setBorrowRepayTarget(null)}
         />
       )}

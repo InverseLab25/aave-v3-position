@@ -120,7 +120,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ ...modalStyle, maxWidth: '600px' }}>
+      <div className="modal-content" style={{ ...modalStyle, maxWidth: '600px' }}>
         <div style={modalHeaderStyle}>
           <h2 style={modalTitleStyle}>{selectedAsset ? `Borrow ${selectedAsset.symbol}` : 'Assets to Borrow'}</h2>
           <button style={closeButtonStyle} onClick={onClose}>×</button>
@@ -133,7 +133,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                 <tr>
                   <th style={{ paddingLeft: T.space[5] }}>Asset</th>
                   <th>Borrow APY</th>
-                  <th style={{ textAlign: 'right', paddingRight: T.space[5] }}>Actions</th>
+                  <th className="align-right-desktop" style={{ paddingRight: T.space[5] }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -141,7 +141,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                   <tr key={opt.symbol}>
                     <td style={{ paddingLeft: T.space[5], fontWeight: 600 }}>{opt.symbol}</td>
                     <td className="text-danger" style={{ fontFamily: T.font.mono }}>{opt.borrowApy?.toFixed(2) || '0.00'}%</td>
-                    <td style={{ textAlign: 'right', paddingRight: T.space[5] }}>
+                    <td className="align-right-desktop" style={{ paddingRight: T.space[5] }}>
                       <button
                         className="btn-primary"
                         style={{ padding: '5px 14px', fontSize: T.fontSize.sm }}

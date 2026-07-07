@@ -12,10 +12,13 @@ interface AssetsToSupplyModalProps {
   chainId: number
   availableReserves: any[]
   ethPriceUsd?: number
+  collateralUsd?: number
+  debtUsd?: number
+  liquidationThreshold?: number
   onClose: () => void
 }
 
-export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, onClose }: AssetsToSupplyModalProps) {
+export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: AssetsToSupplyModalProps) {
   const { address } = useAccount()
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
@@ -114,9 +117,15 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const assumedGasLimit = 250000n // Rough estimate for Aave supply
   const estimatedFeeUsd = (uiMaxFee && ethPriceUsd > 0) ? Number(formatUnits(uiMaxFee * assumedGasLimit, 18)) * ethPriceUsd : 0
 
+  const supplyUsd = amountNum * (selectedAsset?.priceInUsd ? parseFloat(selectedAsset.priceInUsd) : 0)
+  const currentHealthFactor = debtUsd > 0 ? ((collateralUsd * liquidationThreshold) / debtUsd).toFixed(2) : '∞'
+  const newHealthFactor = debtUsd > 0 && selectedAsset 
+    ? (((collateralUsd * liquidationThreshold) + (supplyUsd * selectedAsset.liquidationThreshold)) / debtUsd).toFixed(2)
+    : '∞'
+
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ ...modalStyle, maxWidth: '600px' }}>
+      <div className="modal-content" style={{ ...modalStyle, maxWidth: '600px' }}>
         {/* Header */}
         <div style={modalHeaderStyle}>
           <h2 style={modalTitleStyle}>{selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'}</h2>
@@ -130,9 +139,9 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
               <thead>
                 <tr>
                   <th style={{ paddingLeft: T.space[5] }}>Asset</th>
-                  <th>Wallet Balance</th>
+                  <th>Balance</th>
                   <th>APY</th>
-                  <th style={{ textAlign: 'right', paddingRight: T.space[5] }}>Actions</th>
+                  <th className="align-right-desktop" style={{ paddingRight: T.space[5] }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -143,7 +152,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                       <td style={{ paddingLeft: T.space[5], fontWeight: 600 }}>{opt.symbol}</td>
                       <td style={{ fontFamily: T.font.mono }}>{bal > 0 ? bal.toFixed(4) : '0.00'}</td>
                       <td className="text-success" style={{ fontFamily: T.font.mono }}>{opt.apy?.toFixed(2) ?? '—'}%</td>
-                      <td style={{ textAlign: 'right', paddingRight: T.space[5] }}>
+                      <td className="align-right-desktop" style={{ paddingRight: T.space[5] }}>
                         <button
                           className="btn-primary"
                           style={{ padding: '5px 14px', fontSize: T.fontSize.sm }}
@@ -185,16 +194,28 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                 >MAX</button>
               </div>
 
-              {uiMaxFee && uiMaxPriority && (
+              {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
                 <div style={infoCardStyle}>
-                  <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
-                    <span>Estimated Gas</span>
-                    {estimatedFeeUsd > 0 && <span style={{ color: T.text }}>~${estimatedFeeUsd.toFixed(2)}</span>}
-                  </div>
-                  <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
-                    <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
-                    <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
-                  </div>
+                  {amountNum > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
+                      <span>Health Factor</span>
+                      <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
+                        {currentHealthFactor} → {newHealthFactor}
+                      </span>
+                    </div>
+                  )}
+                  {uiMaxFee && uiMaxPriority && (
+                    <>
+                      <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', marginBottom: T.space[2] }}>
+                        <span>Estimated Gas</span>
+                        {estimatedFeeUsd > 0 && <span style={{ color: T.text, fontWeight: 700, fontSize: T.fontSize.base }}>~${estimatedFeeUsd.toFixed(2)}</span>}
+                      </div>
+                      <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
+                        <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
+                        <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 

@@ -155,6 +155,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     borrowApy: calculateAPY(reserve.variableBorrowRate) * 100,
     variableDebtTokenAddress: reserve.variableDebtTokenAddress,
     aTokenAddress: reserve.aTokenAddress,
+    liquidationThreshold: Number(reserve.reserveLiquidationThreshold) / 10000,
   }))
 
 

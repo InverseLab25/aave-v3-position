@@ -19,12 +19,15 @@ interface BorrowRepayModalProps {
   asset: any
   initialTab?: 'borrow' | 'repay'
   ethPriceUsd?: number
+  collateralUsd?: number
+  debtUsd?: number
+  liquidationThreshold?: number
   onClose: () => void
 }
 
 const TAB_LABELS = { borrow: 'Borrow', repay: 'Repay' } as const
 
-export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0, onClose }: BorrowRepayModalProps) {
+export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: BorrowRepayModalProps) {
   const { address, chainId } = useAccount()
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
@@ -136,9 +139,15 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const assumedGasLimit = 300000n // Rough estimate for Aave borrow/repay
   const estimatedFeeUsd = (uiMaxFee && ethPriceUsd > 0) ? Number(formatUnits(uiMaxFee * assumedGasLimit, 18)) * ethPriceUsd : 0
 
+  const borrowRepayUsd = amountNum * (asset.priceInUsd ? parseFloat(asset.priceInUsd) : 0)
+  const currentHealthFactor = debtUsd > 0 ? ((collateralUsd * liquidationThreshold) / debtUsd).toFixed(2) : '∞'
+  const newHealthFactor = activeTab === 'borrow' 
+    ? (debtUsd + borrowRepayUsd > 0 ? ((collateralUsd * liquidationThreshold) / (debtUsd + borrowRepayUsd)).toFixed(2) : '∞')
+    : (debtUsd - borrowRepayUsd > 0 ? ((collateralUsd * liquidationThreshold) / (debtUsd - borrowRepayUsd)).toFixed(2) : '∞')
+
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ ...modalStyle, maxWidth: '440px' }}>
+      <div className="modal-content" style={{ ...modalStyle, maxWidth: '440px' }}>
         {/* Header */}
         <div style={modalHeaderStyle}>
           <h2 style={modalTitleStyle}>{asset.symbol}</h2>
@@ -191,16 +200,28 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           </div>
 
           {/* Gas Info */}
-          {uiMaxFee && uiMaxPriority && (
+          {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
             <div style={infoCardStyle}>
-              <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between' }}>
-                <span>Estimated Gas</span>
-                {estimatedFeeUsd > 0 && <span style={{ color: T.text }}>~${estimatedFeeUsd.toFixed(2)}</span>}
-              </div>
-              <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
-                <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
-                <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
-              </div>
+              {amountNum > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
+                  <span>Health Factor</span>
+                  <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
+                    {currentHealthFactor} → {newHealthFactor}
+                  </span>
+                </div>
+              )}
+              {uiMaxFee && uiMaxPriority && (
+                <>
+                  <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', marginBottom: T.space[2] }}>
+                    <span>Estimated Gas</span>
+                    {estimatedFeeUsd > 0 && <span style={{ color: T.text, fontWeight: 700, fontSize: T.fontSize.base }}>~${estimatedFeeUsd.toFixed(2)}</span>}
+                  </div>
+                  <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
+                    <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
+                    <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
