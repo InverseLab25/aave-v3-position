@@ -6,6 +6,7 @@ import aavePoolAbi from '../config/aavev3Abi.json'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 
 import { simulateAndWrite } from '../utils/contract'
+import { ExplorerLink } from './ExplorerLink'
 import { useDeleverageClose } from '../hooks/useDeleverageClose'
 
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
@@ -26,6 +27,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
 
   const [step, setStep] = useState<number>(0)
   const [logs, setLogs] = useState<string[]>([])
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
@@ -56,13 +58,14 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
         const finalAmount = isMax ? maxUint256 : amountParsed
         log(`Simulating repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
-        const txHash = await simulateAndWrite(config, writeContractAsync, {
+        const hash = await simulateAndWrite(config, writeContractAsync, {
           address: poolAddress,
           abi: aavePoolAbi as any,
           functionName: 'repayWithATokens',
           args: [borrowedAsset.underlyingAsset, finalAmount, 2n],
         })
-        log(`Transaction submitted! Hash: ${txHash}`)
+        setTxHash(hash)
+        log(`Transaction submitted! Hash: ${hash}`)
         setStep(2)
       } catch (e: any) {
         log(`Error: ${e.message || e}`)
@@ -78,6 +81,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
       debtAsset: borrowedAsset,
       slippagePercent: slippage,
     })
+    if (result.hash) setTxHash(result.hash as `0x${string}`)
     setStep(result.status === 'success' ? 2 : 0)
   }
 
@@ -214,6 +218,12 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
             {shownLogs.map((l, i) => (
               <div key={i}>{l}</div>
             ))}
+          </div>
+        )}
+
+        {txHash && (
+          <div style={{ marginTop: '12px' }}>
+            <ExplorerLink hash={txHash} chainId={chainId} />
           </div>
         )}
 

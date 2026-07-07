@@ -6,6 +6,7 @@ import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
+import { ExplorerLink } from './ExplorerLink'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
@@ -213,6 +214,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           />
 
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
+          {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
           <button
             style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || isOverRepay)}
