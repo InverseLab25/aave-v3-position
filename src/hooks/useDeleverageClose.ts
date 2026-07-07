@@ -1,6 +1,8 @@
 import { useCallback, useState } from 'react'
-import { useAccount, useChainId, usePublicClient, useWalletClient } from 'wagmi'
+import { useAccount, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
+import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
 import { erc20Abi, parseSignature, type Address } from 'viem'
+import { calculateAdjustedFees } from '../utils/gas'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
 import type { Asset } from '../adapters/types'
@@ -59,6 +61,7 @@ export function useDeleverageClose() {
   const chainId = useChainId()
   const publicClient = usePublicClient()
   const { data: walletClient } = useWalletClient()
+  const config = useConfig()
   const [logs, setLogs] = useState<string[]>([])
   const [step, setStep] = useState<CloseStep>('idle')
 
@@ -186,15 +189,23 @@ export function useDeleverageClose() {
         const v = sig.v !== undefined ? Number(sig.v) : sig.yParity + 27
 
         // 7. Fire the one-tx close.
-        log('Submitting close transaction…')
-        const hash = await walletClient.writeContract({
+        const { maxFeePerGas, maxPriorityFeePerGas } = await estimateFeesPerGas(config)
+        const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas)
+
+        // Simulate before writing to catch reverts early
+        log('Simulating close transaction…')
+        const { request } = await simulateContract(config, {
           address: deleverager,
           abi: DELEVERAGER_ABI,
           functionName: 'closePositionWithPermit',
           args: [collateralAddr, debtAddr, minOut, router, swapData, { value: collAmount, deadline, v, r: sig.r, s: sig.s }],
           account: address,
-          chain: walletClient.chain,
-        })
+          maxFeePerGas: adjustedMaxFeePerGas,
+          maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
+        } as any)
+
+        log('Submitting close transaction…')
+        const hash = await walletClient.writeContract(request)
         log(`Tx submitted: ${hash}`)
         const receipt = await publicClient.waitForTransactionReceipt({ hash })
         if (receipt.status === 'success') {
@@ -212,7 +223,7 @@ export function useDeleverageClose() {
         return { hash: null, status: 'error' as const }
       }
     },
-    [address, chainId, publicClient, walletClient, log],
+    [address, chainId, publicClient, walletClient, log, config],
   )
 
   return { close, logs, step }

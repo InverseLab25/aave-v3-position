@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
-import { useAccount, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt } from 'wagmi';
+import { useAccount, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
+import { estimateFeesPerGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
+import { calculateAdjustedFees } from '../utils/gas';
+import { simulateAndWrite } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
 import { getChainConfig } from '../config/chains';
 
@@ -39,6 +42,7 @@ type ExecutionStep = 'check_allowance' | 'needs_approval' | 'approving' | 'appro
 
 export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedded }: SwapExecutorProps) {
   const { address, chainId } = useAccount();
+  const config = useConfig();
   const chainConfig = getChainConfig(chainId);
   const explorerUrl = chainConfig?.explorerUrl ?? 'https://etherscan.io';
 
@@ -53,9 +57,9 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     query: { enabled: !!address }
   });
 
-  // 2. Approve hook
+  // 2. Approve hook (async so we can simulate before writing)
   const {
-    mutate: writeApprove,
+    writeContractAsync: writeApproveAsync,
     data: approveHash,
     isPending: isApprovePending,
     error: approveError,
@@ -120,20 +124,25 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     resetSwap();
   };
 
-  const handleApprove = () => {
-    writeApprove({
+  const handleApprove = async () => {
+    // simulateAndWrite: estimate fees → simulate → write with validated request
+    await simulateAndWrite(config, writeApproveAsync, {
       address: fromAsset.underlyingAsset as `0x${string}`,
       abi: ERC20_ABI,
       functionName: 'approve',
-      args: [txPayload.spender as `0x${string}`, amountInBigInt]
+      args: [txPayload.spender as `0x${string}`, amountInBigInt],
     });
   };
 
-  const handleExecute = () => {
+  const handleExecute = async () => {
+    const { maxFeePerGas, maxPriorityFeePerGas } = await estimateFeesPerGas(config);
+    const { adjustedMaxFeePerGas: adjMax, adjustedMaxPriorityFeePerGas: adjPriority } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas);
     sendTransaction({
       to: txPayload.to as `0x${string}`,
       data: txPayload.data as `0x${string}`,
-      value: txPayload.value ? BigInt(txPayload.value) : 0n
+      value: txPayload.value ? BigInt(txPayload.value) : 0n,
+      maxFeePerGas: adjMax,
+      maxPriorityFeePerGas: adjPriority,
     });
   };
 

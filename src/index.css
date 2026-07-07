@@ -1,32 +1,109 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design System — DeFi Route
+   Single source of truth for all visual tokens.
+   
+   Structure:
+     1. CSS custom properties (tokens)
+     2. Base resets
+     3. Typography
+     4. Layout primitives (.card, .header, etc.)
+     5. Component utilities (.btn, .badge, .input, etc.)
+     6. Responsive overrides
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Design Tokens ────────────────────────────────────────────────────── */
 :root {
-  --bg-color: #ffffff;
-  --text-primary: #111111;
-  --text-secondary: #666666;
-  --border-color: #eaeaea;
-  --accent-color: #000000;
-  --danger-color: #ff3333;
-  --success-color: #00b300;
-  
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Colour palette */
+  --color-bg:           #f8fafc;   /* page background    */
+  --color-surface:      #ffffff;   /* card / modal        */
+  --color-surface-alt:  #f1f5f9;   /* subtle row / input bg */
+  --color-border:       #e2e8f0;   /* dividers            */
+  --color-border-focus: #2563eb;   /* focused input       */
+
+  --color-text:         #0f172a;   /* primary text        */
+  --color-text-muted:   #64748b;   /* secondary / labels  */
+  --color-text-subtle:  #94a3b8;   /* placeholders        */
+
+  /* Brand */
+  --color-primary:      #2563eb;
+  --color-primary-hover:#1d4ed8;
+  --color-primary-text: #ffffff;
+
+  /* Semantic */
+  --color-success:      #16a34a;
+  --color-success-bg:   #f0fdf4;
+  --color-success-border:#bbf7d0;
+
+  --color-danger:       #dc2626;
+  --color-danger-bg:    #fff5f5;
+  --color-danger-border:#fecaca;
+
+  --color-warning:      #d97706;
+  --color-warning-bg:   #fffbeb;
+  --color-warning-border:#fde68a;
+
+  /* Overlay */
+  --color-overlay:      rgba(15, 23, 42, 0.55);
+
+  /* Border radius */
+  --radius-sm:   4px;   /* inline badges, small buttons     */
+  --radius-md:   6px;   /* inputs, buttons, table rows      */
+  --radius-lg:   8px;   /* cards, modals, panels            */
+  --radius-xl:   10px;  /* mobile table rows                */
+
+  /* Shadows */
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-modal:0 8px 32px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-sm:   0 1px 2px rgba(0,0,0,0.05);
+
+  /* Spacing scale */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  --text-xs:   0.70rem;  /* 11px — labels, badges */
+  --text-sm:   0.80rem;  /* 13px — secondary copy */
+  --text-base: 0.875rem; /* 14px — body           */
+  --text-md:   1rem;     /* 16px — inputs, values */
+  --text-lg:   1.1rem;   /* 18px — section titles */
+  --text-xl:   1.25rem;  /* 20px — page titles    */
+
+  /* Transitions */
+  --transition: all 0.18s ease;
+
+  /* Legacy aliases (for backward compat) */
+  --bg-color:      var(--color-surface);
+  --text-primary:  var(--color-text);
+  --text-secondary:var(--color-text-muted);
+  --border-color:  var(--color-border);
+  --accent-color:  var(--color-primary);
+  --danger-color:  var(--color-danger);
+  --success-color: var(--color-success);
+
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
-  color: var(--text-primary);
-  background-color: var(--bg-color);
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+  color: var(--color-text);
+  background-color: var(--color-bg);
 }
 
-*, *::before, *::after {
-  box-sizing: inherit;
-}
+/* ── 2. Resets ───────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
 
 body {
   margin: 0;
-  padding: 2rem;
+  padding: var(--space-8) var(--space-6);
   display: flex;
   justify-content: center;
-  background-color: #fafafa;
+  background-color: var(--color-bg);
 }
 
 #root {
@@ -38,375 +115,357 @@ h1, h2, h3, h4 {
   margin-top: 0;
   font-weight: 600;
   letter-spacing: -0.02em;
+  color: var(--color-text);
 }
 
+/* ── 3. Layout primitives ────────────────────────────────────────────────── */
 .dashboard-container {
   display: flex;
   flex-direction: column;
-  gap: 2rem;
+  gap: var(--space-8);
 }
 
+.asset-tables {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
+/* ── 4. Card ─────────────────────────────────────────────────────────────── */
 .card {
-  background: var(--bg-color);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 1.5rem;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-card);
 }
 
+/* ── 5. Section header ───────────────────────────────────────────────────── */
 .header {
   display: flex;
   align-items: center;
   gap: 15px;
-  margin-bottom: 2rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid var(--border-color);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.header-logo {
-  margin: 0;
-  font-size: 1.5rem;
-}
+.header-logo    { margin: 0; font-size: 1.5rem; }
+.header-tabs    { display: flex; gap: 10px; flex: 1; margin-left: 10px; }
+.header-network { display: flex; align-items: center; gap: 6px; }
+.header-wallet  { display: flex; align-items: center; }
 
-.header-tabs {
-  display: flex;
-  gap: 10px;
-  flex: 1;
-  margin-left: 10px;
-}
-
-.header-network {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.header-wallet {
-  display: flex;
-  align-items: center;
-}
-
+/* ── 6. Wallet container ─────────────────────────────────────────────────── */
 .wallet-container {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 15px;
-  padding: 8px 16px;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-color);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
 }
 
-.show-on-mobile {
-  display: none;
-}
+.wallet-info { display: flex; align-items: center; gap: 1rem; font-size: var(--text-base); }
+.wallet-info .address { font-family: var(--font-mono); color: var(--color-text-muted); }
 
-button {
-  background-color: var(--bg-color);
-  color: var(--text-primary);
-  border: 1px solid var(--border-color);
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-button:hover {
-  border-color: var(--accent-color);
-  background-color: #fafafa;
-}
-
-.wallet-info {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  font-size: 0.875rem;
-}
-
-.wallet-info .address {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: var(--text-secondary);
-}
-
+/* ── 7. Stats grid ───────────────────────────────────────────────────────── */
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 1.5rem;
+  gap: var(--space-6);
+  margin-bottom: var(--space-6);
 }
 
-.stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
+.stat { display: flex; flex-direction: column; gap: var(--space-1); }
 
 .stat label {
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
+  letter-spacing: 0.06em;
+  color: var(--color-text-muted);
   font-weight: 600;
 }
 
 .stat div {
-  font-size: 1.25rem;
+  font-size: var(--text-xl);
   font-weight: 500;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
+/* ── 8. Table ────────────────────────────────────────────────────────────── */
 table {
   width: 100%;
   border-collapse: collapse;
-  margin-top: 1rem;
-  font-size: 0.875rem;
+  margin-top: var(--space-4);
+  font-size: var(--text-base);
 }
 
 th, td {
   text-align: left;
-  padding: 0.75rem 0.5rem;
-  border-bottom: 1px solid var(--border-color);
+  padding: 10px var(--space-2);
+  border-bottom: 1px solid var(--color-border);
 }
 
-th:first-child, td:first-child {
-  padding-left: 0;
-}
-
-th:last-child, td:last-child {
-  padding-right: 0;
-}
+th:first-child, td:first-child { padding-left: 0; }
+th:last-child,  td:last-child  { padding-right: 0; }
 
 th {
-  color: var(--text-secondary);
+  color: var(--color-text-muted);
   font-weight: 500;
-  font-size: 0.75rem;
+  font-size: var(--text-xs);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
 }
 
-td.number {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+td.number { font-family: var(--font-mono); }
+tr:last-child td { border-bottom: none; }
+
+/* ── 9. Semantic colours ─────────────────────────────────────────────────── */
+.text-danger  { color: var(--color-danger); }
+.text-success { color: var(--color-success); }
+.text-muted   { color: var(--color-text-muted); }
+
+/* ── 10. Button system ───────────────────────────────────────────────────── */
+button {
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-base);
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: var(--transition);
 }
 
-tr:last-child td {
-  border-bottom: none;
+button:hover { border-color: var(--color-primary); background-color: var(--color-surface-alt); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Variants */
+.btn-primary {
+  background-color: var(--color-primary);
+  color: var(--color-primary-text);
+  border-color: var(--color-primary);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+}
+.btn-primary:hover { background-color: var(--color-primary-hover); border-color: var(--color-primary-hover); }
+
+.btn-secondary {
+  background: var(--color-surface-alt);
+  border-color: var(--color-border);
+  color: var(--color-text);
+  border-radius: var(--radius-md);
 }
 
-.text-danger { color: var(--danger-color); }
-.text-success { color: var(--success-color); }
+.btn-ghost {
+  background: none;
+  border: none;
+  color: var(--color-primary);
+  padding: 0;
+  font-weight: 600;
+}
+.btn-ghost:hover { background: none; border: none; opacity: 0.75; }
 
-.asset-tables {
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-  margin-top: 2rem;
+/* ── 11. Input system ────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--text-md);
+  font-family: var(--font-sans);
+  color: var(--color-text);
+  outline: none;
+  transition: border-color 0.18s;
+  box-sizing: border-box;
+}
+.input:focus { border-color: var(--color-border-focus); background: var(--color-surface); }
+.input::placeholder { color: var(--color-text-subtle); }
+
+/* ── 12. Badge system ────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
+.badge-success { background: var(--color-success-bg); color: var(--color-success); }
+.badge-danger  { background: var(--color-danger-bg);  color: var(--color-danger); }
+.badge-primary { background: #eff6ff; color: var(--color-primary); }
+.badge-neutral { background: var(--color-surface-alt); color: var(--color-text-muted); }
+
+/* ── 13. Status / Alert system ───────────────────────────────────────────── */
+.alert {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.alert-success { background: var(--color-success-bg); border: 1px solid var(--color-success-border); color: #166534; }
+.alert-danger  { background: var(--color-danger-bg);  border: 1px solid var(--color-danger-border);  color: #991b1b; }
+.alert-warning { background: var(--color-warning-bg); border: 1px solid var(--color-warning-border); color: #92400e; }
+.alert-info    { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; }
+
+/* ── 14. Modal system ────────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
-  top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  inset: 0;
+  background: var(--color-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  padding: var(--space-4);
 }
 
 .modal-content {
-  background: white;
-  padding: 2rem;
-  border-radius: 8px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-modal);
 }
 
-/* DexDiscovery: two-column config/results on desktop, stacked on mobile. */
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.modal-body { padding: var(--space-5); }
+
+.modal-footer {
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* ── 15. Info row (key-value pair) ───────────────────────────────────────── */
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--text-sm);
+  padding: var(--space-1) 0;
+}
+.info-row-label { color: var(--color-text-muted); }
+.info-row-value { font-family: var(--font-mono); font-weight: 600; color: var(--color-text); }
+
+/* ── 16. DexDiscovery specific ───────────────────────────────────────────── */
 .dex-grid {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
   gap: 40px;
 }
-@media (max-width: 768px) {
-  .dex-grid {
-    grid-template-columns: 1fr;
-    gap: 24px;
-  }
-  /* Undo the desktop right-border/right-padding on the config column when stacked. */
-  .dex-grid > div:first-child {
-    padding-right: 0 !important;
-    border-right: none !important;
-    border-bottom: 1px solid var(--border-color) !important;
-    padding-bottom: 20px !important;
-  }
-}
 
-/* Desktop: normal table. Mobile: each row collapses into a card. */
-.table-scroll {
-  width: 100%;
-}
+/* ── 17. Responsive: table → card stacking ───────────────────────────────── */
+.table-scroll { width: 100%; }
+
+.show-on-mobile { display: none; }
 
 @media (max-width: 768px) {
-  /* Reset table semantics to blocks so each row is a card. */
-  .table-scroll table,
-  .table-scroll thead,
-  .table-scroll tbody,
-  .table-scroll tr,
-  .table-scroll td {
-    display: block;
-    width: 100%;
-  }
-  /* Column headers hidden — we use per-cell data-labels instead. */
-  .table-scroll thead {
-    display: none;
-  }
-  /* Card: two-column grid for compact scanning; asset symbol spans full width. */
-  .table-scroll tr {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 16px;
-    row-gap: 12px;
-    background: #fff;
-    border: 1px solid var(--border-color);
-    border-radius: 10px;
-    padding: 14px;
-    margin-bottom: 12px;
-  }
-  .table-scroll td {
-    padding: 0;
-    border-bottom: none;
-    text-align: left;
-    min-width: 0; /* allow flex/grid children to shrink instead of overflowing */
-  }
-  /* Label above value for each field. */
-  .table-scroll td[data-label]::before {
-    content: attr(data-label);
-    display: block;
-    font-size: 0.65rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    font-weight: 600;
-    margin-bottom: 4px;
-  }
-  /* First cell (asset symbol) — card header spans full width, no label prefix. */
-  .table-scroll td:first-child {
-    grid-column: 1 / -1;
-    font-size: 1.1rem;
-    font-weight: 600;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border-color);
-  }
-  /* Force nested content to wrap inside the 2-col grid cells. */
-  .table-scroll td * {
-    max-width: 100%;
-    word-break: break-word;
-  }
-}
+  body { padding: 1rem 0.75rem; }
 
-@media (max-width: 768px) {
-  body {
-    padding: 1rem 0.75rem;
-  }
-  /* Add gap between the app header (Ethereum pill) and main content (Viewing banner). */
-  .container > header {
-    margin-bottom: 16px;
-  }
-  .container > header h1 {
-    margin-bottom: 0;
-  }
-  .container > main {
-    margin-top: 16px;
-  }
-  .card {
-    padding: 0.75rem;
-    border-radius: 6px;
-  }
+  .card { padding: var(--space-3); border-radius: var(--radius-md); }
+
   .header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto;
     gap: 12px;
     align-items: center;
-    margin-bottom: 1.25rem;
-    padding-bottom: 0.75rem;
+    margin-bottom: var(--space-5);
+    padding-bottom: var(--space-3);
   }
-  .wallet-container {
-    display: flex !important;
-    flex-direction: row !important;
-    flex-wrap: nowrap !important;
-    align-items: center !important;
-    gap: 8px;
-    padding: 6px 8px;
-    border: 1px solid var(--border-color);
-    border-radius: 8px;
-    background: var(--bg-color);
-  }
-  .header-logo {
-    grid-column: 1;
-    grid-row: 1;
-    font-size: 1.15rem;
-    margin-left: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .header-tabs button {
-    padding: 6px 10px;
-    font-size: 12px;
-    white-space: normal !important;
-    text-align: center;
-    line-height: 1.1;
-  }
-  .disconnect-btn {
-    padding: 4px 8px;
-    font-size: 11px;
-  }
-  .header-wallet {
-    grid-column: 2;
-    grid-row: 1;
-    justify-self: end;
-  }
-  .header-tabs {
-    grid-column: 1;
-    grid-row: 2;
-    margin-left: 0;
-    display: flex;
-    gap: 8px;
-  }
-  .header-network {
-    grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
-    flex-wrap: nowrap;
-    display: flex;
-    gap: 6px;
-  }
-  .hide-on-mobile {
-    display: none !important;
-  }
-  .show-on-mobile {
-    display: inline !important;
-  }
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-  .stat div {
-    font-size: 1rem;
-  }
-  .stat label {
-    font-size: 0.7rem;
-  }
-  .asset-tables {
-    gap: 1.25rem;
-    margin-top: 1.25rem;
-  }
-  th, td {
-    padding: 0.5rem 0.4rem;
-  }
-}
 
+  .header-logo     { grid-column: 1; grid-row: 1; font-size: 1.15rem; margin-left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .header-tabs     { grid-column: 1; grid-row: 2; margin-left: 0; display: flex; gap: 8px; }
+  .header-wallet   { grid-column: 2; grid-row: 1; justify-self: end; }
+  .header-network  { grid-column: 2; grid-row: 2; justify-self: end; flex-wrap: nowrap; display: flex; gap: 6px; }
+
+  .header-tabs button { padding: 6px 10px; font-size: 12px; white-space: normal !important; text-align: center; line-height: 1.1; }
+
+  .wallet-container { display: flex !important; flex-direction: row !important; flex-wrap: nowrap !important; align-items: center !important; gap: 8px; padding: 6px 8px; }
+
+  .stats-grid { grid-template-columns: repeat(2, 1fr); gap: var(--space-4); margin-bottom: var(--space-4); }
+  .stat div   { font-size: var(--text-md); }
+  .stat label { font-size: var(--text-xs); }
+
+  .asset-tables { gap: var(--space-5); margin-top: var(--space-5); }
+
+  th, td { padding: 8px 6px; }
+
+  .dex-grid { grid-template-columns: 1fr; gap: 24px; }
+  .dex-grid > div:first-child { padding-right: 0 !important; border-right: none !important; border-bottom: 1px solid var(--color-border) !important; padding-bottom: 20px !important; }
+
+  .hide-on-mobile  { display: none !important; }
+  .show-on-mobile  { display: inline !important; }
+  .disconnect-btn  { padding: 4px 8px; font-size: 11px; }
+
+  /* Table → card stacking */
+  .table-scroll table,
+  .table-scroll thead,
+  .table-scroll tbody,
+  .table-scroll tr,
+  .table-scroll td { display: block; width: 100%; }
+
+  .table-scroll thead { display: none; }
+
+  .table-scroll tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 16px;
+    row-gap: 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl);
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+
+  .table-scroll td { padding: 0; border-bottom: none; text-align: left; min-width: 0; }
+
+  .table-scroll td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .table-scroll td:first-child {
+    grid-column: 1 / -1;
+    font-size: 1.1rem;
+    font-weight: 600;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .table-scroll td * { max-width: 100%; word-break: break-word; }
+}

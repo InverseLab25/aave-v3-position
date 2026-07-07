@@ -98,6 +98,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
     collateralUsd: 0,
     debtUsd: 0,
+    availableBorrowsUsd: 0,
     ltvPercent: 0,
     liquidationThreshold: 0,
     formattedHealthFactor: '0',
@@ -106,7 +107,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestPaidUsd: 0,
     totalPositionPnlUsd: 0,
     suppliedAssets: [] as any[],
-    borrowedAssets: [] as any[]
+    borrowedAssets: [] as any[],
+    availableReserves: [] as any[]
   }
 
   if (!targetAddress || !hasAaveConfig || !accountData || !uiData || !uiData[0].result || !uiData[1].result) {
@@ -116,7 +118,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   const [
     totalCollateralBase,
     totalDebtBase,
-    ,
+    availableBorrowsBase,
     currentLiquidationThreshold,
     ltv,
     healthFactor
@@ -124,6 +126,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
 
   const collateralUsd = Number(formatUnits(totalCollateralBase, 8))
   const debtUsd = Number(formatUnits(totalDebtBase, 8))
+  const availableBorrowsUsd = Number(formatUnits(availableBorrowsBase, 8))
   const ltvPercent = Number(ltv) / 100
   const liquidationThreshold = Number(currentLiquidationThreshold) / 10000
 
@@ -142,6 +145,18 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
 
   const suppliedAssets: any[] = []
   const borrowedAssets: any[] = []
+
+  const availableReserves = globalReserves.map((reserve: any) => ({
+    symbol: reserve.symbol,
+    underlyingAsset: reserve.underlyingAsset,
+    decimals: Number(reserve.decimals),
+    priceInUsd: (Number(reserve.priceInMarketReferenceCurrency) / 1e8).toString(),
+    apy: calculateAPY(reserve.liquidityRate) * 100,
+    borrowApy: calculateAPY(reserve.variableBorrowRate) * 100,
+    variableDebtTokenAddress: reserve.variableDebtTokenAddress,
+    aTokenAddress: reserve.aTokenAddress,
+  }))
+
 
   userReserves.forEach((uRes: any) => {
     if (uRes.scaledATokenBalance === 0n && uRes.scaledVariableDebt === 0n) return;
@@ -186,6 +201,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         valueUsd,
         priceInUsd: priceUsd.toString(),
         apy: apy * 100,
+        aTokenAddress: reserve.aTokenAddress,
+        usageAsCollateralEnabledOnUser: uRes.usageAsCollateralEnabledOnUser,
         interestEarnedTokens,
         interestEarnedUsd,
         positionPnl: {
@@ -231,6 +248,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         valueUsd,
         priceInUsd: priceUsd.toString(),
         apy: apy * 100,
+        variableDebtTokenAddress: reserve.variableDebtTokenAddress,
         interestPaidTokens,
         interestPaidUsd,
         positionPnl: {
@@ -259,6 +277,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
     collateralUsd,
     debtUsd,
+    availableBorrowsUsd,
     ltvPercent,
     liquidationThreshold,
     formattedHealthFactor,
@@ -267,6 +286,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestPaidUsd,
     totalPositionPnlUsd,
     suppliedAssets,
-    borrowedAssets
+    borrowedAssets,
+    availableReserves
   }
 }

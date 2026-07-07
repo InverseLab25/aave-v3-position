@@ -1,25 +1,12 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useChainId } from 'wagmi'
-import { parseUnits, maxUint256 } from 'viem'
-import { getDeleveragerAddress } from '../config/chains'
+import { useWriteContract, useAccount, useChainId, useConfig, useEstimateFeesPerGas } from 'wagmi'
+import { parseUnits, maxUint256, formatGwei } from 'viem'
+import { getChainConfig, getDeleveragerAddress } from '../config/chains'
+import aavePoolAbi from '../config/aavev3Abi.json'
+import { calculateAdjustedFees } from '../utils/gas'
+
+import { simulateAndWrite } from '../utils/contract'
 import { useDeleverageClose } from '../hooks/useDeleverageClose'
-
-const AAVE_POOL_ADDRESS = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
-
-// Minimal ABI for the same-asset Aave repay path.
-const poolAbi = [
-  {
-    inputs: [
-      { internalType: 'address', name: 'asset', type: 'address' },
-      { internalType: 'uint256', name: 'amount', type: 'uint256' },
-      { internalType: 'uint256', name: 'interestRateMode', type: 'uint256' },
-    ],
-    name: 'repayWithATokens',
-    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-] as const
 
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
 
@@ -41,7 +28,13 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const [logs, setLogs] = useState<string[]>([])
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
+  const config = useConfig()
   const deleverage = useDeleverageClose()
+  const chainConfig = getChainConfig(chainId)
+  const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
+
+  const { data: feeData } = useEstimateFeesPerGas()
+  const { adjustedMaxFeePerGas: uiMaxFee, adjustedMaxPriorityFeePerGas: uiMaxPriority } = calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
 
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
@@ -50,7 +43,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const log = (msg: string) => setLogs((prev) => [...prev, msg])
 
   const executeClose = async () => {
-    if (!address || !selectedCollateral) return
+    if (!address || !selectedCollateral || !poolAddress) return
 
     if (isSameAsset) {
       if (!amountStr) return
@@ -58,10 +51,10 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         setStep(1)
         const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
         const finalAmount = isMax ? maxUint256 : amountParsed
-        log(`Executing repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
-        const txHash = await writeContractAsync({
-          address: AAVE_POOL_ADDRESS,
-          abi: poolAbi,
+        log(`Simulating repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
+        const txHash = await simulateAndWrite(config, writeContractAsync, {
+          address: poolAddress,
+          abi: aavePoolAbi as any,
           functionName: 'repayWithATokens',
           args: [borrowedAsset.underlyingAsset, finalAmount, 2n],
         })
@@ -198,6 +191,19 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
             </p>
           )}
         </div>
+
+        {uiMaxFee && uiMaxPriority && (
+          <div style={{ marginTop: '20px', padding: '12px', backgroundColor: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', fontSize: '13px', color: '#4b5563' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <span>Max Fee (Estimated):</span>
+              <span style={{ fontWeight: '600' }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</span>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <span>Max Priority Fee:</span>
+              <span style={{ fontWeight: '600' }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</span>
+            </div>
+          </div>
+        )}
 
         {shownLogs.length > 0 && (
           <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#000', color: '#0f0', fontSize: '12px', fontFamily: 'monospace', maxHeight: '150px', overflowY: 'auto' }}>

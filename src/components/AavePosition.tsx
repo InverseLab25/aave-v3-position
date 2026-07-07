@@ -2,6 +2,11 @@ import { useState, useEffect } from 'react'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
 import { ClosePositionModal } from './ClosePositionModal'
+import { SupplyWithdrawModal } from './SupplyWithdrawModal'
+import { AssetsToSupplyModal } from './AssetsToSupplyModal'
+import { AssetsToBorrowModal } from './AssetsToBorrowModal'
+import { BorrowRepayModal } from './BorrowRepayModal'
+import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 
@@ -18,6 +23,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     isLoading,
     collateralUsd,
     debtUsd,
+    availableBorrowsUsd,
     ltvPercent,
     liquidationThreshold,
     formattedHealthFactor,
@@ -25,10 +31,16 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     totalInterestEarnedUsd,
     totalInterestPaidUsd,
     suppliedAssets,
-    borrowedAssets
+    borrowedAssets,
+    availableReserves,
+    chainId
   } = useAavePositions({ viewAddress, viewChainId })
 
   const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
+  const [supplyWithdrawTarget, setSupplyWithdrawTarget] = useState<{ asset: any, tab: 'supply' | 'withdraw' } | null>(null)
+  const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
+  const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
+  const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
 
   const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
 
@@ -124,24 +136,21 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     return (
       <td className="number" data-label="Value (USD)">
         ${a.valueUsd.toFixed(2)}
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+        <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '2px' }}>
           @ ${Number(a.priceInUsd).toFixed(2)}
         </div>
-        <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+        <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '4px' }}>
           <button
             type="button"
             onClick={() => openEditor(rowKey, effectiveAvgEntry)}
             title={side === 'supply' ? 'Click to set your own avg buy price' : 'Click to set your own avg borrow price'}
+            className="btn-ghost"
             style={{
-              background: 'transparent',
-              border: 'none',
               padding: '2px 4px',
-              cursor: 'pointer',
-              color: isOverride ? '#2563eb' : 'inherit',
+              color: isOverride ? T.primary : 'inherit',
               fontSize: '0.75rem',
               textDecoration: 'underline dotted',
               textUnderlineOffset: '2px',
-              fontFamily: 'inherit',
             }}
           >
             Avg: {effectiveAvgEntry > 0 ? `$${effectiveAvgEntry.toFixed(2)}` : '—'}
@@ -184,7 +193,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   /** P&L cell with breakdown on separate lines. Shared by both tables. */
   const PnlCell = ({ r, side }: { r: ReturnType<typeof applyOverride>; side: 'supply' | 'borrow' }) => {
     if (!r || r.effectiveAvgEntry <= 0) {
-      return <td className="number" data-label="Position P&L"><span style={{ color: 'var(--text-secondary)' }}>—</span></td>
+      return <td className="number" data-label="Position P&L"><span style={{ color: T.textMuted }}>—</span></td>
     }
     const yieldLabel = side === 'supply' ? 'Yield' : 'Cost'
     return (
@@ -192,7 +201,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
         <div className={r.totalPnlUsd >= 0 ? 'text-success' : 'text-danger'}>
           {fmtSigned(r.totalPnlUsd)}
         </div>
-        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+        <div style={{ fontSize: '0.75rem', color: T.textMuted, lineHeight: 1.4 }}>
           <div>Price {fmtSigned(r.priceGainUsd)}</div>
           <div>{yieldLabel} {fmtSigned(r.interestUsd ?? 0)}</div>
           {r.realizedPnlUsd !== undefined && r.realizedPnlUsd !== 0 && (
@@ -203,40 +212,38 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     )
   }
 
+  const ViewModeBanner = () => {
+    if (!isViewMode || !viewedAddress) return null;
+    return (
+      <div className="alert alert-info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: T.radius.sm }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
+        </span>
+        <button className="btn-secondary" onClick={exitViewMode} style={{ padding: '6px 12px', fontSize: T.fontSize.sm, flexShrink: 0, marginLeft: T.space[2] }}>
+          Exit view mode
+        </button>
+      </div>
+    )
+  }
+
   if (!isConnected) return null
   if (isLoading) return <div>Loading Aave Position...</div>
   if (suppliedAssets.length === 0 && borrowedAssets.length === 0 && collateralUsd === 0) {
     return (
       <div className="dashboard-container">
-        {isViewMode && viewedAddress && (
-          <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontSize: '14px', color: '#1e40af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
-            </span>
-            <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500, flexShrink: 0, marginLeft: '8px' }}>
-              Exit view mode
-            </button>
-          </div>
-        )}
+        <ViewModeBanner />
         <div>No Aave data found for this address.</div>
       </div>
     )
   }
 
   const netInterestUsd = totalInterestEarnedUsd - totalInterestPaidUsd
+  const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === 'WETH')?.priceInUsd || 0)
 
   return (
     <div className="dashboard-container">
-      {isViewMode && viewedAddress && (
-        <div style={{ background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '12px 16px', marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '14px', color: '#1e40af', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: '4px', fontSize: '13px' }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
-          </span>
-          <button onClick={exitViewMode} style={{ fontSize: '13px', padding: '6px 12px', border: '1px solid #93c5fd', background: '#fff', color: '#1e40af', borderRadius: '6px', cursor: 'pointer', fontWeight: 500, flexShrink: 0, marginLeft: '8px' }}>
-            Exit view mode
-          </button>
-        </div>
-      )}
+      <ViewModeBanner />
+
       <div className="card">
         <div className="header">
           <h1>Aave V3 Portfolio</h1>
@@ -286,218 +293,258 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
 
       <div className="asset-tables">
         <div className="card">
-          <div className="header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
-            <h1 style={{ fontSize: '1.25rem' }}>Supplied Assets</h1>
+          <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: T.space[4], paddingBottom: T.space[3] }}>
+            <h2 style={{ fontSize: T.fontSize.lg, margin: 0 }}>Supplied Assets</h2>
+            {!isViewMode && (
+              <button
+                className="btn-primary"
+                onClick={() => setIsAssetsToSupplyModalOpen(true)}
+              >
+                Supply
+              </button>
+            )}
           </div>
           {suppliedAssets.length === 0 ? (
-            <p style={{ color: 'var(--text-secondary)' }}>No assets supplied.</p>
+            <p className="text-muted">No assets supplied.</p>
           ) : (
             <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th>Balance</th>
-                  <th>Value (USD)</th>
-                  <th>APY</th>
-                  <th>Liquidation Price</th>
-                  <th>Interest Earned</th>
-                  <th>Position P&amp;L</th>
-                </tr>
-              </thead>
-              <tbody>
-                {suppliedAssets.map((a: any, i: number) => {
-                  const otherCollateralUsd = collateralUsd - a.valueUsd;
-                  const requiredThisAssetUsd = liquidationThreshold > 0 ? (debtUsd / liquidationThreshold) - otherCollateralUsd : 0;
-                  const liquidationPrice = requiredThisAssetUsd > 0 ? (requiredThisAssetUsd / a.amount) : 0;
-                  const r = applyOverride(a, 'supply');
+              <table>
+                <thead>
+                  <tr>
+                    <th>Asset</th>
+                    <th>Balance</th>
+                    <th>Value (USD)</th>
+                    <th>APY</th>
+                    <th>Liquidation Price</th>
+                    <th>Interest Earned</th>
+                    <th>Position P&amp;L</th>
+                    {!isViewMode && <th style={{ textAlign: 'right' }}>Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {suppliedAssets.map((a: any, i: number) => {
+                    const otherCollateralUsd = collateralUsd - a.valueUsd;
+                    const requiredThisAssetUsd = liquidationThreshold > 0 ? (debtUsd / liquidationThreshold) - otherCollateralUsd : 0;
+                    const liquidationPrice = requiredThisAssetUsd > 0 ? (requiredThisAssetUsd / a.amount) : 0;
+                    const r = applyOverride(a, 'supply');
 
-                  return (
-                    <tr key={i}>
-                      <td>{a.symbol}</td>
-                      <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                      <ValueCell a={a} side="supply" r={r} />
-                      <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
-                      <td className="number" data-label="Liquidation Price">${liquidationPrice > 0 ? liquidationPrice.toFixed(2) : 'Safe'}</td>
-                      <td className="number text-success" data-label="Interest Earned">
-                        {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          +${a.interestEarnedUsd.toFixed(2)}
-                        </span>
-                      </td>
-                      <PnlCell r={r} side="supply" />
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                    return (
+                      <tr key={i}>
+                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
+                        <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
+                        <ValueCell a={a} side="supply" r={r} />
+                        <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
+                        <td className="number" data-label="Liquidation Price">${liquidationPrice > 0 ? liquidationPrice.toFixed(2) : 'Safe'}</td>
+                        <td className="number text-success" data-label="Interest Earned">
+                          {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
+                          <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
+                            +${a.interestEarnedUsd.toFixed(2)}
+                          </span>
+                        </td>
+                        <PnlCell r={r} side="supply" />
+                        {!isViewMode && (
+                          <td data-label="Actions">
+                            <div style={{ display: 'flex', gap: T.space[2], alignItems: 'center', justifyContent: 'flex-end' }}>
+                              <button
+                                onClick={() => setSupplyWithdrawTarget({ asset: a, tab: 'withdraw' })}
+                                className="btn-secondary"
+                                style={{ padding: '6px 16px', fontSize: T.fontSize.sm, fontWeight: 600 }}
+                              >
+                                Withdraw
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
 
         <div className="card">
-          <div className="header" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 0 }}>
-            <h1 style={{ fontSize: '1.25rem' }}>Borrowed Assets</h1>
+          <div className="header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: T.space[4], paddingBottom: T.space[3] }}>
+            <h2 style={{ fontSize: T.fontSize.lg, margin: 0 }}>Borrowed Assets</h2>
+            {!isViewMode && (
+              <button
+                className="btn-primary"
+                onClick={() => setIsAssetsToBorrowModalOpen(true)}
+              >
+                Borrow
+              </button>
+            )}
           </div>
           {borrowedAssets.length === 0 ? (
-            <p style={{ color: 'var(--text-secondary)' }}>No assets borrowed.</p>
+            <p className="text-muted">No assets borrowed.</p>
           ) : (
             <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Asset</th>
-                  <th>Balance</th>
-                  <th>Value (USD)</th>
-                  <th>APY</th>
-                  <th>Interest Paid</th>
-                  <th>Position P&amp;L</th>
-                  {!isViewMode && <th>Actions</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {borrowedAssets.map((a: any, i: number) => {
-                  const r = applyOverride(a, 'borrow');
-                  return (
-                    <tr key={i}>
-                      <td>{a.symbol}</td>
-                      <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                      <ValueCell a={a} side="borrow" r={r} />
-                      <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
-                      <td className="number text-danger" data-label="Interest Paid">
-                        {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          -${a.interestPaidUsd.toFixed(2)}
-                        </span>
-                      </td>
-                      <PnlCell r={r} side="borrow" />
-                      {!isViewMode && (
-                        <td data-label="Actions">
-                          <button
-                            onClick={() => setCloseTarget(a)}
-                            style={{
-                              padding: '6px 12px',
-                              border: 'none',
-                              borderRadius: '6px',
-                              background: '#111',
-                              color: '#fff',
-                              cursor: 'pointer',
-                              fontSize: '0.8rem',
-                              fontWeight: 600,
-                            }}
-                          >
-                            Close
-                          </button>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Asset</th>
+                    <th>Balance</th>
+                    <th>Value (USD)</th>
+                    <th>APY</th>
+                    <th>Interest Paid</th>
+                    <th>Position P&amp;L</th>
+                    {!isViewMode && <th style={{ textAlign: 'right' }}>Actions</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {borrowedAssets.map((a: any, i: number) => {
+                    const r = applyOverride(a, 'borrow');
+                    return (
+                      <tr key={i}>
+                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
+                        <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
+                        <ValueCell a={a} side="borrow" r={r} />
+                        <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
+                        <td className="number text-danger" data-label="Interest Paid">
+                          {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
+                          <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
+                            -${a.interestPaidUsd.toFixed(2)}
+                          </span>
                         </td>
-                      )}
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+                        <PnlCell r={r} side="borrow" />
+                        {!isViewMode && (
+                          <td data-label="Actions">
+                            <div style={{ display: 'flex', gap: T.space[2], alignItems: 'center', justifyContent: 'flex-end' }}>
+                              <button
+                                onClick={() => setBorrowRepayTarget({ asset: a, tab: 'repay' })}
+                                className="btn-secondary"
+                                style={{ padding: '6px 12px', fontSize: T.fontSize.sm, fontWeight: 600 }}
+                              >
+                                Repay
+                              </button>
+                              <button
+                                onClick={() => setCloseTarget(a)}
+                                className="btn-primary"
+                                style={{ padding: '6px 12px', fontSize: T.fontSize.sm, fontWeight: 600, background: T.text, borderColor: T.text }}
+                              >
+                                Close
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
       </div>
 
       {editCtx && (
-        <div
-          onClick={cancelDraft}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 1000,
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#fff', borderRadius: '12px', padding: '24px',
-              width: '360px', maxWidth: '90vw',
-              boxShadow: '0 10px 40px rgba(0,0,0,0.2)',
-            }}
-          >
-            <h3 style={{ margin: '0 0 4px', fontSize: '1.1rem' }}>
+        <div className="modal-overlay" onClick={cancelDraft}>
+          <div style={{ ...modalStyle, maxWidth: '360px', padding: T.space[5] }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: '0 0 4px', fontSize: T.fontSize.lg }}>
               Set avg {editCtx.side === 'supply' ? 'buy' : 'borrow'} price
             </h3>
-            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+            <div style={{ fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[4] }}>
               {editCtx.asset.symbol} · {editCtx.side}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem', marginBottom: '16px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Current price</span>
-                <span>${editCtx.currentPrice.toFixed(4)}</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: T.space[2], fontSize: T.fontSize.sm, marginBottom: T.space[4] }}>
+              <div className="info-row">
+                <span className="info-row-label">Current price</span>
+                <span className="info-row-value">${editCtx.currentPrice.toFixed(4)}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>On-chain avg (from tx history)</span>
-                <span>${editCtx.onChainAvg.toFixed(4)}</span>
+              <div className="info-row">
+                <span className="info-row-label">On-chain avg (from tx history)</span>
+                <span className="info-row-value">${editCtx.onChainAvg.toFixed(4)}</span>
               </div>
               {editCtx.isOverride && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', color: '#2563eb' }}>
+                <div className="info-row" style={{ color: T.primary }}>
                   <span>Your current override</span>
-                  <span>${(overrides[editCtx.rowKey] ?? 0).toFixed(4)}</span>
+                  <span style={{ fontWeight: 600 }}>${(overrides[editCtx.rowKey] ?? 0).toFixed(4)}</span>
                 </div>
               )}
             </div>
 
-            <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 500, marginBottom: '6px' }}>
+            <label style={labelStyle}>
               Your avg price (USD)
             </label>
             <input
-              type="number"
-              step="any"
-              value={draftValue}
-              autoFocus
+              type="number" step="any" value={draftValue} autoFocus
               onChange={e => setDraftValue(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter') saveDraft(editCtx.rowKey)
                 if (e.key === 'Escape') cancelDraft()
               }}
               placeholder={editCtx.onChainAvg > 0 ? editCtx.onChainAvg.toFixed(4) : '0.00'}
-              style={{
-                width: '100%', padding: '8px 10px', fontSize: '0.9rem',
-                border: '1px solid var(--border-color)', borderRadius: '6px',
-                boxSizing: 'border-box',
-              }}
+              style={inputStyle}
             />
 
-            <div style={{ display: 'flex', gap: '8px', marginTop: '20px', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: T.space[2], marginTop: T.space[5], justifyContent: 'flex-end' }}>
               {editCtx.isOverride && (
                 <button
                   onClick={() => resetOverride(editCtx.rowKey)}
-                  style={{
-                    padding: '8px 14px', fontSize: '0.85rem', cursor: 'pointer',
-                    border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
-                    borderRadius: '6px', marginRight: 'auto',
-                  }}
+                  style={{ marginRight: 'auto', padding: '8px 14px', fontSize: T.fontSize.sm, background: T.dangerBg, color: T.danger, border: `1px solid ${T.dangerBorder}`, borderRadius: T.radius.md, cursor: 'pointer' }}
                 >
                   Reset to on-chain
                 </button>
               )}
               <button
+                className="btn-secondary"
                 onClick={cancelDraft}
-                style={{
-                  padding: '8px 14px', fontSize: '0.85rem', cursor: 'pointer',
-                  border: '1px solid var(--border-color)', background: '#fff',
-                  borderRadius: '6px',
-                }}
+                style={{ padding: '8px 14px', fontSize: T.fontSize.sm }}
               >
                 Cancel
               </button>
               <button
+                className="btn-primary"
                 onClick={() => saveDraft(editCtx.rowKey)}
-                style={{
-                  padding: '8px 14px', fontSize: '0.85rem', cursor: 'pointer',
-                  border: 'none', background: '#2563eb', color: '#fff',
-                  borderRadius: '6px', fontWeight: 500,
-                }}
+                style={{ padding: '8px 14px', fontSize: T.fontSize.sm }}
               >
                 Save
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {supplyWithdrawTarget && (
+        <SupplyWithdrawModal
+          asset={supplyWithdrawTarget.asset}
+          initialTab={supplyWithdrawTarget.tab}
+          ethPriceUsd={ethPriceUsd}
+          onClose={() => setSupplyWithdrawTarget(null)}
+        />
+      )}
+
+      {isAssetsToSupplyModalOpen && (
+        <AssetsToSupplyModal
+          chainId={chainId}
+          availableReserves={availableReserves}
+          ethPriceUsd={ethPriceUsd}
+          onClose={() => setIsAssetsToSupplyModalOpen(false)}
+        />
+      )}
+
+      {isAssetsToBorrowModalOpen && (
+        <AssetsToBorrowModal
+          chainId={chainId}
+          availableReserves={availableReserves}
+          ethPriceUsd={ethPriceUsd}
+          availableBorrowsUsd={availableBorrowsUsd}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
+          onClose={() => setIsAssetsToBorrowModalOpen(false)}
+        />
+      )}
+
+      {borrowRepayTarget && (
+        <BorrowRepayModal
+          asset={borrowRepayTarget.asset}
+          initialTab={borrowRepayTarget.tab}
+          ethPriceUsd={ethPriceUsd}
+          onClose={() => setBorrowRepayTarget(null)}
+        />
       )}
 
       {closeTarget && (
