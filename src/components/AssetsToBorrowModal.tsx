@@ -139,7 +139,14 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
               <tbody>
                 {borrowOptions.map((opt) => (
                   <tr key={opt.symbol}>
-                    <td style={{ paddingLeft: T.space[5], fontWeight: 600 }}>{opt.symbol}</td>
+                    <td style={{ paddingLeft: T.space[5] }}>
+                      <div style={{ fontWeight: 600 }}>{opt.symbol}</div>
+                      {opt.symbol !== 'ETH' && (
+                        <div style={{ fontSize: '10px', color: T.textMuted, fontFamily: T.font.mono, marginTop: '2px' }} title={opt.underlyingAsset}>
+                          {opt.underlyingAsset.slice(0, 6)}…{opt.underlyingAsset.slice(-4)}
+                        </div>
+                      )}
+                    </td>
                     <td className="text-danger" style={{ fontFamily: T.font.mono }}>{opt.borrowApy?.toFixed(2) || '0.00'}%</td>
                     <td className="align-right-desktop" style={{ paddingRight: T.space[5] }}>
                       <button

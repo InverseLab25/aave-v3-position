@@ -47,7 +47,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
 
   const { data: balances } = useReadContracts({
     contracts: supplyOptions.map(opt => ({
-      address: opt.underlyingAsset as `0x${string}`,
+      address: (opt.underlyingAsset === 'native' ? '0x0000000000000000000000000000000000000000' : opt.underlyingAsset) as `0x${string}`,
       abi: erc20Abi, functionName: 'balanceOf' as const,
       args: address ? [address] : undefined,
     })),
@@ -149,7 +149,14 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                   const bal = getWalletBalance(opt, i)
                   return (
                     <tr key={opt.symbol}>
-                      <td style={{ paddingLeft: T.space[5], fontWeight: 600 }}>{opt.symbol}</td>
+                      <td style={{ paddingLeft: T.space[5] }}>
+                        <div style={{ fontWeight: 600 }}>{opt.symbol}</div>
+                        {opt.symbol !== 'ETH' && (
+                          <div style={{ fontSize: '10px', color: T.textMuted, fontFamily: T.font.mono, marginTop: '2px' }} title={opt.underlyingAsset}>
+                            {opt.underlyingAsset.slice(0, 6)}…{opt.underlyingAsset.slice(-4)}
+                          </div>
+                        )}
+                      </td>
                       <td style={{ fontFamily: T.font.mono }}>{bal > 0 ? bal.toFixed(4) : '0.00'}</td>
                       <td className="text-success" style={{ fontFamily: T.font.mono }}>{opt.apy?.toFixed(2) ?? '—'}%</td>
                       <td className="align-right-desktop" style={{ paddingRight: T.space[5] }}>
