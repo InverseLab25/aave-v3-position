@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { useAccount, useBalance, useReadContracts, useReadContract, useWriteContract, useWaitForTransactionReceipt, useConfig, useEstimateFeesPerGas } from 'wagmi'
-import { formatUnits, parseUnits, maxUint256, erc20Abi, formatGwei } from 'viem'
+import { useAccount, useBalance, useReadContracts, useReadContract, useWriteContract, useWaitForTransactionReceipt, useConfig } from 'wagmi'
+import { formatUnits, parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { calculateAdjustedFees } from '../utils/gas'
+import { useAdjustedGas } from '../hooks/useAdjustedGas'
+import { healthFactor } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
+import { GasInfoCard } from './GasInfoCard'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, infoCardStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface AssetsToSupplyModalProps {
   chainId: number
@@ -33,9 +35,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { data: feeData } = useEstimateFeesPerGas()
-  const { adjustedMaxFeePerGas: uiMaxFee, adjustedMaxPriorityFeePerGas: uiMaxPriority } =
-    calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(250000n /* Aave supply */, ethPriceUsd, parseFloat(amountStr) > 0)
 
   const { data: ethBalance } = useBalance({ address })
 
@@ -45,22 +45,35 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const supplyOptions = [...filteredReserves]
   if (wethReserve) supplyOptions.unshift({ ...wethReserve, symbol: 'ETH', underlyingAsset: 'native' })
 
-  const { data: balances } = useReadContracts({
-    contracts: supplyOptions.map(opt => ({
-      address: (opt.underlyingAsset === 'native' ? '0x0000000000000000000000000000000000000000' : opt.underlyingAsset) as `0x${string}`,
+  // Native ETH uses useBalance above; only ERC-20s go through the multicall
+  // (a balanceOf on the zero address always fails and wastes a call slot).
+  const tokenOptions = supplyOptions.filter(o => o.underlyingAsset !== 'native')
+  const { data: tokenBalances } = useReadContracts({
+    contracts: tokenOptions.map(opt => ({
+      address: opt.underlyingAsset as `0x${string}`,
       abi: erc20Abi, functionName: 'balanceOf' as const,
       args: address ? [address] : undefined,
     })),
     query: { enabled: !!address },
   })
 
-  const getWalletBalance = (opt: any, index: number) => {
-    if (opt.symbol === 'ETH') return ethBalance ? Number(formatUnits(ethBalance.value, ethBalance.decimals)) : 0
-    const bal = balances?.[index]?.result as bigint | undefined
-    return bal ? Number(formatUnits(bal, opt.decimals)) : 0
+  const balanceByAddress: Record<string, bigint> = {}
+  tokenOptions.forEach((opt, i) => {
+    balanceByAddress[opt.underlyingAsset.toLowerCase()] = (tokenBalances?.[i]?.result as bigint | undefined) ?? 0n
+  })
+
+  const getRawBalance = (opt: any): bigint => {
+    if (opt.symbol === 'ETH') return ethBalance?.value ?? 0n
+    return balanceByAddress[opt.underlyingAsset.toLowerCase()] ?? 0n
   }
 
-  const { data: allowance } = useReadContract({
+  const getWalletBalance = (opt: any) => {
+    const raw = getRawBalance(opt)
+    const decimals = opt.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : opt.decimals
+    return Number(formatUnits(raw, decimals))
+  }
+
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: selectedAsset?.underlyingAsset !== 'native' ? selectedAsset?.underlyingAsset : undefined,
     abi: erc20Abi, functionName: 'allowance',
     args: (address && selectedAsset && selectedAsset.underlyingAsset !== 'native' && poolAddress) ? [address, poolAddress] : undefined,
@@ -92,6 +105,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
           functionName: 'approve', args: [poolAddress, maxUint256],
         })
         setTxHash(hash); setStep(2); setStatusMsg('Approval sent. Click Supply again to continue.')
+        await refetchAllowance()
         return
       }
       setStep(3); setStatusMsg('Simulating supply…')
@@ -109,18 +123,14 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const isProcessing = isWaitingTx || step === 1 || step === 3
   const isError = statusMsg.startsWith('Error')
 
-  const selectedIndex = selectedAsset ? supplyOptions.findIndex(o => o.symbol === selectedAsset.symbol) : -1
-  const selectedWalletBalance = selectedAsset ? getWalletBalance(selectedAsset, selectedIndex) : 0
+  const selectedWalletBalance = selectedAsset ? getWalletBalance(selectedAsset) : 0
   const amountNum = parseFloat(amountStr) || 0
   const isInsufficient = selectedAsset && amountNum > selectedWalletBalance
 
-  const assumedGasLimit = 250000n // Rough estimate for Aave supply
-  const estimatedFeeUsd = (uiMaxFee && ethPriceUsd > 0) ? Number(formatUnits(uiMaxFee * assumedGasLimit, 18)) * ethPriceUsd : 0
-
   const supplyUsd = amountNum * (selectedAsset?.priceInUsd ? parseFloat(selectedAsset.priceInUsd) : 0)
-  const currentHealthFactor = debtUsd > 0 ? ((collateralUsd * liquidationThreshold) / debtUsd).toFixed(2) : '∞'
-  const newHealthFactor = debtUsd > 0 && selectedAsset 
-    ? (((collateralUsd * liquidationThreshold) + (supplyUsd * selectedAsset.liquidationThreshold)) / debtUsd).toFixed(2)
+  const currentHealthFactor = healthFactor(collateralUsd * liquidationThreshold, debtUsd)
+  const newHealthFactor = selectedAsset
+    ? healthFactor(collateralUsd * liquidationThreshold + supplyUsd * selectedAsset.liquidationThreshold, debtUsd)
     : '∞'
 
   return (
@@ -145,8 +155,8 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                 </tr>
               </thead>
               <tbody>
-                {supplyOptions.map((opt, i) => {
-                  const bal = getWalletBalance(opt, i)
+                {supplyOptions.map((opt) => {
+                  const bal = getWalletBalance(opt)
                   return (
                     <tr key={opt.symbol}>
                       <td style={{ paddingLeft: T.space[5] }}>
@@ -196,35 +206,18 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                   onBlur={e => (e.currentTarget.style.borderColor = T.border)}
                 />
                 <button
-                  onClick={() => setAmountStr(selectedWalletBalance.toString())}
+                  onClick={() => setAmountStr(formatUnits(getRawBalance(selectedAsset), selectedAsset.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : selectedAsset.decimals))}
                   style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
                 >MAX</button>
               </div>
 
-              {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
-                <div style={infoCardStyle}>
-                  {amountNum > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
-                      <span>Health Factor</span>
-                      <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
-                        {currentHealthFactor} → {newHealthFactor}
-                      </span>
-                    </div>
-                  )}
-                  {uiMaxFee && uiMaxPriority && (
-                    <>
-                      <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', marginBottom: T.space[2] }}>
-                        <span>Estimated Gas</span>
-                        {estimatedFeeUsd > 0 && <span style={{ color: T.text, fontWeight: 700, fontSize: T.fontSize.base }}>~${estimatedFeeUsd.toFixed(2)}</span>}
-                      </div>
-                      <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
-                        <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
-                        <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+              <GasInfoCard
+                maxFee={maxFee}
+                maxPriority={maxPriority}
+                estimatedFeeUsd={estimatedFeeUsd}
+                currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
+                newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+              />
 
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}
 

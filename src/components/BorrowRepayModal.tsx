@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useReadContract, useWaitForTransactionReceipt, useConfig, useEstimateFeesPerGas, useBalance } from 'wagmi'
-import { parseUnits, maxUint256, erc20Abi, formatGwei, formatUnits } from 'viem'
+import { useWriteContract, useAccount, useReadContract, useWaitForTransactionReceipt, useConfig, useBalance } from 'wagmi'
+import { parseUnits, maxUint256, erc20Abi, formatUnits } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { calculateAdjustedFees } from '../utils/gas'
+import { useAdjustedGas } from '../hooks/useAdjustedGas'
+import { healthFactor } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
+import { GasInfoCard } from './GasInfoCard'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, infoCardStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 const RATE_MODE = 2n
 
@@ -42,9 +44,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { data: feeData } = useEstimateFeesPerGas()
-  const { adjustedMaxFeePerGas: uiMaxFee, adjustedMaxPriorityFeePerGas: uiMaxPriority } =
-    calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow/repay */, ethPriceUsd, parseFloat(amountStr) > 0)
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
@@ -109,9 +109,16 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, address], value: amountParsed })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
-        if (allowance !== undefined && allowance < amountParsed) {
+        // For MAX repay we send maxUint256, and Aave pulls the *current* debt
+        // (snapshot + interest accrued since load), so the approval must cover
+        // more than `amountParsed`. Approve maxUint256 to guarantee it clears.
+        const approveAmount = finalAmount === maxUint256 ? maxUint256 : amountParsed
+        // Treat an unresolved read as zero so we approve rather than skipping
+        // straight to a repay that would revert on insufficient allowance.
+        const currentAllowance = (allowance as bigint) ?? 0n
+        if (currentAllowance < approveAmount) {
           log('Simulating approval…')
-          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.underlyingAsset, abi: erc20Abi, functionName: 'approve', args: [poolAddress, amountParsed] })
+          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.underlyingAsset, abi: erc20Abi, functionName: 'approve', args: [poolAddress, approveAmount] })
           log('Approved — click Repay again.'); setTxHash(approveHash); setStep(0); await refetchAllowance(); return
         }
         log('Simulating repay…')
@@ -136,14 +143,11 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const isInsufficient = isInsufficientRepay
   const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
-  const assumedGasLimit = 300000n // Rough estimate for Aave borrow/repay
-  const estimatedFeeUsd = (uiMaxFee && ethPriceUsd > 0) ? Number(formatUnits(uiMaxFee * assumedGasLimit, 18)) * ethPriceUsd : 0
-
   const borrowRepayUsd = amountNum * (asset.priceInUsd ? parseFloat(asset.priceInUsd) : 0)
-  const currentHealthFactor = debtUsd > 0 ? ((collateralUsd * liquidationThreshold) / debtUsd).toFixed(2) : '∞'
-  const newHealthFactor = activeTab === 'borrow' 
-    ? (debtUsd + borrowRepayUsd > 0 ? ((collateralUsd * liquidationThreshold) / (debtUsd + borrowRepayUsd)).toFixed(2) : '∞')
-    : (debtUsd - borrowRepayUsd > 0 ? ((collateralUsd * liquidationThreshold) / (debtUsd - borrowRepayUsd)).toFixed(2) : '∞')
+  const currentHealthFactor = healthFactor(collateralUsd * liquidationThreshold, debtUsd)
+  const newHealthFactor = activeTab === 'borrow'
+    ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowRepayUsd)
+    : healthFactor(collateralUsd * liquidationThreshold, debtUsd - borrowRepayUsd)
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -199,31 +203,14 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             )}
           </div>
 
-          {/* Gas Info */}
-          {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
-            <div style={infoCardStyle}>
-              {amountNum > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
-                  <span>Health Factor</span>
-                  <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
-                    {currentHealthFactor} → {newHealthFactor}
-                  </span>
-                </div>
-              )}
-              {uiMaxFee && uiMaxPriority && (
-                <>
-                  <div style={{ ...labelStyle, display: 'flex', justifyContent: 'space-between', marginBottom: T.space[2] }}>
-                    <span>Estimated Gas</span>
-                    {estimatedFeeUsd > 0 && <span style={{ color: T.text, fontWeight: 700, fontSize: T.fontSize.base }}>~${estimatedFeeUsd.toFixed(2)}</span>}
-                  </div>
-                  <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.sm }}>
-                    <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
-                    <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+          {/* Gas + health factor */}
+          <GasInfoCard
+            maxFee={maxFee}
+            maxPriority={maxPriority}
+            estimatedFeeUsd={estimatedFeeUsd}
+            currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
+            newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+          />
 
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
 

@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useConfig, useEstimateFeesPerGas, useReadContract } from 'wagmi'
-import { parseUnits, formatGwei, formatUnits, maxUint256 } from 'viem'
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useConfig, useReadContract } from 'wagmi'
+import { parseUnits, maxUint256 } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { calculateAdjustedFees } from '../utils/gas'
+import { useAdjustedGas } from '../hooks/useAdjustedGas'
+import { healthFactor } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
+import { GasInfoCard } from './GasInfoCard'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, infoCardStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface AssetsToBorrowModalProps {
   chainId: number
@@ -40,9 +42,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { data: feeData } = useEstimateFeesPerGas()
-  const { adjustedMaxFeePerGas: uiMaxFee, adjustedMaxPriorityFeePerGas: uiMaxPriority } =
-    calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0)
 
   const targetSymbols = ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
@@ -105,18 +105,11 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const maxBorrowAmount = selectedAsset && selectedAsset.priceInUsd > 0 ? (availableBorrowsUsd / Number(selectedAsset.priceInUsd)) * 0.99 : 0 // 99% safety margin
   const isInsufficient = amountNum > maxBorrowAmount
 
-  let newHealthFactor = '∞'
-  const currentHealthFactor = debtUsd > 0 ? ((collateralUsd * liquidationThreshold) / debtUsd).toFixed(2) : '∞'
-  if (collateralUsd > 0) {
-    const borrowAmountUsd = amountNum * (Number(selectedAsset?.priceInUsd) || 0)
-    const newDebtUsd = debtUsd + borrowAmountUsd
-    if (newDebtUsd > 0) {
-      newHealthFactor = ((collateralUsd * liquidationThreshold) / newDebtUsd).toFixed(2)
-    }
-  }
-
-  const assumedGasLimit = 300000n // Rough estimate for Aave borrow
-  const estimatedFeeUsd = (uiMaxFee && ethPriceUsd > 0) ? Number(formatUnits(uiMaxFee * assumedGasLimit, 18)) * ethPriceUsd : 0
+  const borrowAmountUsd = amountNum * (Number(selectedAsset?.priceInUsd) || 0)
+  const currentHealthFactor = healthFactor(collateralUsd * liquidationThreshold, debtUsd)
+  const newHealthFactor = collateralUsd > 0
+    ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowAmountUsd)
+    : '∞'
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -193,30 +186,13 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                 >MAX</button>
               </div>
 
-              {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
-                <div style={infoCardStyle}>
-                  {amountNum > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
-                      <span>Health Factor</span>
-                      <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
-                        {currentHealthFactor} → {newHealthFactor}
-                      </span>
-                    </div>
-                  )}
-                  {uiMaxFee && uiMaxPriority && (
-                    <>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, fontWeight: 500, color: T.text, marginBottom: T.space[2] }}>
-                        <span>Estimated Gas</span>
-                        {estimatedFeeUsd > 0 && <span style={{ color: T.text, fontWeight: 700, fontSize: T.fontSize.base }}>~${estimatedFeeUsd.toFixed(2)}</span>}
-                      </div>
-                      <div style={{ display: 'flex', gap: T.space[6], fontSize: T.fontSize.xs }}>
-                        <span style={{ color: T.textMuted }}>Max fee: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</strong></span>
-                        <span style={{ color: T.textMuted }}>Priority: <strong style={{ color: T.text, fontFamily: T.font.mono }}>{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</strong></span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
+              <GasInfoCard
+                maxFee={maxFee}
+                maxPriority={maxPriority}
+                estimatedFeeUsd={estimatedFeeUsd}
+                currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
+                newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+              />
 
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}
 

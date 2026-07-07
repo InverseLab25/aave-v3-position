@@ -7,7 +7,7 @@
  *
  * This helper combines three steps into one call:
  *   1. estimateFeesPerGas  — fetch current EIP-1559 base + priority fees
- *   2. calculateAdjustedFees — apply multipliers (base ×1.2, priority ×10)
+ *   2. calculateAdjustedFees — apply multipliers (base ×1.2, priority ×2)
  *   3. simulateContract    — dry-run the call; throws with revert reason on failure
  *   4. writeContractAsync  — send the real transaction using the simulated request
  */
@@ -42,7 +42,7 @@ export async function simulateAndWrite(
   // 1. Fetch current network fees
   const fees = await estimateFeesPerGas(config)
 
-  // 2. Apply multipliers: maxFeePerGas ×1.2, maxPriorityFeePerGas ×10
+  // 2. Apply multipliers: maxFeePerGas ×1.2, maxPriorityFeePerGas ×2
   const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas } = calculateAdjustedFees(
     fees.maxFeePerGas,
     fees.maxPriorityFeePerGas,

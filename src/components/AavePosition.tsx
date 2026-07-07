@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
 import { ClosePositionModal } from './ClosePositionModal'
-import { SupplyWithdrawModal } from './SupplyWithdrawModal'
+import { WithdrawModal } from './WithdrawModal'
 import { AssetsToSupplyModal } from './AssetsToSupplyModal'
 import { AssetsToBorrowModal } from './AssetsToBorrowModal'
 import { BorrowRepayModal } from './BorrowRepayModal'
@@ -37,7 +37,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   } = useAavePositions({ viewAddress, viewChainId })
 
   const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
-  const [supplyWithdrawTarget, setSupplyWithdrawTarget] = useState<{ asset: any, tab: 'supply' | 'withdraw' } | null>(null)
+  const [withdrawTarget, setWithdrawTarget] = useState<{ asset: any } | null>(null)
   const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
@@ -346,7 +346,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                           <td data-label="Actions">
                             <div style={{ display: 'flex', gap: T.space[2], alignItems: 'center', justifyContent: 'flex-end' }}>
                               <button
-                                onClick={() => setSupplyWithdrawTarget({ asset: a, tab: 'withdraw' })}
+                                onClick={() => setWithdrawTarget({ asset: a })}
                                 className="btn-secondary"
                                 style={{ padding: '6px 16px', fontSize: T.fontSize.sm, fontWeight: 600 }}
                               >
@@ -507,16 +507,15 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
         </div>
       )}
 
-      {supplyWithdrawTarget && (
-        <SupplyWithdrawModal
-          asset={supplyWithdrawTarget.asset}
-          initialTab={supplyWithdrawTarget.tab}
+      {withdrawTarget && (
+        <WithdrawModal
+          asset={withdrawTarget.asset}
           ethPriceUsd={ethPriceUsd}
           collateralUsd={collateralUsd}
           debtUsd={debtUsd}
           liquidationThreshold={liquidationThreshold}
           availableReserves={availableReserves}
-          onClose={() => setSupplyWithdrawTarget(null)}
+          onClose={() => setWithdrawTarget(null)}
         />
       )}
 

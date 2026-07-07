@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useChainId, useConfig, useEstimateFeesPerGas } from 'wagmi'
+import { useWriteContract, useAccount, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
 import aavePoolAbi from '../config/aavev3Abi.json'
-import { calculateAdjustedFees } from '../utils/gas'
+import { useAdjustedGas } from '../hooks/useAdjustedGas'
 
 import { simulateAndWrite } from '../utils/contract'
 import { useDeleverageClose } from '../hooks/useDeleverageClose'
@@ -33,12 +33,16 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
 
-  const { data: feeData } = useEstimateFeesPerGas()
-  const { adjustedMaxFeePerGas: uiMaxFee, adjustedMaxPriorityFeePerGas: uiMaxPriority } = calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
-
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
   const deleveragerAvailable = getDeleveragerAddress(chainId) !== null
+
+  // Only estimate once there's something to act on: an entered amount for the
+  // same-asset repay, or an available one-click close for the cross-asset path.
+  const { maxFee: uiMaxFee, maxPriority: uiMaxPriority } = useAdjustedGas(
+    300000n /* deleverage close */, 0,
+    isSameAsset ? parseFloat(amountStr) > 0 : deleveragerAvailable,
+  )
 
   const log = (msg: string) => setLogs((prev) => [...prev, msg])
 
