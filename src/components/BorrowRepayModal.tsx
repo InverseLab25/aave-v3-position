@@ -94,7 +94,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           }
 
           log('Simulating ETH borrow…')
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, RATE_MODE, 0] })
+          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0] })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
         log('Simulating borrow…')
@@ -103,7 +103,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
       } else {
         if (isNativeEth && gatewayAddress) {
           log('Simulating ETH repay…')
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, RATE_MODE, address], value: amountParsed })
+          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, address], value: amountParsed })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
         if (allowance !== undefined && allowance < amountParsed) {

@@ -5,6 +5,7 @@ import { getChainConfig } from '../config/chains'
 import { calculateAdjustedFees } from '../utils/gas'
 import { simulateAndWrite } from '../utils/contract'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
+import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, infoCardStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface AssetsToBorrowModalProps {
@@ -18,19 +19,7 @@ interface AssetsToBorrowModalProps {
   onClose: () => void
 }
 
-const AAVE_POOL_ADDRESS = '0x87870Bca3F3fD6335C3F4ce8392D6935E69e6B0'
 const RATE_MODE = 2n
-
-const AAVE_POOL_ABI = [{
-  inputs: [
-    { internalType: 'address', name: 'asset', type: 'address' },
-    { internalType: 'uint256', name: 'amount', type: 'uint256' },
-    { internalType: 'uint256', name: 'interestRateMode', type: 'uint256' },
-    { internalType: 'uint16', name: 'referralCode', type: 'uint16' },
-    { internalType: 'address', name: 'onBehalfOf', type: 'address' }
-  ],
-  name: 'borrow', outputs: [], stateMutability: 'nonpayable', type: 'function'
-}] as const
 
 const debtTokenAbi = [
   { inputs: [{ internalType: 'address', name: 'delegatee', type: 'address' }, { internalType: 'uint256', name: 'amount', type: 'uint256' }], name: 'approveDelegation', outputs: [], stateMutability: 'nonpayable', type: 'function' },
@@ -46,7 +35,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
 
   const chainConfig = getChainConfig(chainId)
-  const poolAddress = (chainConfig?.aave?.poolAddress ?? AAVE_POOL_ADDRESS) as `0x${string}`
+  const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
   const { writeContractAsync } = useWriteContract()
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
@@ -92,14 +81,14 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         setStep(3); setStatusMsg('Simulating borrowETH…')
         const hash = await simulateAndWrite(config, writeContractAsync, {
           address: gatewayAddress, abi: wethGatewayAbi as any,
-          functionName: 'borrowETH', args: [poolAddress, amountParsed, RATE_MODE, 0],
+          functionName: 'borrowETH', args: [poolAddress, amountParsed, 0],
         })
         setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
         return
       }
       setStep(3); setStatusMsg('Simulating borrow…')
       const hash = await simulateAndWrite(config, writeContractAsync, {
-        address: poolAddress, abi: AAVE_POOL_ABI,
+        address: poolAddress, abi: aavePoolAbi as any,
         functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address],
       })
       setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
@@ -200,9 +189,9 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
               {((uiMaxFee && uiMaxPriority) || amountNum > 0) && (
                 <div style={infoCardStyle}>
                   {amountNum > 0 && (
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.sm, fontWeight: 500, color: T.text }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
                       <span>Health Factor</span>
-                      <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.base }}>
+                      <span style={{ color: Number(newHealthFactor) < 1.1 ? T.danger : Number(newHealthFactor) < 1.5 ? T.warning : T.success, fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
                         {currentHealthFactor} → {newHealthFactor}
                       </span>
                     </div>
