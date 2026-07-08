@@ -3,7 +3,7 @@ import { useAccount, useReadContract, useWriteContract, useSendTransaction, useW
 import { estimateFeesPerGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
 import { calculateAdjustedFees } from '../utils/gas';
-import { simulateAndWrite } from '../utils/contract';
+import { simulateAndWrite, approveAbi } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
 import { getChainConfig } from '../config/chains';
 
@@ -17,16 +17,6 @@ const ERC20_ABI = [
       { name: 'spender', type: 'address' }
     ],
     outputs: [{ name: '', type: 'uint256' }]
-  },
-  {
-    name: 'approve',
-    type: 'function',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'spender', type: 'address' },
-      { name: 'amount', type: 'uint256' }
-    ],
-    outputs: [{ name: '', type: 'bool' }]
   }
 ] as const;
 
@@ -128,7 +118,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     // simulateAndWrite: estimate fees → simulate → write with validated request
     await simulateAndWrite(config, writeApproveAsync, {
       address: fromAsset.underlyingAsset as `0x${string}`,
-      abi: ERC20_ABI,
+      abi: approveAbi,
       functionName: 'approve',
       args: [txPayload.spender as `0x${string}`, amountInBigInt],
     });

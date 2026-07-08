@@ -4,7 +4,7 @@ import { parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor } from '../utils/health'
-import { simulateAndWrite } from '../utils/contract'
+import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
@@ -58,7 +58,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
         const currentAllowance = (aTokenAllowance as bigint) ?? 0n
         if (currentAllowance < amountParsed) {
           log('Simulating aToken approval…')
-          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.aTokenAddress, abi: erc20Abi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
+          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.aTokenAddress, abi: approveAbi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
           log('Approved — click Withdraw again.'); setTxHash(approveHash); setStep(0); await refetchATokenAllowance(); return
         }
         log('Simulating ETH withdraw…')

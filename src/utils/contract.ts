@@ -17,6 +17,31 @@ import { simulateContract, estimateFeesPerGas } from 'wagmi/actions'
 import type { Abi } from 'viem'
 import { calculateAdjustedFees } from './gas'
 
+/**
+ * USDT-safe ERC20 `approve` ABI.
+ *
+ * viem's built-in `erc20Abi` declares approve as `returns (bool)`. Non-standard
+ * tokens like mainnet USDT (0xdAC17…) return NO data from approve, so viem's
+ * simulateContract throws `ContractFunctionExecutionError: approve returned no
+ * data ("0x")`. Declaring empty outputs makes viem skip return-data decoding, so
+ * both USDT (returns nothing) and standard tokens (bool ignored) work.
+ *
+ * Use this ABI for every `approve` WRITE. Reads (allowance/balanceOf) can keep
+ * using viem's erc20Abi — only approve is non-compliant.
+ */
+export const approveAbi = [
+  {
+    name: 'approve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const
+
 export interface ContractCallParams {
   address: `0x${string}`
   abi: Abi | readonly unknown[]
