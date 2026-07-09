@@ -37,7 +37,9 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   } = useAavePositions({ viewAddress, viewChainId })
 
   const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [withdrawTarget, setWithdrawTarget] = useState<{ asset: any } | null>(null)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
@@ -129,6 +131,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   }, 0)
 
   /** Value(USD) cell — shows just the value + a clickable Avg row that opens the editor modal. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ValueCell = ({ a, side, r }: { a: any; side: 'supply' | 'borrow'; r: ReturnType<typeof applyOverride> }) => {
     const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
@@ -168,6 +171,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     if (!editingKey) return null
     const [side, addr] = editingKey.split(':') as ['supply' | 'borrow', string]
     const list = side === 'supply' ? suppliedAssets : borrowedAssets
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     const asset = list.find((a: any) => a.underlyingAsset.toLowerCase() === addr)
     if (!asset) return null
     return {
@@ -212,15 +216,16 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     )
   }
 
-  const ViewModeBanner = () => {
+  const renderViewModeBanner = () => {
     if (!isViewMode || !viewedAddress) return null;
     return (
-      <div className="alert alert-info" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          Viewing <code style={{ background: '#dbeafe', padding: '2px 6px', borderRadius: T.radius.sm }}>{viewedAddress.slice(0, 6)}…{viewedAddress.slice(-4)}</code> (read-only)
-        </span>
-        <button className="btn-secondary" onClick={exitViewMode} style={{ padding: '6px 12px', fontSize: T.fontSize.sm, flexShrink: 0, marginLeft: T.space[2] }}>
-          Exit view mode
+      <div className="view-mode-banner">
+        <span>Viewing positions for {viewedAddress}</span>
+        <button
+          onClick={() => exitViewMode()}
+          className="exit-view-btn"
+        >
+          Exit View Mode
         </button>
       </div>
     )
@@ -229,20 +234,72 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   if (!isConnected) return null
   if (isLoading) return <div>Loading Aave Position...</div>
   if (suppliedAssets.length === 0 && borrowedAssets.length === 0 && collateralUsd === 0) {
+    // Read-only view of someone else's wallet: nothing to act on.
+    if (isViewMode) {
+      return (
+        <div className="dashboard-container">
+          {renderViewModeBanner()}
+          <div>No Aave data found for this address.</div>
+        </div>
+      )
+    }
+    // Connected wallet with no position yet: let them open one.
+    const emptyEthPriceUsd = Number(availableReserves?.find((r: { symbol: string; priceInUsd?: string | number | null }) => r.symbol.toUpperCase() === 'WETH')?.priceInUsd || 0)
     return (
       <div className="dashboard-container">
-        <ViewModeBanner />
-        <div>No Aave data found for this address.</div>
+        <div className="card" style={{ textAlign: 'center', padding: T.space[8] }}>
+          <h2 style={{ fontSize: T.fontSize.xl, margin: `0 0 ${T.space[2]}` }}>Start your Aave position</h2>
+          <p className="text-muted" style={{ margin: `0 auto ${T.space[5]}`, maxWidth: '420px' }}>
+            You don't have any supplied or borrowed assets yet. Supply collateral to start earning — you'll need collateral before you can borrow.
+          </p>
+          <div style={{ display: 'flex', gap: T.space[3], justifyContent: 'center' }}>
+            <button className="btn-primary" onClick={() => setIsAssetsToSupplyModalOpen(true)}>Supply</button>
+            <button 
+              className="btn-secondary" 
+              onClick={() => setIsAssetsToBorrowModalOpen(true)}
+              disabled={true}
+              title="You must supply collateral first to borrow"
+              style={{ opacity: 0.6, cursor: 'not-allowed' }}
+            >
+              Borrow
+            </button>
+          </div>
+        </div>
+
+        {isAssetsToSupplyModalOpen && (
+          <AssetsToSupplyModal
+            chainId={chainId}
+            availableReserves={availableReserves}
+            ethPriceUsd={emptyEthPriceUsd}
+            collateralUsd={collateralUsd}
+            debtUsd={debtUsd}
+            liquidationThreshold={liquidationThreshold}
+            onClose={() => setIsAssetsToSupplyModalOpen(false)}
+          />
+        )}
+        {isAssetsToBorrowModalOpen && (
+          <AssetsToBorrowModal
+            chainId={chainId}
+            availableReserves={availableReserves}
+            ethPriceUsd={emptyEthPriceUsd}
+            availableBorrowsUsd={availableBorrowsUsd}
+            collateralUsd={collateralUsd}
+            debtUsd={debtUsd}
+            liquidationThreshold={liquidationThreshold}
+            onClose={() => setIsAssetsToBorrowModalOpen(false)}
+          />
+        )}
       </div>
     )
   }
 
   const netInterestUsd = totalInterestEarnedUsd - totalInterestPaidUsd
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === 'WETH')?.priceInUsd || 0)
 
   return (
     <div className="dashboard-container">
-      <ViewModeBanner />
+      {renderViewModeBanner()}
 
       <div className="card">
         <div className="header">
@@ -322,6 +379,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                   </tr>
                 </thead>
                 <tbody>
+{/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {suppliedAssets.map((a: any, i: number) => {
                     const otherCollateralUsd = collateralUsd - a.valueUsd;
                     const requiredThisAssetUsd = liquidationThreshold > 0 ? (debtUsd / liquidationThreshold) - otherCollateralUsd : 0;
@@ -371,6 +429,9 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
               <button
                 className="btn-primary"
                 onClick={() => setIsAssetsToBorrowModalOpen(true)}
+                disabled={suppliedAssets.length === 0}
+                title={suppliedAssets.length === 0 ? "You must supply collateral first to borrow" : undefined}
+                style={suppliedAssets.length === 0 ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
               >
                 Borrow
               </button>
@@ -393,6 +454,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                   </tr>
                 </thead>
                 <tbody>
+{/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {borrowedAssets.map((a: any, i: number) => {
                     const r = applyOverride(a, 'borrow');
                     return (

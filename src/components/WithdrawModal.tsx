@@ -3,7 +3,7 @@ import { useWriteContract, useAccount, useReadContract, useWaitForTransactionRec
 import { parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
-import { healthFactor } from '../utils/health'
+import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -12,11 +12,13 @@ import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface WithdrawModalProps {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   asset: any
   ethPriceUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   availableReserves?: any[]
   onClose: () => void
 }
@@ -62,13 +64,16 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
           log('Approved — click Withdraw again.'); setTxHash(approveHash); setStep(0); await refetchATokenAllowance(); return
         }
         log('Simulating ETH withdraw…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
       }
 
       log('Simulating withdraw…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
       const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'withdraw', args: [asset.underlyingAsset, finalAmount, address] })
       log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
       log(`Error: ${reason}`); setStep(0)
@@ -82,7 +87,6 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
 
   const amountNum = parseFloat(amountStr) || 0
   const isInsufficient = amountNum > (asset.amount || 0)
-  const btnLabel = isInsufficient ? 'Insufficient supplied' : isProcessing ? 'Processing…' : 'Withdraw'
 
   const targetReserve = availableReserves.find(r => r.symbol === asset.symbol)
   const assetLT = targetReserve ? targetReserve.liquidationThreshold : 0
@@ -92,6 +96,10 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const newHealthFactor = assetLT > 0
     ? healthFactor(collateralUsd * liquidationThreshold - withdrawUsd * assetLT, debtUsd)
     : '∞'
+  const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
+  const hfGuardBlocked = hfGuard.level === 'block'
+
+  const btnLabel = isInsufficient ? 'Insufficient supplied' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Withdraw'
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -135,13 +143,14 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
             newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
           />
 
+          {hfGuard.message && <div style={alertStyle(hfGuardBlocked ? 'danger' : 'warning')}>{hfGuard.message}</div>}
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
           {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
           <button
-            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient)}
+            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || hfGuardBlocked)}
             onClick={executeAction}
-            disabled={isProcessing || !canExecute || isInsufficient}
+            disabled={isProcessing || !canExecute || isInsufficient || hfGuardBlocked}
           >{btnLabel}</button>
         </div>
       </div>

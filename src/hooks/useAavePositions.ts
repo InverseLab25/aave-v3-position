@@ -106,8 +106,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestEarnedUsd: 0,
     totalInterestPaidUsd: 0,
     totalPositionPnlUsd: 0,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     suppliedAssets: [] as any[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     borrowedAssets: [] as any[],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     availableReserves: [] as any[]
   }
 
@@ -122,6 +125,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     currentLiquidationThreshold,
     ltv,
     healthFactor
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   ] = accountData as any
 
   const collateralUsd = Number(formatUnits(totalCollateralBase, 8))
@@ -133,7 +137,9 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   const MAX_UINT256 = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
   const formattedHealthFactor = healthFactor === MAX_UINT256 ? '∞' : formatUnits(healthFactor, 18)
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const globalReserves = (uiData[0].result as any)[0]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const userReserves = (uiData[1].result as any)[0]
 
   let totalEarningsUsd = 0
@@ -143,9 +149,12 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   let totalInterestPaidUsd = 0
   let totalPositionPnlUsd = 0
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const suppliedAssets: any[] = []
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const borrowedAssets: any[] = []
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const availableReserves = globalReserves.map((reserve: any) => ({
     symbol: reserve.symbol,
     underlyingAsset: reserve.underlyingAsset,
@@ -159,9 +168,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   }))
 
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   userReserves.forEach((uRes: any) => {
     if (uRes.scaledATokenBalance === 0n && uRes.scaledVariableDebt === 0n) return;
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     const reserve = globalReserves.find((r: any) => r.underlyingAsset === uRes.underlyingAsset)
     if (!reserve) return;
 

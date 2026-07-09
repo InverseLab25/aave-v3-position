@@ -73,6 +73,7 @@ export function ConfirmSwapModal({
   }, [quote.amountOut]);
 
   // Human "Xs ago" for the refresh timestamp — recomputes each render (parent re-renders on interval).
+// eslint-disable-next-line react-hooks/purity
   const secondsSinceRefresh = lastRefreshedAt > 0 ? Math.max(0, Math.floor((Date.now() - lastRefreshedAt) / 1000)) : null;
 
   const formatAddress = (addr: string) => {

@@ -3,7 +3,7 @@ import { useAccount, useBalance, useReadContracts, useReadContract, useWriteCont
 import { formatUnits, parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
-import { healthFactor } from '../utils/health'
+import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -13,6 +13,7 @@ import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, lab
 
 interface AssetsToSupplyModalProps {
   chainId: number
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   availableReserves: any[]
   ethPriceUsd?: number
   collateralUsd?: number
@@ -23,6 +24,7 @@ interface AssetsToSupplyModalProps {
 
 export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: AssetsToSupplyModalProps) {
   const { address } = useAccount()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [step, setStep] = useState<number>(0)
@@ -63,11 +65,13 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
     balanceByAddress[opt.underlyingAsset.toLowerCase()] = (tokenBalances?.[i]?.result as bigint | undefined) ?? 0n
   })
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const getRawBalance = (opt: any): bigint => {
     if (opt.symbol === 'ETH') return ethBalance?.value ?? 0n
     return balanceByAddress[opt.underlyingAsset.toLowerCase()] ?? 0n
   }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const getWalletBalance = (opt: any) => {
     const raw = getRawBalance(opt)
     const decimals = opt.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : opt.decimals
@@ -89,6 +93,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
         if (!gatewayAddress) { alert('Native ETH supplying is not supported on this network.'); return }
         setStep(3); setStatusMsg('Simulating depositETH…')
         const hash = await simulateAndWrite(config, writeContractAsync, {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
           address: gatewayAddress, abi: wethGatewayAbi as any,
           functionName: 'depositETH', args: [poolAddress, address, 0],
           value: parseUnits(amountStr, selectedAsset.decimals) as bigint,
@@ -111,10 +116,12 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
       }
       setStep(3); setStatusMsg('Simulating supply…')
       const hash = await simulateAndWrite(config, writeContractAsync, {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         address: poolAddress, abi: aavePoolAbi as any,
         functionName: 'supply', args: [selectedAsset.underlyingAsset as `0x${string}`, amount, address, 0],
       })
       setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'
       setStatusMsg(`Error: ${reason}`); setStep(0)
@@ -133,6 +140,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const newHealthFactor = selectedAsset
     ? healthFactor(collateralUsd * liquidationThreshold + supplyUsd * selectedAsset.liquidationThreshold, debtUsd)
     : '∞'
+  const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -220,14 +228,15 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                 newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
               />
 
+              {hfGuard.message && <div style={alertStyle(hfGuard.level === 'block' ? 'danger' : 'warning')}>{hfGuard.message}</div>}
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}
               {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
               <button
-                style={primaryBtnStyle(!amountStr || isProcessing || isInsufficient)}
+                style={primaryBtnStyle(!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block')}
                 onClick={executeSupply}
-                disabled={!amountStr || isProcessing || isInsufficient}
-              >{isInsufficient ? 'Insufficient balance' : isProcessing ? 'Processing…' : 'Supply'}</button>
+                disabled={!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block'}
+              >{isInsufficient ? 'Insufficient balance' : hfGuard.level === 'block' ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Supply'}</button>
             </div>
           )}
         </div>

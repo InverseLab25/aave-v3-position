@@ -208,6 +208,7 @@ export function useDeleverageClose() {
           account: address,
           maxFeePerGas: adjustedMaxFeePerGas,
           maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
 
         log('Submitting close transaction…')

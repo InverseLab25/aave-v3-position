@@ -3,7 +3,7 @@ import { useAccount, useWriteContract, useWaitForTransactionReceipt, useConfig, 
 import { parseUnits, maxUint256 } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
-import { healthFactor } from '../utils/health'
+import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -13,6 +13,7 @@ import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, lab
 
 interface AssetsToBorrowModalProps {
   chainId: number
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   availableReserves: any[]
   ethPriceUsd?: number
   availableBorrowsUsd?: number
@@ -31,6 +32,7 @@ const debtTokenAbi = [
 
 export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 0, availableBorrowsUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: AssetsToBorrowModalProps) {
   const { address } = useAccount()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [step, setStep] = useState<number>(0)
@@ -81,6 +83,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
 
         setStep(3); setStatusMsg('Simulating borrowETH…')
         const hash = await simulateAndWrite(config, writeContractAsync, {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
           address: gatewayAddress, abi: wethGatewayAbi as any,
           functionName: 'borrowETH', args: [poolAddress, amountParsed, 0],
         })
@@ -89,10 +92,12 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
       }
       setStep(3); setStatusMsg('Simulating borrow…')
       const hash = await simulateAndWrite(config, writeContractAsync, {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         address: poolAddress, abi: aavePoolAbi as any,
         functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address],
       })
       setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'
       setStatusMsg(`Error: ${reason}`); setStep(0)
@@ -111,6 +116,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const newHealthFactor = collateralUsd > 0
     ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowAmountUsd)
     : '∞'
+  const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -195,14 +201,15 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                 newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
               />
 
+              {hfGuard.message && <div style={alertStyle(hfGuard.level === 'block' ? 'danger' : 'warning')}>{hfGuard.message}</div>}
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}
               {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
               <button
-                style={primaryBtnStyle(!amountStr || isProcessing || isInsufficient)}
+                style={primaryBtnStyle(!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block')}
                 onClick={executeBorrow}
-                disabled={!amountStr || isProcessing || isInsufficient}
-              >{isInsufficient ? 'Exceeds borrow limit' : isProcessing ? 'Processing…' : 'Borrow'}</button>
+                disabled={!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block'}
+              >{isInsufficient ? 'Exceeds borrow limit' : hfGuard.level === 'block' ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Borrow'}</button>
             </div>
           )}
         </div>

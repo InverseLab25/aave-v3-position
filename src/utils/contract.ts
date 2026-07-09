@@ -61,6 +61,7 @@ export interface ContractCallParams {
  */
 export async function simulateAndWrite(
   config: Config,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   writeContractAsync: (request: any) => Promise<`0x${string}`>,
   params: ContractCallParams,
 ): Promise<`0x${string}`> {
@@ -84,10 +85,12 @@ export async function simulateAndWrite(
       value: params.value,
       maxFeePerGas: adjustedMaxFeePerGas,
       maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     // 4. Execute with the exact request object returned by simulation
     return await writeContractAsync(request)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
     console.error('Simulation/Execution failed:', err)
     
@@ -95,6 +98,7 @@ export async function simulateAndWrite(
     
     // Viem throws nested errors. .walk() helps find the specific revert reason.
     if (typeof err.walk === 'function') {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
       const revertError = err.walk((e: any) => e.name === 'ContractFunctionRevertedError')
       if (revertError) {
         errorMsg = revertError.reason || revertError.shortMessage || revertError.message || errorMsg
@@ -109,6 +113,7 @@ export async function simulateAndWrite(
     }
 
     // Throw a standard Error so that `e.message` in the UI gets this exact formatted string
+// eslint-disable-next-line preserve-caught-error
     throw new Error(errorMsg)
   }
 }

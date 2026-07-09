@@ -26,7 +26,9 @@ export const openOceanAdapter: Adapter = {
       let gasJson;
       try {
         gasJson = JSON.parse(gasText);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
+// eslint-disable-next-line preserve-caught-error
         throw new Error("OpenOcean blocked (gas): " + gasText.slice(0, 50));
       }
       const gasPrice = gasJson.data?.fast?.maxFeePerGas ?? gasJson.data?.fast ?? 500000000;
@@ -38,7 +40,9 @@ export const openOceanAdapter: Adapter = {
       let json;
       try {
         json = JSON.parse(text);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
+// eslint-disable-next-line preserve-caught-error
         throw new Error("OpenOcean blocked (swap): " + text.slice(0, 50));
       }
 
@@ -88,7 +92,9 @@ export const openOceanAdapter: Adapter = {
     let json;
     try {
       json = JSON.parse(text);
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (e) {
+// eslint-disable-next-line preserve-caught-error
       throw new Error("OpenOcean API blocked: " + text.slice(0, 50));
     }
 

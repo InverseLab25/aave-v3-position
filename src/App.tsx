@@ -17,6 +17,7 @@ function App() {
   const apiEthPrice = useEthPrice()
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
   
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wethAsset = suppliedAssets.find((a: any) => a.symbol === 'WETH')
   const ethPrice = wethAsset ? Number(wethAsset.priceInUsd) : apiEthPrice
 

@@ -12,7 +12,9 @@ import { useDeleverageClose } from '../hooks/useDeleverageClose'
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
 
 interface ClosePositionModalProps {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   borrowedAsset: any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   suppliedAssets: any[]
   onClose: () => void
 }
@@ -20,6 +22,7 @@ interface ClosePositionModalProps {
 export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: ClosePositionModalProps) {
   const { address } = useAccount()
   const chainId = useChainId()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedCollateral, setSelectedCollateral] = useState<any>(suppliedAssets[0] || null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [isMax, setIsMax] = useState<boolean>(false)
@@ -60,6 +63,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         log(`Simulating repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
         const hash = await simulateAndWrite(config, writeContractAsync, {
           address: poolAddress,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
           abi: aavePoolAbi as any,
           functionName: 'repayWithATokens',
           args: [borrowedAsset.underlyingAsset, finalAmount, 2n],
@@ -67,6 +71,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         setTxHash(hash)
         log(`Transaction submitted! Hash: ${hash}`)
         setStep(2)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         log(`Error: ${e.message || e}`)
         setStep(0)

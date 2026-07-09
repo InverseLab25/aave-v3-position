@@ -3,7 +3,7 @@ import { useWriteContract, useAccount, useReadContract, useWaitForTransactionRec
 import { parseUnits, maxUint256, erc20Abi, formatUnits } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
-import { healthFactor } from '../utils/health'
+import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -19,6 +19,7 @@ const debtTokenAbi = [
 ] as const
 
 interface BorrowRepayModalProps {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   asset: any
   initialTab?: 'borrow' | 'repay'
   ethPriceUsd?: number
@@ -98,15 +99,18 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           }
 
           log('Simulating ETH borrow…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
           const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0] })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
         log('Simulating borrow…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
       } else {
         if (isNativeEth && gatewayAddress) {
           log('Simulating ETH repay…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
           const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, address], value: amountParsed })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
@@ -123,9 +127,11 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           log('Approved — click Repay again.'); setTxHash(approveHash); setStep(0); await refetchAllowance(); return
         }
         log('Simulating repay…')
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'repay', args: [asset.underlyingAsset, finalAmount, RATE_MODE, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
       }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
       log(`Error: ${reason}`); setStep(0)
@@ -142,13 +148,16 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const isOverRepay = activeTab === 'repay' && amountNum > (asset.amount || 0)
 
   const isInsufficient = isInsufficientRepay
-  const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
   const borrowRepayUsd = amountNum * (asset.priceInUsd ? parseFloat(asset.priceInUsd) : 0)
   const currentHealthFactor = healthFactor(collateralUsd * liquidationThreshold, debtUsd)
   const newHealthFactor = activeTab === 'borrow'
     ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowRepayUsd)
     : healthFactor(collateralUsd * liquidationThreshold, debtUsd - borrowRepayUsd)
+  const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
+  const hfGuardBlocked = hfGuard.level === 'block'
+
+  const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -213,13 +222,14 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
           />
 
+          {hfGuard.message && <div style={alertStyle(hfGuardBlocked ? 'danger' : 'warning')}>{hfGuard.message}</div>}
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
           {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
           <button
-            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || isOverRepay)}
+            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked)}
             onClick={executeAction}
-            disabled={isProcessing || !canExecute || isInsufficient || isOverRepay}
+            disabled={isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked}
           >{btnLabel}</button>
         </div>
       </div>

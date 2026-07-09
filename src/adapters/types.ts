@@ -13,7 +13,9 @@ export interface QuoteResponse {
   amountOutUsd: string;
   gasUsd: string;
   netReturnUsd: number;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   routeDetails: any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
   rawQuote: any;
 }
 
