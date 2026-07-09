@@ -45,7 +45,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0, 10n)
 
   const targetSymbols = ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
@@ -74,7 +74,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
           setStatusMsg('Simulating delegation approval…')
           const hash = await simulateAndWrite(config, writeContractAsync, {
             address: selectedAsset.variableDebtTokenAddress as `0x${string}`, abi: debtTokenAbi,
-            functionName: 'approveDelegation', args: [gatewayAddress, maxUint256],
+            functionName: 'approveDelegation', args: [gatewayAddress, maxUint256], priorityMultiplier: 10n
           })
           setTxHash(hash); setStep(2); setStatusMsg('Delegation approved. Click Borrow again to continue.')
           await refetchDelegation()
@@ -85,7 +85,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         const hash = await simulateAndWrite(config, writeContractAsync, {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           address: gatewayAddress, abi: wethGatewayAbi as any,
-          functionName: 'borrowETH', args: [poolAddress, amountParsed, 0],
+          functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n
         })
         setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
         return
@@ -94,7 +94,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
       const hash = await simulateAndWrite(config, writeContractAsync, {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         address: poolAddress, abi: aavePoolAbi as any,
-        functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address],
+        functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n
       })
       setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

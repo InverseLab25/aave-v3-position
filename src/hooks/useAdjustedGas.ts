@@ -14,14 +14,15 @@ import { calculateAdjustedFees } from '../utils/gas'
  * real transaction re-estimates fees at write time (see `simulateAndWrite`),
  * so this only controls the UI preview.
  */
-export function useAdjustedGas(assumedGasLimit: bigint, ethPriceUsd = 0, enabled = true) {
+export function useAdjustedGas(assumedGasLimit: bigint, ethPriceUsd = 0, enabled = true, priorityMultiplier: bigint = 1n) {
   const { data: feeData } = useEstimateFeesPerGas({ query: { enabled } })
-  const { adjustedMaxFeePerGas: maxFee, adjustedMaxPriorityFeePerGas: maxPriority } =
-    calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas)
+  const { adjustedMaxFeePerGas: maxFee, adjustedMaxPriorityFeePerGas: maxPriority, adjustedGasPrice } =
+    calculateAdjustedFees(feeData?.maxFeePerGas, feeData?.maxPriorityFeePerGas, priorityMultiplier, feeData?.gasPrice)
 
-  const estimatedFeeUsd = (maxFee && ethPriceUsd > 0)
-    ? Number(formatUnits(maxFee * assumedGasLimit, 18)) * ethPriceUsd
+  const feeToUse = maxFee ?? adjustedGasPrice
+  const estimatedFeeUsd = (feeToUse && ethPriceUsd > 0)
+    ? Number(formatUnits(feeToUse * assumedGasLimit, 18)) * ethPriceUsd
     : 0
 
-  return { maxFee, maxPriority, estimatedFeeUsd }
+  return { maxFee, maxPriority, gasPrice: adjustedGasPrice, estimatedFeeUsd }
 }

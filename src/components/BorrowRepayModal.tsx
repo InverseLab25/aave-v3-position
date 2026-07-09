@@ -46,7 +46,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow/repay */, ethPriceUsd, parseFloat(amountStr) > 0)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow/repay */, ethPriceUsd, parseFloat(amountStr) > 0, activeTab === 'borrow' ? 10n : 1n)
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
@@ -92,6 +92,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             const hash = await simulateAndWrite(config, writeContractAsync, {
               address: asset.variableDebtTokenAddress as `0x${string}`, abi: debtTokenAbi,
               functionName: 'approveDelegation', args: [gatewayAddress, maxUint256],
+              priorityMultiplier: 10n
             })
             setTxHash(hash); setStep(2); log('Delegation approved. Click Borrow again to continue.')
             await refetchDelegation()
@@ -100,12 +101,12 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
 
           log('Simulating ETH borrow…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0] })
+          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
         }
         log('Simulating borrow…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address] })
+        const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
       } else {
         if (isNativeEth && gatewayAddress) {

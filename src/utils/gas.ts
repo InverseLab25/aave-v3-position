@@ -1,47 +1,50 @@
 /**
  * calculateAdjustedFees
  *
- * Applies multipliers to EIP-1559 gas parameters and enforces the
- * EIP-1559 invariant:
+ * Safely scales the priority fee while strictly enforcing the EIP-1559 invariant:
+ *   maxFeePerGas >= currentBaseFee + maxPriorityFeePerGas
  *
- *   maxFeePerGas >= baseFee + maxPriorityFeePerGas
+ * wagmi/viem estimates maxFeePerGas using the formula:
+ *   maxFeePerGas = (currentBaseFee * 1.2) + maxPriorityFeePerGas
  *
- * Multipliers:
- *   • maxPriorityFeePerGas × 2   — standard safe buffer for next-block inclusion
- *   • maxFeePerGas (floor)       — must be at least baseFee + adjustedPriority
+ * To safely inject a priority fee multiplier without guessing the current base fee,
+ * we extract viem's original base fee buffer:
+ *   baseFeeBuffer = maxFeePerGas - maxPriorityFeePerGas
  *
- * baseFee is derived from the network estimate using the standard formula:
- *   maxFeePerGas (network) ≈ 2 × baseFee + maxPriorityFeePerGas
- *   → baseFee ≈ (maxFeePerGas - maxPriorityFeePerGas) / 2
+ * Then we apply the multiplier to the priority fee and add it back:
+ *   adjustedMaxFeePerGas = baseFeeBuffer + (maxPriorityFeePerGas * priorityMultiplier)
  *
- * The final adjustedMaxFeePerGas is the larger of:
- *   a) maxFeePerGas × 1.2   (a comfortable buffer over the current fee)
- *   b) baseFee + adjustedMaxPriorityFeePerGas  (invariant floor)
+ * For legacy networks (returning gasPrice), we bump gasPrice by 20% for high priority.
  */
 export function calculateAdjustedFees(
   maxFeePerGas?: bigint,
   maxPriorityFeePerGas?: bigint,
+  priorityMultiplier: bigint = 1n,
+  gasPrice?: bigint
 ) {
-  if (!maxFeePerGas || !maxPriorityFeePerGas) {
-    return { adjustedMaxFeePerGas: undefined, adjustedMaxPriorityFeePerGas: undefined }
+  if (gasPrice && !maxFeePerGas && !maxPriorityFeePerGas) {
+    // Legacy chain handling: we cannot 10x the entire gas price without massive overpayment,
+    // so we apply a 20% bump if high priority is requested.
+    const adjustedGasPrice = priorityMultiplier > 1n ? (gasPrice * 12n) / 10n : gasPrice
+    return { adjustedMaxFeePerGas: undefined, adjustedMaxPriorityFeePerGas: undefined, adjustedGasPrice }
   }
 
-  // Step 1: apply 2× to priority fee (tip) — standard safe buffer for next-block inclusion
-  const adjustedMaxPriorityFeePerGas = maxPriorityFeePerGas * 2n
+  if (!maxFeePerGas || !maxPriorityFeePerGas) {
+    return { adjustedMaxFeePerGas: undefined, adjustedMaxPriorityFeePerGas: undefined, adjustedGasPrice: undefined }
+  }
 
-  // Step 2: derive baseFee from network estimate
-  //   network formula: maxFeePerGas = 2×baseFee + maxPriorityFeePerGas
-  //   → baseFee = (maxFeePerGas - maxPriorityFeePerGas) / 2
-  const baseFee = (maxFeePerGas - maxPriorityFeePerGas) / 2n
+  // Step 1: scale the priority fee
+  const adjustedMaxPriorityFeePerGas = maxPriorityFeePerGas * priorityMultiplier
 
-  // Step 3: enforce EIP-1559 invariant — maxFeePerGas >= baseFee + priority
-  const invariantFloor = baseFee + adjustedMaxPriorityFeePerGas
+  // Step 2: Extract the base fee buffer that wagmi/viem originally calculated.
+  // viem calculates maxFeePerGas = (baseFee * 1.2) + maxPriorityFeePerGas.
+  // Instead of guessing the multiplier (which changed from 2x in ethers to 1.2x in viem),
+  // we just subtract the original priority fee to get the exact base fee buffer viem used.
+  const baseFeeBuffer = maxFeePerGas - maxPriorityFeePerGas
 
-  // Step 4: also apply a 1.2× buffer on the original maxFeePerGas
-  const buffered = (maxFeePerGas * 12n) / 10n
+  // Step 3: Add our new adjusted priority fee to viem's base fee buffer.
+  // This mathematically guarantees maxFeePerGas >= currentBaseFee + adjustedMaxPriorityFeePerGas
+  const adjustedMaxFeePerGas = baseFeeBuffer + adjustedMaxPriorityFeePerGas
 
-  // Final: take the higher of the two so both the invariant and the buffer hold
-  const adjustedMaxFeePerGas = invariantFloor > buffered ? invariantFloor : buffered
-
-  return { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas }
+  return { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice: undefined }
 }

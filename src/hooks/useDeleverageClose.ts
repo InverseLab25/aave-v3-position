@@ -195,8 +195,8 @@ export function useDeleverageClose() {
         const v = sig.v !== undefined ? Number(sig.v) : sig.yParity + 27
 
         // 7. Fire the one-tx close.
-        const { maxFeePerGas, maxPriorityFeePerGas } = await estimateFeesPerGas(config)
-        const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas)
+        const { maxFeePerGas, maxPriorityFeePerGas, gasPrice } = await estimateFeesPerGas(config)
+        const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
 
         // Simulate before writing to catch reverts early
         log('Simulating close transaction…')
@@ -208,6 +208,7 @@ export function useDeleverageClose() {
           account: address,
           maxFeePerGas: adjustedMaxFeePerGas,
           maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
+          gasPrice: adjustedGasPrice,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
 
