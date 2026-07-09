@@ -174,13 +174,19 @@ export function useDeleverageClose() {
           args: [address],
         })
         const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
+        // aTokens rebase upward between signing and inclusion. Sign the permit for a 1% buffer
+        // above the live balance so the contract can pull the *full* balance at execution
+        // (it pulls min(live balance, permitValue)), leaving zero aToken dust supplied in Aave.
+        // Interest over the ~20min deadline is a tiny fraction of 1%, so the buffer is ample; any
+        // unused headroom is harmless since the aToken balance is drained to ~0 by the withdraw.
+        const permitValue = collAmount + collAmount / 100n
         const typedData = buildPermitTypedData({
           aToken,
           aTokenName,
           chainId,
           owner: address,
           spender: deleverager,
-          value: collAmount,
+          value: permitValue,
           nonce,
           deadline,
         })
@@ -198,7 +204,7 @@ export function useDeleverageClose() {
           address: deleverager,
           abi: DELEVERAGER_ABI,
           functionName: 'closePositionWithPermit',
-          args: [collateralAddr, debtAddr, minOut, router, swapData, { value: collAmount, deadline, v, r: sig.r, s: sig.s }],
+          args: [collateralAddr, debtAddr, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
           account: address,
           maxFeePerGas: adjustedMaxFeePerGas,
           maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,

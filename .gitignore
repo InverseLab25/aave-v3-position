@@ -31,3 +31,9 @@ dist-ssr
 # Downloaded API schemas
 *.yaml
 aave-schema.graphql
+
+
+.audit
+lib/
+out/
+cache/
