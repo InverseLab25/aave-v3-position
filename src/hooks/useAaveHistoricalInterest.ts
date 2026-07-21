@@ -230,9 +230,12 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   }
   for (const [asset, acc] of Object.entries(borrowAcc)) {
     netPrincipals.borrow[asset] = acc.totalUnits
+    // Borrow P&L reflects only the currently-open position: the avg entry is the
+    // weighted-average price of the open borrow, and realized P&L from repaid (closed)
+    // amounts is intentionally excluded.
     costBasis.borrow[asset] = {
       avgEntryPriceUsd: acc.totalUnits > 0 ? acc.totalCostUsd / acc.totalUnits : 0,
-      realizedPnlUsd: acc.realizedPnlUsd
+      realizedPnlUsd: 0
     }
   }
 

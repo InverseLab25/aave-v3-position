@@ -37,3 +37,6 @@ aave-schema.graphql
 lib/
 out/
 cache/
+
+# Local scratch — recommendations, notes (not committed)
+idea/

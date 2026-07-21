@@ -372,7 +372,6 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                     <th>Balance</th>
                     <th>Value (USD)</th>
                     <th>APY</th>
-                    <th>Liquidation Price</th>
                     <th>Interest Earned</th>
                     <th>Position P&amp;L</th>
                     {!isViewMode && <th style={{ textAlign: 'right' }}>Actions</th>}
@@ -381,9 +380,6 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                 <tbody>
 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {suppliedAssets.map((a: any, i: number) => {
-                    const otherCollateralUsd = collateralUsd - a.valueUsd;
-                    const requiredThisAssetUsd = liquidationThreshold > 0 ? (debtUsd / liquidationThreshold) - otherCollateralUsd : 0;
-                    const liquidationPrice = requiredThisAssetUsd > 0 ? (requiredThisAssetUsd / a.amount) : 0;
                     const r = applyOverride(a, 'supply');
 
                     return (
@@ -392,7 +388,6 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="supply" r={r} />
                         <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
-                        <td className="number" data-label="Liquidation Price">${liquidationPrice > 0 ? liquidationPrice.toFixed(2) : 'Safe'}</td>
                         <td className="number text-success" data-label="Interest Earned">
                           {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
@@ -448,6 +443,7 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
                     <th>Balance</th>
                     <th>Value (USD)</th>
                     <th>APY</th>
+                    <th>Liquidation Price</th>
                     <th>Interest Paid</th>
                     <th>Position P&amp;L</th>
                     {!isViewMode && <th style={{ textAlign: 'right' }}>Actions</th>}
@@ -457,12 +453,19 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {borrowedAssets.map((a: any, i: number) => {
                     const r = applyOverride(a, 'borrow');
+                    // Liquidation for a borrowed (debt) asset: the price it would have to RISE
+                    // to for the growing debt to push HF to 1, holding collateral and other
+                    // debts fixed. Mirror of the collateral-side formula.
+                    const otherDebtUsd = debtUsd - a.valueUsd;
+                    const allowedThisDebtUsd = collateralUsd * liquidationThreshold - otherDebtUsd;
+                    const liquidationPrice = a.amount > 0 && allowedThisDebtUsd > 0 ? allowedThisDebtUsd / a.amount : 0;
                     return (
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="borrow" r={r} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
+                        <td className="number" data-label="Liquidation Price">{liquidationPrice > 0 ? `$${liquidationPrice.toFixed(2)}` : 'At risk'}</td>
                         <td className="number text-danger" data-label="Interest Paid">
                           {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
