@@ -1,7 +1,7 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 
-const getOpenOceanChain = (chainId: number): string => {
+const getOpenOceanChain = (chainId: number): string | null => {
   switch (chainId) {
     case 1: return 'eth';
     case 10: return 'optimism';
@@ -11,7 +11,7 @@ const getOpenOceanChain = (chainId: number): string => {
     case 8453: return 'base';
     case 42161: return 'arbitrum';
     case 43114: return 'avax';
-    default: return 'eth';
+    default: return null; // unsupported chain — don't silently quote on eth
   }
 };
 
@@ -21,6 +21,7 @@ export const openOceanAdapter: Adapter = {
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number): Promise<QuoteResponse | null> => {
     try {
       const chainStr = getOpenOceanChain(chainId);
+      if (!chainStr) return null;
       const gasRes = await fetch(`https://open-api.openocean.finance/v4/${chainStr}/gasPrice`);
       const gasText = await gasRes.text();
       let gasJson;
@@ -34,7 +35,10 @@ export const openOceanAdapter: Adapter = {
       const gasPrice = gasJson.data?.fast?.maxFeePerGas ?? gasJson.data?.fast ?? 500000000;
       const formattedAmount = formatUnits(BigInt(amountIn), fromAsset.decimals);
 
-      const url = `https://open-api.openocean.finance/v4/${chainStr}/quote?inTokenAddress=${fromAsset.underlyingAsset}&outTokenAddress=${toAsset.underlyingAsset}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage * 100}`;
+      // OpenOcean v4 expects slippage as a PERCENT (1 = 1%), unlike Kyber/Paraswap which take
+      // basis points. `slippage` is already a percent here, so pass it through directly —
+      // multiplying by 100 sends e.g. 100 for a 1% setting, which OpenOcean rejects (and 50 = 50%).
+      const url = `https://open-api.openocean.finance/v4/${chainStr}/quote?inTokenAddress=${fromAsset.underlyingAsset}&outTokenAddress=${toAsset.underlyingAsset}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage}`;
       const res = await fetch(url);
       const text = await res.text();
       let json;
@@ -83,9 +87,11 @@ export const openOceanAdapter: Adapter = {
 
   buildTransaction: async (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number): Promise<TransactionPayload> => {
     const chainStr = getOpenOceanChain(chainId);
+    if (!chainStr) throw new Error(`OpenOcean: unsupported chain ${chainId}`);
     const gasPrice = quote.rawQuote.gasPrice || 500000000;
     const formattedAmount = formatUnits(BigInt(quote.rawQuote.inAmount), quote.rawQuote.inToken.decimals);
-    const url = `https://open-api.openocean.finance/v4/${chainStr}/swap?inTokenAddress=${quote.rawQuote.inToken.address}&outTokenAddress=${quote.rawQuote.outToken.address}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage * 100}&account=${walletAddress}`;
+    // OpenOcean v4 slippage is a PERCENT (1 = 1%), not basis points — pass `slippage` as-is.
+    const url = `https://open-api.openocean.finance/v4/${chainStr}/swap?inTokenAddress=${quote.rawQuote.inToken.address}&outTokenAddress=${quote.rawQuote.outToken.address}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage}&account=${walletAddress}`;
     
     const res = await fetch(url);
     const text = await res.text();

@@ -208,7 +208,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             />
             {activeTab === 'repay' && (
               <button
-                onClick={() => { setAmountStr(asset.amount?.toString() ?? '0'); setIsMax(true) }}
+                onClick={() => { setAmountStr((asset.amount ?? 0).toFixed(asset.decimals)); setIsMax(true) }}
                 style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
               >MAX</button>
             )}

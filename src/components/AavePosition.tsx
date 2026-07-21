@@ -7,15 +7,17 @@ import { AssetsToSupplyModal } from './AssetsToSupplyModal'
 import { AssetsToBorrowModal } from './AssetsToBorrowModal'
 import { BorrowRepayModal } from './BorrowRepayModal'
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
+import { getChainConfig } from '../config/chains'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 
 interface AavePositionProps {
   viewAddress?: `0x${string}`
   viewChainId?: number
+  apiEthPrice?: number | null
 }
 
-export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {}) {
+export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePositionProps = {}) {
   const {
     isConnected,
     isViewMode,
@@ -101,7 +103,11 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     const effectiveAvgEntry = override && override > 0 ? override : pnl.avgEntryPriceUsd
     if (!(effectiveAvgEntry > 0)) return { effectiveAvgEntry: 0, priceGainUsd: 0, totalPnlUsd: 0, isOverride: false }
 
-    const currentPrice = Number(a.priceInUsd)
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
+    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(a.priceInUsd)
+
     // For lenders: netPrincipal = balance - interestEarned; supply P&L uses netPrincipal for price and interestTokens at current price.
     // For borrowers: same shape but sign flipped and interest treated as cost.
     const interestTokens = side === 'supply' ? (a.interestEarnedTokens ?? 0) : (a.interestPaidTokens ?? 0)
@@ -136,11 +142,17 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
     const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
     const isOverride = !!r?.isOverride
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
+    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(a.priceInUsd)
+    const valueUsd = a.amount * currentPrice
+
     return (
       <td className="number" data-label="Value (USD)">
-        ${a.valueUsd.toFixed(2)}
+        ${valueUsd.toFixed(2)}
         <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '2px' }}>
-          @ ${Number(a.priceInUsd).toFixed(2)}
+          @ ${currentPrice.toFixed(2)}
         </div>
         <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '4px' }}>
           <button
@@ -174,12 +186,17 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const asset = list.find((a: any) => a.underlyingAsset.toLowerCase() === addr)
     if (!asset) return null
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const isNativeToken = asset.symbol.toUpperCase() === nativeWrappedSymbol
+    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(asset.priceInUsd)
+
     return {
       side,
       asset,
       rowKey: editingKey,
       onChainAvg: asset.positionPnl?.avgEntryPriceUsd ?? 0,
-      currentPrice: Number(asset.priceInUsd),
+      currentPrice,
       isOverride: editingKey in overrides,
     }
   }
@@ -244,7 +261,9 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
       )
     }
     // Connected wallet with no position yet: let them open one.
-    const emptyEthPriceUsd = Number(availableReserves?.find((r: { symbol: string; priceInUsd?: string | number | null }) => r.symbol.toUpperCase() === 'WETH')?.priceInUsd || 0)
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const emptyEthPriceUsd = Number(availableReserves?.find((r: { symbol: string; priceInUsd?: string | number | null }) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
     return (
       <div className="dashboard-container">
         <div className="card" style={{ textAlign: 'center', padding: T.space[8] }}>
@@ -294,8 +313,10 @@ export function AavePosition({ viewAddress, viewChainId }: AavePositionProps = {
   }
 
   const netInterestUsd = totalInterestEarnedUsd - totalInterestPaidUsd
+  const chainConfig = getChainConfig(chainId)
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === 'WETH')?.priceInUsd || 0)
+  const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
 
   return (
     <div className="dashboard-container">

@@ -131,7 +131,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
               <span>Amount to Repay (in {borrowedAsset.symbol}):</span>
               <button
                 onClick={() => {
-                  setAmountStr(borrowedAsset.amount.toString())
+                  setAmountStr(borrowedAsset.amount.toFixed(borrowedAsset.decimals))
                   setIsMax(true)
                 }}
                 style={{ fontSize: '10px', padding: '2px 6px', background: '#333', color: '#fff', border: 'none', borderRadius: '4px' }}

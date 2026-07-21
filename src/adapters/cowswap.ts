@@ -1,12 +1,12 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 
-const getCowChain = (chainId: number): string => {
+const getCowChain = (chainId: number): string | null => {
   switch (chainId) {
     case 1: return 'mainnet';
     case 100: return 'xdai';
     case 42161: return 'arbitrum_one';
-    default: return 'mainnet';
+    default: return null; // unsupported chain — don't silently quote on mainnet
   }
 };
 
@@ -16,6 +16,7 @@ export const cowSwapAdapter: Adapter = {
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, _slippage: number, chainId: number): Promise<QuoteResponse | null> => {
     try {
       const chainStr = getCowChain(chainId);
+      if (!chainStr) return null;
       const url = `https://api.cow.fi/${chainStr}/api/v1/quote`;
       
       const res = await fetch(url, {

@@ -4,7 +4,7 @@ import { formatUnits } from 'viem';
 // KyberSwap requires an x-client-id header on both /routes and /route/build.
 const KYBER_CLIENT_ID = 'defi-route';
 
-const getKyberChain = (chainId: number): string => {
+const getKyberChain = (chainId: number): string | null => {
   switch (chainId) {
     case 1: return 'ethereum';
     case 10: return 'optimism';
@@ -14,7 +14,7 @@ const getKyberChain = (chainId: number): string => {
     case 8453: return 'base';
     case 42161: return 'arbitrum';
     case 43114: return 'avalanche';
-    default: return 'ethereum';
+    default: return null; // unsupported chain — don't silently quote on ethereum
   }
 };
 
@@ -24,6 +24,7 @@ export const kyberSwapAdapter: Adapter = {
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, _slippage: number, chainId: number): Promise<QuoteResponse | null> => {
     try {
       const chainStr = getKyberChain(chainId);
+      if (!chainStr) return null;
       const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/routes?tokenIn=${fromAsset.underlyingAsset}&tokenOut=${toAsset.underlyingAsset}&amountIn=${amountIn}&gasInclude=true`;
       const res = await fetch(url, { headers: { 'x-client-id': KYBER_CLIENT_ID } });
       const json = await res.json();
@@ -57,6 +58,7 @@ export const kyberSwapAdapter: Adapter = {
   
   buildTransaction: async (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number): Promise<TransactionPayload> => {
     const chainStr = getKyberChain(chainId);
+    if (!chainStr) throw new Error(`KyberSwap: unsupported chain ${chainId}`);
     const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/route/build`;
     const res = await fetch(url, {
       method: 'POST',

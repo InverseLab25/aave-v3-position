@@ -42,9 +42,10 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
 
   const { data: ethBalance } = useBalance({ address })
 
-  const targetSymbols = ['WETH', 'USDC', 'USDT']
+  const targetSymbols = chainConfig?.defaultTokens?.map(t => t.symbol.toUpperCase()) || ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
-  const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === 'WETH')
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+  const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === nativeWrappedSymbol)
   const supplyOptions = [...filteredReserves]
   if (wethReserve) supplyOptions.unshift({ ...wethReserve, symbol: 'ETH', underlyingAsset: 'native' })
 

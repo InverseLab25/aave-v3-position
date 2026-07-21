@@ -1,6 +1,6 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAccount, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
-import { estimateFeesPerGas } from 'wagmi/actions';
+import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
 import { calculateAdjustedFees } from '../utils/gas';
 import { simulateAndWrite, approveAbi } from '../utils/contract';
@@ -37,6 +37,9 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   const explorerUrl = chainConfig?.explorerUrl ?? 'https://etherscan.io';
 
   const amountInBigInt = parseUnits(amountIn, fromAsset.decimals);
+
+  // Error from the pre-flight simulation of the swap tx (before it's sent on-chain).
+  const [execError, setExecError] = useState<string | null>(null);
 
   // 1. Read current allowance
   const { data: allowanceData, refetch: refetchAllowance } = useReadContract({
@@ -85,7 +88,9 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   // effects. Ordered most-advanced-first so the latest phase wins each render.
   const hasAllowance =
     allowanceData !== undefined && (allowanceData as bigint) >= amountInBigInt;
-  const step: ExecutionStep = swapError
+  const step: ExecutionStep = execError
+    ? 'error'
+    : swapError
     ? 'error'
     : isSwapConfirmed
     ? 'success'
@@ -101,7 +106,9 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     ? 'approved'
     : 'needs_approval';
 
-  const errorMsg = swapError
+  const errorMsg = execError
+    ? execError
+    : swapError
     ? `Swap failed: ${swapError.message.slice(0, 120)}`
     : approveError
     ? `Approval failed: ${approveError.message.slice(0, 120)}`
@@ -110,6 +117,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   // Retry clears the failed mutation(s); the step then re-derives back to the
   // right phase (needs_approval / approved).
   const handleRetry = () => {
+    setExecError(null);
     resetApprove();
     resetSwap();
   };
@@ -125,12 +133,30 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   };
 
   const handleExecute = async () => {
+    setExecError(null);
+    const value = txPayload.value ? BigInt(txPayload.value) : 0n;
+
+    // Pre-flight the raw swap tx (eth_call-style dry run). Stale/bad aggregator calldata
+    // reverts HERE for free instead of on-chain, where it would burn the user's gas.
+    try {
+      await estimateGas(config, {
+        to: txPayload.to as `0x${string}`,
+        data: txPayload.data as `0x${string}`,
+        value,
+        account: address,
+      });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (e: any) {
+      setExecError(`Swap would revert — refresh the quote and try again: ${(e?.shortMessage || e?.message || 'unknown error').slice(0, 120)}`);
+      return;
+    }
+
     const { maxFeePerGas, maxPriorityFeePerGas } = await estimateFeesPerGas(config);
     const { adjustedMaxFeePerGas: adjMax, adjustedMaxPriorityFeePerGas: adjPriority } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas);
     sendTransaction({
       to: txPayload.to as `0x${string}`,
       data: txPayload.data as `0x${string}`,
-      value: txPayload.value ? BigInt(txPayload.value) : 0n,
+      value,
       maxFeePerGas: adjMax,
       maxPriorityFeePerGas: adjPriority,
     });

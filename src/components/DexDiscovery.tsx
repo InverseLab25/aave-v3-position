@@ -214,18 +214,12 @@ export function DexDiscovery() {
     }
   };
 
-  // Auto-refresh while the modal is open: kick off an immediate refresh (deferred
-  // so no setState runs synchronously in the effect), then poll every 2s.
-  useEffect(() => {
-    if (!activeAggregator) return;
-    const kickoff = setTimeout(refreshActiveQuote, 0);
-    const id = setInterval(refreshActiveQuote, 2000);
-    return () => {
-      clearTimeout(kickoff);
-      clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAggregator, address, fromAsset?.underlyingAsset, toAsset?.underlyingAsset, amountStr, slippage, chainId]);
+  // NOTE: intentionally no auto-refresh interval here.
+  // A 2s poll used to rebuild builtTxs[activeAggregator] (new router/calldata/minOut/spender)
+  // while the confirm modal was open — including *after* the user had reviewed and started
+  // approving/executing — so they could sign a payload different from the one they reviewed.
+  // Refresh is now manual only (the modal's Refresh button → refreshActiveQuote), which keeps
+  // the displayed quote and the executable tx consistent with what the user is looking at.
 
   const clearTx = (aggregatorName: string) => {
     setBuiltTxs(prev => {
@@ -244,6 +238,7 @@ export function DexDiscovery() {
     try {
       const txData = await adapter.buildTransaction(quote, slippage, address, chainId);
       setBuiltTxs(prev => ({ ...prev, [aggregatorName]: txData }));
+      setActiveQuoteRefreshedAt(Date.now());
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       alert(`Failed to build tx for ${aggregatorName}: ${msg}`);
@@ -424,7 +419,7 @@ export function DexDiscovery() {
                     type="number"
                     step="0.1"
                     value={slippage}
-                    onChange={e => setSlippage(parseFloat(e.target.value) || 0)}
+                    onChange={e => setSlippage(Math.min(50, Math.max(0, parseFloat(e.target.value) || 0)))}
                     placeholder="Custom %"
                     style={{ width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid var(--border-color)' }}
                   />

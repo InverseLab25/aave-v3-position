@@ -39,7 +39,9 @@ export function ConfirmSwapModal({
 
   const rate = amountInNum > 0 ? (amountOutFormatted / amountInNum).toFixed(4) : '0';
 
-  const slippageBps = BigInt(Math.floor(slippage * 100));
+  // Clamp slippage to a sane range so a negative/garbage value can't push minOut above amountOut.
+  const safeSlippage = Math.min(50, Math.max(0, slippage));
+  const slippageBps = BigInt(Math.floor(safeSlippage * 100));
   const minOutputBigInt = (BigInt(quote.amountOut) * (10000n - slippageBps)) / 10000n;
   const minOutputFormatted = Number(formatUnits(minOutputBigInt, toAsset.decimals)).toFixed(6);
 

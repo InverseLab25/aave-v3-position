@@ -15,10 +15,14 @@ import { useAavePositions } from './hooks/useAavePositions'
 function App() {
   const { viewAddress, viewChainId } = useViewMode()
   const apiEthPrice = useEthPrice()
+  const connectedChainId = useChainId()
+  const chainId = viewChainId ?? connectedChainId
+  const chainConfig = getChainConfig(chainId)
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
-  
+
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const wethAsset = suppliedAssets.find((a: any) => a.symbol === 'WETH')
+  const wethAsset = suppliedAssets.find((a: any) => a.symbol.toUpperCase() === nativeWrappedSymbol)
   const ethPrice = wethAsset ? Number(wethAsset.priceInUsd) : apiEthPrice
 
   const isViewMode = !!viewAddress
@@ -26,10 +30,6 @@ function App() {
   // DEX Discovery is for the connected wallet only, so force the Aave tab while
   // viewing another address — derived, not synced via an effect.
   const activeTab = isViewMode ? 'aave' : selectedTab
-  const connectedChainId = useChainId()
-  // In view mode, display the chain from the URL rather than the wallet's chain.
-  const chainId = viewChainId ?? connectedChainId
-  const chainConfig = getChainConfig(chainId)
 
   const chainName = chainConfig?.name ?? `Chain ${chainId}`
   const isTestnet = chainId === 11155111 || chainId === 84532
@@ -111,7 +111,7 @@ function App() {
       </header>
       <main>
         <div style={{ display: activeTab === 'aave' ? 'block' : 'none' }}>
-          <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} />
+          <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} apiEthPrice={apiEthPrice} />
         </div>
         {!isViewMode && activeTab === 'dex' && (
           <Suspense fallback={<div style={{ padding: '20px' }}>Loading DEX Discovery…</div>}>

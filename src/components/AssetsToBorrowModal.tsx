@@ -47,9 +47,10 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
 
   const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0, 10n)
 
-  const targetSymbols = ['WETH', 'USDC', 'USDT']
+  const targetSymbols = chainConfig?.defaultTokens?.map(t => t.symbol.toUpperCase()) || ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
-  const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === 'WETH')
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+  const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === nativeWrappedSymbol)
   const borrowOptions = [...filteredReserves]
   if (wethReserve) borrowOptions.unshift({ ...wethReserve, symbol: 'ETH', underlyingAsset: 'native' })
 
@@ -188,7 +189,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                   onBlur={e => (e.currentTarget.style.borderColor = T.border)}
                 />
                 <button
-                  onClick={() => setAmountStr(maxBorrowAmount.toString())}
+                  onClick={() => setAmountStr(maxBorrowAmount.toFixed(selectedAsset.decimals))}
                   style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
                 >MAX</button>
               </div>
