@@ -92,7 +92,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
    * price gain is signed opposite for the two sides.
    */
   const applyOverride = (
-    a: { positionPnl?: { avgEntryPriceUsd: number; realizedPnlUsd: number; interestUsd: number }; amount: number; interestEarnedTokens?: number; interestPaidTokens?: number; priceInUsd: string; underlyingAsset: string },
+    a: { positionPnl?: { avgEntryPriceUsd: number; realizedPnlUsd: number; interestUsd: number }; amount: number; interestEarnedTokens?: number; interestPaidTokens?: number; priceInUsd: string; underlyingAsset: string; symbol: string },
     side: 'supply' | 'borrow'
   ) => {
     const pnl = a.positionPnl
