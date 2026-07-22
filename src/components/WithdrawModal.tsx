@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useReadContract, useWaitForTransactionReceipt, useConfig } from 'wagmi'
+import { useWriteContract, useConnection, useReadContract, useWaitForTransactionReceipt, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
@@ -24,7 +24,7 @@ interface WithdrawModalProps {
 }
 
 export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, availableReserves = [], onClose }: WithdrawModalProps) {
-  const { address, chainId } = useAccount()
+  const { address, chainId } = useConnection()
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
   const [amountStr, setAmountStr] = useState('')
@@ -33,7 +33,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const [logs, setLogs] = useState<string[]>([])
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
 
-  const { writeContractAsync } = useWriteContract()
+  const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 

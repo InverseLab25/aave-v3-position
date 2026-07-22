@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useReadContract, useWaitForTransactionReceipt, useConfig, useBalance } from 'wagmi'
+import { useWriteContract, useConnection, useReadContract, useWaitForTransactionReceipt, useConfig, useBalance } from 'wagmi'
 import { parseUnits, maxUint256, erc20Abi, formatUnits } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
@@ -32,7 +32,7 @@ interface BorrowRepayModalProps {
 const TAB_LABELS = { borrow: 'Borrow', repay: 'Repay' } as const
 
 export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: BorrowRepayModalProps) {
-  const { address, chainId } = useAccount()
+  const { address, chainId } = useConnection()
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
   const [activeTab, setActiveTab] = useState<'borrow' | 'repay'>(initialTab)
@@ -42,7 +42,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const [logs, setLogs] = useState<string[]>([])
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
 
-  const { writeContractAsync } = useWriteContract()
+  const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 

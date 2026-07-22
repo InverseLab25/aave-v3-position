@@ -1,5 +1,6 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
+import { isNativeAddress } from './native';
 
 const getCowChain = (chainId: number): string | null => {
   switch (chainId) {
@@ -17,6 +18,8 @@ export const cowSwapAdapter: Adapter = {
     try {
       const chainStr = getCowChain(chainId);
       if (!chainStr) return null;
+      // CowSwap trades ERC-20s only (native ETH must be wrapped to WETH first).
+      if (isNativeAddress(fromAsset.underlyingAsset) || isNativeAddress(toAsset.underlyingAsset)) return null;
       const url = `https://api.cow.fi/${chainStr}/api/v1/quote`;
       
       const res = await fetch(url, {

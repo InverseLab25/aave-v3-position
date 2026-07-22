@@ -1,4 +1,4 @@
-import { useAccount, useChainId, useChains, useSwitchChain } from 'wagmi'
+import { useConnection, useChainId, useChains, useSwitchChain } from 'wagmi'
 import { getChainConfig } from '../config/chains'
 
 /**
@@ -8,7 +8,7 @@ import { getChainConfig } from '../config/chains'
  * wagmi-configured networks, so every option is guaranteed switchable.
  */
 export function NetworkSwitcher() {
-  const { isConnected } = useAccount()
+  const { isConnected } = useConnection()
   const chainId = useChainId()
   const chains = useChains()
   const { mutate: switchChain, isPending, error } = useSwitchChain()

@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { useAccount, useConnect, useConnectors, useDisconnect } from 'wagmi'
+import { useConnection, useConnect, useConnectors, useDisconnect } from 'wagmi'
 import { NetworkSwitcher } from './NetworkSwitcher'
 
 export function WalletConnect() {
-  const { address, isConnected } = useAccount()
+  const { address, isConnected } = useConnection()
   const connectors = useConnectors()
   const { mutate: connect } = useConnect()
   const { mutate: disconnect } = useDisconnect()

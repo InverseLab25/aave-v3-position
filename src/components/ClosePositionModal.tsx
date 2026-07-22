@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useWriteContract, useAccount, useChainId, useConfig } from 'wagmi'
+import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
 import aavePoolAbi from '../config/aavev3Abi.json'
@@ -20,7 +20,7 @@ interface ClosePositionModalProps {
 }
 
 export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: ClosePositionModalProps) {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const chainId = useChainId()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedCollateral, setSelectedCollateral] = useState<any>(suppliedAssets[0] || null)

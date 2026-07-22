@@ -1,5 +1,9 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
+import { isNativeAddress, NATIVE_ZERO_ADDRESS } from './native';
+
+// DefiLlama's swap API represents native ETH as the zero address, not the 0xEeee… sentinel.
+const toOdosToken = (addr: string) => (isNativeAddress(addr) ? NATIVE_ZERO_ADDRESS : addr);
 
 // Odos routed through DefiLlama's meta-aggregator, so only the DefiLlama key is
 // required (no separate Odos key). DefiLlama's dexAggregatorQuote is one-shot:
@@ -62,8 +66,8 @@ export const odosAdapter: Adapter = {
       if (!chain) return null;
       const req: DefiLlamaReq = {
         chain,
-        from: fromAsset.underlyingAsset,
-        to: toAsset.underlyingAsset,
+        from: toOdosToken(fromAsset.underlyingAsset),
+        to: toOdosToken(toAsset.underlyingAsset),
         amount: amountIn,
         slippage,
       };

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatUnits } from 'viem';
-import { useAccount } from 'wagmi';
+import { useConnection } from 'wagmi';
 import type { QuoteResponse, TransactionPayload, Asset } from '../adapters/types';
 import { SwapExecutor } from './SwapExecutor';
 
@@ -18,6 +18,8 @@ interface ConfirmSwapModalProps {
   lastRefreshedAt?: number;
   /** Trigger an on-demand quote refresh (Refresh button in the modal). */
   onRefresh?: () => void;
+  /** Fired once the user commits (clicks Approve/Execute) so the parent can freeze auto-refresh. */
+  onSwapStart?: () => void;
 }
 
 export function ConfirmSwapModal({
@@ -31,8 +33,9 @@ export function ConfirmSwapModal({
   isRefreshing = false,
   lastRefreshedAt = 0,
   onRefresh,
+  onSwapStart,
 }: ConfirmSwapModalProps) {
-  const { address } = useAccount();
+  const { address } = useConnection();
 
   const amountOutFormatted = Number(formatUnits(BigInt(quote.amountOut), toAsset.decimals));
   const amountInNum = parseFloat(amountIn);
@@ -269,11 +272,12 @@ export function ConfirmSwapModal({
               </div>
             </div>
 
-            <SwapExecutor 
+            <SwapExecutor
               txPayload={txPayload}
               fromAsset={fromAsset}
               amountIn={amountIn}
               onClose={onClose}
+              onSwapStart={onSwapStart}
               isEmbedded={true}
             />
       </div>

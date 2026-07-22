@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { useAccount, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
+import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
 import { erc20Abi, parseSignature, type Address } from 'viem'
 import { calculateAdjustedFees } from '../utils/gas'
@@ -57,7 +57,7 @@ export interface CloseInput {
 export type CloseStep = 'idle' | 'running' | 'done' | 'error'
 
 export function useDeleverageClose() {
-  const { address } = useAccount()
+  const { address } = useConnection()
   const chainId = useChainId()
   const publicClient = usePublicClient()
   const { data: walletClient } = useWalletClient()

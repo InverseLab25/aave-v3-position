@@ -4,13 +4,15 @@ import { openOceanAdapter } from './openocean';
 import { paraSwapAdapter } from './paraswap';
 import { cowSwapAdapter } from './cowswap';
 import { odosAdapter } from './odos';
+import { zeroxAdapter } from './zerox';
 
 export const allAdapters: Adapter[] = [
   kyberSwapAdapter,
   openOceanAdapter,
   paraSwapAdapter,
   cowSwapAdapter,
-  odosAdapter
+  odosAdapter,
+  zeroxAdapter
 ];
 
 /** Returns only the adapters available on the given chain */

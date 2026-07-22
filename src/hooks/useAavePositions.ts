@@ -1,4 +1,4 @@
-import { useAccount, useReadContract, useReadContracts, useChainId } from 'wagmi'
+import { useConnection, useReadContract, useReadContracts, useChainId } from 'wagmi'
 import { formatUnits } from 'viem'
 import uiPoolDataProviderAbi from '../config/uiPoolDataProviderAbi.json'
 import { getChainConfig } from '../config/chains'
@@ -39,7 +39,7 @@ export interface UseAavePositionsOptions {
 }
 
 export function useAavePositions(options?: UseAavePositionsOptions) {
-  const { address: connectedAddress, isConnected: isWalletConnected } = useAccount()
+  const { address: connectedAddress, isConnected: isWalletConnected } = useConnection()
   const connectedChainId = useChainId()
   const isViewMode = !!options?.viewAddress
   const targetAddress = (options?.viewAddress ?? connectedAddress) as `0x${string}` | undefined

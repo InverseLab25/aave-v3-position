@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useConfig, useReadContract } from 'wagmi'
+import { useConnection, useWriteContract, useWaitForTransactionReceipt, useConfig, useReadContract } from 'wagmi'
 import { parseUnits, maxUint256 } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
@@ -31,7 +31,7 @@ const debtTokenAbi = [
 ] as const
 
 export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 0, availableBorrowsUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: AssetsToBorrowModalProps) {
-  const { address } = useAccount()
+  const { address } = useConnection()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
@@ -41,7 +41,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
 
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
-  const { writeContractAsync } = useWriteContract()
+  const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 

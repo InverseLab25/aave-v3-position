@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useAavePositions } from '../hooks/useAavePositions';
-import { useAccount, useReadContract } from 'wagmi';
+import { useConnection, useReadContract, useBalance } from 'wagmi';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
 import { getAdaptersForChain } from '../adapters';
+import { NATIVE_ADDRESS, isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
 import { ConfirmSwapModal } from './ConfirmSwapModal';
 import type { Asset, QuoteResponse, TransactionPayload } from '../adapters';
@@ -12,17 +13,26 @@ type KyberHop = { tokenIn: string; tokenOut: string; swapAmount: string; exchang
 
 export function DexDiscovery() {
   const { suppliedAssets, borrowedAssets, isConnected, chainId } = useAavePositions();
-  const { address } = useAccount();
+  const { address, chain } = useConnection();
   const chainConfig = getChainConfig(chainId);
 
   const adapters = useMemo(() => {
     return getAdaptersForChain(chainConfig?.adapters ?? []);
   }, [chainConfig]);
 
-  const defaultTokens = useMemo<Token[]>(
-    () => (chainConfig?.defaultTokens ?? []).map(t => ({ ...t, source: 'default' as const })),
-    [chainConfig]
-  );
+  const defaultTokens = useMemo<Token[]>(() => {
+    const base = (chainConfig?.defaultTokens ?? []).map(t => ({ ...t, source: 'default' as const }));
+    // Expose the chain's native currency (ETH/BNB/POL/…) as a first-class swap token,
+    // but only where swaps are actually supported. The native symbol/decimals come from
+    // the connected chain, falling back to the wrapped-native default (WETH → ETH).
+    if (!chainConfig || (chainConfig.adapters?.length ?? 0) === 0) return base;
+    const nativeSymbol = chain?.nativeCurrency?.symbol
+      ?? chainConfig.defaultTokens?.[0]?.symbol?.replace(/^W/, '')
+      ?? 'ETH';
+    const nativeDecimals = chain?.nativeCurrency?.decimals ?? 18;
+    const nativeToken: Token = { underlyingAsset: NATIVE_ADDRESS, symbol: nativeSymbol, decimals: nativeDecimals, source: 'default' };
+    return [nativeToken, ...base];
+  }, [chainConfig, chain]);
 
   // Merge Aave positions with default tokens, deduped by address
   const allFromTokens = useMemo<Token[]>(() => {
@@ -77,17 +87,25 @@ export function DexDiscovery() {
     ?? allToTokens[0]
     ?? null;
 
-  // Fetch actual wallet balance for fromAsset via ERC20 balanceOf
+  // Fetch actual wallet balance for fromAsset. Native currency uses useBalance;
+  // ERC-20s use balanceOf (each read is disabled for the case it doesn't apply to).
+  const isFromNative = isNativeAddress(fromAsset?.underlyingAsset);
+  const { data: nativeBalance } = useBalance({
+    address,
+    query: { enabled: !!address && isFromNative },
+  });
   const { data: fromBalanceRaw } = useReadContract({
     address: fromAsset?.underlyingAsset as `0x${string}` | undefined,
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
-    query: { enabled: !!address && !!fromAsset?.underlyingAsset },
+    query: { enabled: !!address && !!fromAsset?.underlyingAsset && !isFromNative },
   });
-  const fromBalance = fromBalanceRaw !== undefined && fromAsset
-    ? Number(formatUnits(fromBalanceRaw as bigint, fromAsset.decimals))
-    : 0;
+  const fromBalance = isFromNative
+    ? (nativeBalance ? Number(formatUnits(nativeBalance.value, nativeBalance.decimals)) : 0)
+    : (fromBalanceRaw !== undefined && fromAsset
+        ? Number(formatUnits(fromBalanceRaw as bigint, fromAsset.decimals))
+        : 0);
   const fromBalanceFormatted = fromBalance.toFixed(6);
 
   // Reset user selections when chain changes (state-adjust pattern — cheaper than an effect).
@@ -183,6 +201,10 @@ export function DexDiscovery() {
   // Track refresh state so the modal can surface "Refreshing…" / "Updated Xs ago".
   const [isRefreshingActive, setIsRefreshingActive] = useState(false);
   const [activeQuoteRefreshedAt, setActiveQuoteRefreshedAt] = useState<number>(0);
+  // Flips true once the user commits to a route (clicks Approve/Execute in the embedded
+  // SwapExecutor). While true, auto-refresh is frozen so the tx they sign is exactly the
+  // one they reviewed — they can never approve payload A then execute a refreshed payload B.
+  const [swapStarted, setSwapStarted] = useState(false);
 
   /**
    * Refresh the quote and rebuild the tx for the currently-open aggregator's modal.
@@ -190,6 +212,7 @@ export function DexDiscovery() {
    */
   const refreshActiveQuote = async () => {
     if (!activeAggregator || !address || !fromAsset || !toAsset) return;
+    if (swapStarted) return; // frozen once the user has committed — never rebuild under them
     const adapter = adapters.find(a => a.name === activeAggregator);
     if (!adapter) return;
     let amountIn: string;
@@ -214,14 +237,22 @@ export function DexDiscovery() {
     }
   };
 
-  // NOTE: intentionally no auto-refresh interval here.
-  // A 2s poll used to rebuild builtTxs[activeAggregator] (new router/calldata/minOut/spender)
-  // while the confirm modal was open — including *after* the user had reviewed and started
-  // approving/executing — so they could sign a payload different from the one they reviewed.
-  // Refresh is now manual only (the modal's Refresh button → refreshActiveQuote), which keeps
-  // the displayed quote and the executable tx consistent with what the user is looking at.
+  // Auto-refresh the open confirm modal's quote/tx every 2s so a slow review (quotes can take
+  // 5-10s to go stale) doesn't execute against an old price. Freezes the instant the user
+  // commits (swapStarted) so the reviewed tx can never be swapped out from under them.
+  useEffect(() => {
+    if (!activeAggregator || swapStarted) return;
+    const kickoff = setTimeout(refreshActiveQuote, 0);
+    const id = setInterval(refreshActiveQuote, 2000);
+    return () => {
+      clearTimeout(kickoff);
+      clearInterval(id);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAggregator, swapStarted, address, fromAsset?.underlyingAsset, toAsset?.underlyingAsset, amountStr, slippage, chainId]);
 
   const clearTx = (aggregatorName: string) => {
+    setSwapStarted(false); // reopening a fresh review — allow auto-refresh again
     setBuiltTxs(prev => {
       const newTxs = { ...prev };
       delete newTxs[aggregatorName];
@@ -234,6 +265,7 @@ export function DexDiscovery() {
     const adapter = adapters.find(a => a.name === aggregatorName);
     if (!quote || !adapter || !address) return;
 
+    setSwapStarted(false); // fresh review starts unfrozen
     setIsBuildingTx(prev => ({ ...prev, [aggregatorName]: true }));
     try {
       const txData = await adapter.buildTransaction(quote, slippage, address, chainId);
@@ -566,6 +598,7 @@ export function DexDiscovery() {
                             isRefreshing={isRefreshingActive}
                             lastRefreshedAt={activeQuoteRefreshedAt}
                             onRefresh={refreshActiveQuote}
+                            onSwapStart={() => setSwapStarted(true)}
                           />
                         ) : (
                           <button

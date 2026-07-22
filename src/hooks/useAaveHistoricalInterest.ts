@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useAccount, useChainId } from 'wagmi'
+import { useConnection, useChainId } from 'wagmi'
 import { getChainConfig } from '../config/chains'
 
 const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
@@ -132,7 +132,7 @@ function realizeExit(
 }
 
 export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?: number) {
-  const { address: connectedAddress } = useAccount()
+  const { address: connectedAddress } = useConnection()
   const connectedChainId = useChainId()
   const chainId = chainIdOverride ?? connectedChainId
   const chainConfig = getChainConfig(chainId)

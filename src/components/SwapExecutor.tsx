@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { useAccount, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
+import { useConnection, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
 import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
 import { calculateAdjustedFees } from '../utils/gas';
 import { simulateAndWrite, approveAbi } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
+import { isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
 
 const ERC20_ABI = [
@@ -25,18 +26,24 @@ interface SwapExecutorProps {
   fromAsset: Asset;
   amountIn: string;
   onClose: () => void;
+  /** Fired the moment the user commits (Approve/Execute) so the parent can freeze quote refresh. */
+  onSwapStart?: () => void;
   isEmbedded?: boolean;
 }
 
 type ExecutionStep = 'check_allowance' | 'needs_approval' | 'approving' | 'approved' | 'executing' | 'success' | 'error';
 
-export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedded }: SwapExecutorProps) {
-  const { address, chainId } = useAccount();
+export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapStart, isEmbedded }: SwapExecutorProps) {
+  const { address, chainId } = useConnection();
   const config = useConfig();
   const chainConfig = getChainConfig(chainId);
   const explorerUrl = chainConfig?.explorerUrl ?? 'https://etherscan.io';
 
   const amountInBigInt = parseUnits(amountIn, fromAsset.decimals);
+
+  // Selling native currency (ETH/BNB/…) needs no ERC-20 approval — the amount rides
+  // along as tx `value` — so the whole allowance/approve step is skipped.
+  const isFromNative = isNativeAddress(fromAsset.underlyingAsset);
 
   // Error from the pre-flight simulation of the swap tx (before it's sent on-chain).
   const [execError, setExecError] = useState<string | null>(null);
@@ -47,12 +54,12 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     abi: ERC20_ABI,
     functionName: 'allowance',
     args: address ? [address, txPayload.spender as `0x${string}`] : undefined,
-    query: { enabled: !!address }
+    query: { enabled: !!address && !isFromNative }
   });
 
   // 2. Approve hook (async so we can simulate before writing)
   const {
-    writeContractAsync: writeApproveAsync,
+    mutateAsync: writeApproveAsync,
     data: approveHash,
     isPending: isApprovePending,
     error: approveError,
@@ -87,7 +94,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   // Derive the UI step from wallet/tx state rather than mirroring it into state via
   // effects. Ordered most-advanced-first so the latest phase wins each render.
   const hasAllowance =
-    allowanceData !== undefined && (allowanceData as bigint) >= amountInBigInt;
+    isFromNative || (allowanceData !== undefined && (allowanceData as bigint) >= amountInBigInt);
   const step: ExecutionStep = execError
     ? 'error'
     : swapError
@@ -100,7 +107,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
     ? 'error'
     : isApprovePending || (!!approveHash && !isApproveConfirmed)
     ? 'approving'
-    : allowanceData === undefined
+    : !isFromNative && allowanceData === undefined
     ? 'check_allowance'
     : hasAllowance || isApproveConfirmed
     ? 'approved'
@@ -123,6 +130,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   };
 
   const handleApprove = async () => {
+    onSwapStart?.(); // user committed — parent freezes quote auto-refresh so this tx can't change
     // simulateAndWrite: estimate fees → simulate → write with validated request
     await simulateAndWrite(config, writeApproveAsync, {
       address: fromAsset.underlyingAsset as `0x${string}`,
@@ -133,6 +141,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, isEmbedd
   };
 
   const handleExecute = async () => {
+    onSwapStart?.(); // user committed — parent freezes quote auto-refresh so this tx can't change
     setExecError(null);
     const value = txPayload.value ? BigInt(txPayload.value) : 0n;
 
