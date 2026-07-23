@@ -18,6 +18,33 @@ const aavePoolAbi = [
     stateMutability: 'view',
     type: 'function',
   },
+  {
+    inputs: [{ internalType: 'address', name: 'user', type: 'address' }],
+    name: 'getUserEMode',
+    outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    inputs: [{ internalType: 'uint8', name: 'id', type: 'uint8' }],
+    name: 'getEModeCategoryData',
+    outputs: [
+      {
+        components: [
+          { internalType: 'uint16', name: 'ltv', type: 'uint16' },
+          { internalType: 'uint16', name: 'liquidationThreshold', type: 'uint16' },
+          { internalType: 'uint16', name: 'liquidationBonus', type: 'uint16' },
+          { internalType: 'address', name: 'priceSource', type: 'address' },
+          { internalType: 'string', name: 'label', type: 'string' },
+        ],
+        internalType: 'struct DataTypes.EModeCategoryLegacy',
+        name: '',
+        type: 'tuple',
+      },
+    ],
+    stateMutability: 'view',
+    type: 'function',
+  },
 ] as const
 
 const SECONDS_PER_YEAR = 31536000
@@ -63,6 +90,28 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     query: { enabled: !!targetAddress && hasAaveConfig }
   })
 
+  // 1b. Fetch user E-Mode category
+  const { data: userEModeData } = useReadContract({
+    chainId,
+    address: chainConfig?.aave.poolAddress,
+    abi: aavePoolAbi,
+    functionName: 'getUserEMode',
+    args: targetAddress ? [targetAddress] : undefined,
+    query: { enabled: !!targetAddress && hasAaveConfig }
+  })
+
+  const eModeCategoryId = userEModeData ? Number(userEModeData) : 0
+
+  // 1c. Fetch E-Mode category details if active
+  const { data: eModeCategoryData } = useReadContract({
+    chainId,
+    address: chainConfig?.aave.poolAddress,
+    abi: aavePoolAbi,
+    functionName: 'getEModeCategoryData',
+    args: eModeCategoryId > 0 ? [eModeCategoryId] : undefined,
+    query: { enabled: eModeCategoryId > 0 && hasAaveConfig }
+  })
+
   // 2. Fetch detailed asset breakdown
   const { data: uiData, isLoading: isUiLoading } = useReadContracts({
     contracts: [
@@ -106,6 +155,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestEarnedUsd: 0,
     totalInterestPaidUsd: 0,
     totalPositionPnlUsd: 0,
+    eModeCategoryId: 0,
+    isEModeEnabled: false,
+    eModeLabel: 'Disabled',
+    eModeLtv: 0,
+    eModeLiquidationThreshold: 0,
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     suppliedAssets: [] as any[],
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -297,6 +351,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestEarnedUsd,
     totalInterestPaidUsd,
     totalPositionPnlUsd,
+    eModeCategoryId,
+    isEModeEnabled: eModeCategoryId > 0,
+    eModeLabel: (eModeCategoryData as any)?.label || (eModeCategoryId === 1 ? 'ETH Correlated' : eModeCategoryId === 2 ? 'Stablecoins' : eModeCategoryId > 0 ? `Category ${eModeCategoryId}` : 'Disabled'),
+    eModeLtv: (eModeCategoryData as any)?.ltv ? Number((eModeCategoryData as any).ltv) / 100 : 0,
+    eModeLiquidationThreshold: (eModeCategoryData as any)?.liquidationThreshold ? Number((eModeCategoryData as any).liquidationThreshold) / 10000 : 0,
     suppliedAssets,
     borrowedAssets,
     availableReserves

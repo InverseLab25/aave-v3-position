@@ -6,6 +6,7 @@ import { WithdrawModal } from './WithdrawModal'
 import { AssetsToSupplyModal } from './AssetsToSupplyModal'
 import { AssetsToBorrowModal } from './AssetsToBorrowModal'
 import { BorrowRepayModal } from './BorrowRepayModal'
+import { EModeModal } from './EModeModal'
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 
@@ -35,7 +36,10 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     suppliedAssets,
     borrowedAssets,
     availableReserves,
-    chainId
+    chainId,
+    eModeCategoryId,
+    isEModeEnabled,
+    eModeLabel
   } = useAavePositions({ viewAddress, viewChainId })
 
   const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
@@ -45,6 +49,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
+  const [isEModeModalOpen, setIsEModeModalOpen] = useState(false)
 
   const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
 
@@ -297,17 +302,18 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           />
         )}
         {isAssetsToBorrowModalOpen && (
-          <AssetsToBorrowModal
-            chainId={chainId}
-            availableReserves={availableReserves}
-            ethPriceUsd={emptyEthPriceUsd}
-            availableBorrowsUsd={availableBorrowsUsd}
-            collateralUsd={collateralUsd}
-            debtUsd={debtUsd}
-            liquidationThreshold={liquidationThreshold}
-            onClose={() => setIsAssetsToBorrowModalOpen(false)}
-          />
-        )}
+        <AssetsToBorrowModal
+          chainId={chainId}
+          availableReserves={availableReserves}
+          ethPriceUsd={emptyEthPriceUsd}
+          availableBorrowsUsd={availableBorrowsUsd}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
+          borrowedAssets={borrowedAssets}
+          onClose={() => setIsAssetsToBorrowModalOpen(false)}
+        />
+      )}
       </div>
     )
   }
@@ -365,6 +371,23 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           <div className="stat">
             <label>Avg. LTV</label>
             <div>{ltvPercent.toFixed(2)}%</div>
+          </div>
+          <div className="stat">
+            <label>E-Mode</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: T.space[2] }}>
+              <span className={isEModeEnabled ? 'text-success' : ''} style={{ fontWeight: isEModeEnabled ? 600 : 400 }}>
+                {isEModeEnabled ? `⚡ ${eModeLabel}` : 'Disabled'}
+              </span>
+              {!isViewMode && (
+                <button
+                  className="btn-ghost"
+                  onClick={() => setIsEModeModalOpen(true)}
+                  style={{ padding: '2px 6px', fontSize: '0.75rem', textDecoration: 'underline' }}
+                >
+                  Manage
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -626,6 +649,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           collateralUsd={collateralUsd}
           debtUsd={debtUsd}
           liquidationThreshold={liquidationThreshold}
+          borrowedAssets={borrowedAssets}
           onClose={() => setIsAssetsToBorrowModalOpen(false)}
         />
       )}
@@ -647,6 +671,15 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           borrowedAsset={closeTarget}
           suppliedAssets={suppliedAssets}
           onClose={() => setCloseTarget(null)}
+        />
+      )}
+
+      {isEModeModalOpen && (
+        <EModeModal
+          chainId={chainId}
+          currentCategoryId={eModeCategoryId}
+          currentLabel={eModeLabel}
+          onClose={() => setIsEModeModalOpen(false)}
         />
       )}
     </div>

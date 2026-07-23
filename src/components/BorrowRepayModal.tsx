@@ -158,6 +158,16 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
   const hfGuardBlocked = hfGuard.level === 'block'
 
+  const currentAssetAmount = asset.amount || 0;
+  const currentAssetValueUsd = asset.valueUsd || (currentAssetAmount * Number(asset.priceInUsd || 0));
+  const newAssetAmount = activeTab === 'borrow' 
+    ? currentAssetAmount + amountNum 
+    : Math.max(0, currentAssetAmount - amountNum);
+    
+  const otherDebtUsd = debtUsd - currentAssetValueUsd;
+  const allowedThisDebtUsd = collateralUsd * liquidationThreshold - otherDebtUsd;
+  const newLiquidationPrice = newAssetAmount > 0 && allowedThisDebtUsd > 0 ? allowedThisDebtUsd / newAssetAmount : 0;
+
   const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
   return (
@@ -222,6 +232,15 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
             newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
           />
+
+          {amountNum > 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, marginTop: T.space[2], marginBottom: T.space[4] }}>
+              <span style={{ color: T.textMuted }}>New Liquidation Price</span>
+              <span style={{ fontFamily: T.font.mono, fontWeight: 600 }}>
+                {newLiquidationPrice > 0 ? `$${newLiquidationPrice.toFixed(2)}` : 'At risk'}
+              </span>
+            </div>
+          )}
 
           {hfGuard.message && <div style={alertStyle(hfGuardBlocked ? 'danger' : 'warning')}>{hfGuard.message}</div>}
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
