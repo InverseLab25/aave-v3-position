@@ -1,18 +1,26 @@
 import { useCallback, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
-import { erc20Abi, parseSignature, type Address } from 'viem'
+import { erc20Abi, formatUnits, parseSignature, type Address } from 'viem'
 import { calculateAdjustedFees } from '../utils/gas'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
-import type { Asset } from '../adapters/types'
+import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../adapters/native'
+import type { Adapter, Asset, QuoteResponse } from '../adapters/types'
 import {
   DELEVERAGER_ABI,
   COMPATIBLE_ADAPTERS,
   pickBestRoute,
-  computeMinOut,
   buildPermitTypedData,
 } from '../lib/deleverage'
+
+/** Ceiling division for bigints: smallest n such that n * b >= a. */
+const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b
+
+// Swap only enough collateral to yield the debt plus this margin (0.5%), since debt
+// accrues between quote and execution. The rest is returned to the wallet as collateral.
+const MARGIN_NUM = 1005n
+const MARGIN_DEN = 1000n
 
 const PROVIDER_ABI = [
   {
@@ -54,6 +62,38 @@ export interface CloseInput {
   slippagePercent: number
 }
 
+/** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
+interface ClosePlan {
+  deleverager: Address
+  collateralAddr: Address
+  debtAddr: Address
+  aToken: Address
+  debt: bigint
+  collAmount: bigint
+  requiredIn: bigint // collateral fed to the swap
+  expectedOut: bigint // debt-token the swap is expected to return
+  minDebtOut: bigint // debt-token the router guarantees (expectedOut × (1 − slippage))
+  covered: boolean // collateral value can repay the debt (not underwater)
+  guaranteed: boolean // router-guaranteed min ≥ debt → close cannot revert on output
+  best: QuoteResponse
+  adapter: Adapter
+}
+
+/** Router numbers surfaced to the UI so the user can review the swap before signing. */
+export interface ClosePreview {
+  covered: boolean
+  guaranteed: boolean
+  aggregator: string
+  collateralSymbol: string
+  debtSymbol: string
+  debtRepaid: string
+  collateralSwapped: string
+  collateralReturned: string
+  minDebtOut: string
+  expectedDebtOut: string
+  collateralReturnedUsd: number | null
+}
+
 export type CloseStep = 'idle' | 'running' | 'done' | 'error'
 
 export function useDeleverageClose() {
@@ -67,80 +107,190 @@ export function useDeleverageClose() {
 
   const log = useCallback((m: string) => setLogs((prev) => [...prev, m]), [])
 
+  // Resolve reserves, read live balances, size the swap, and quote it. No signing —
+  // shared by preview() (display) and close() (execution) so both use one code path.
+  const buildPlan = useCallback(
+    async (
+      { collateral, debtAsset, slippagePercent }: CloseInput,
+      logFn: (m: string) => void = () => {},
+    ): Promise<ClosePlan> => {
+      if (!address || !publicClient) throw new Error('Wallet not connected')
+      const deleverager = getDeleveragerAddress(chainId)
+      if (!deleverager) throw new Error('One-click close is not available on this network')
+      const chainConfig = getChainConfig(chainId)
+      if (!chainConfig) throw new Error('Unsupported chain')
+
+      const collateralAddr = collateral.underlyingAsset as Address
+      const debtAddr = debtAsset.underlyingAsset as Address
+
+      // The deleverager operates purely on Aave's wrapped ERC-20 reserves (e.g. WETH).
+      // A native-ETH sentinel (0xEeee… or the zero address) would resolve to a zero
+      // aToken/vDebt and make the aggregators quote a native swap the contract can't
+      // fund — reject it up front rather than reverting deep in the flash-loan callback.
+      if (
+        isNativeAddress(collateralAddr) ||
+        isNativeAddress(debtAddr) ||
+        collateralAddr.toLowerCase() === NATIVE_ZERO_ADDRESS ||
+        debtAddr.toLowerCase() === NATIVE_ZERO_ADDRESS
+      ) {
+        throw new Error('Native ETH is not an Aave reserve — use the wrapped token (e.g. WETH)')
+      }
+
+      const slippageBps = Math.round(slippagePercent * 100)
+      if (slippageBps < 0 || slippageBps >= 10000) {
+        throw new Error('Slippage must be between 0% and 100%')
+      }
+
+      // 1. Resolve Aave token addresses via the ProtocolDataProvider.
+      logFn('Reading Aave reserve token addresses…')
+      const dataProvider = await publicClient.readContract({
+        address: chainConfig.aave.poolAddressesProvider,
+        abi: PROVIDER_ABI,
+        functionName: 'getPoolDataProvider',
+      })
+      const [collTokens, debtTokens] = await Promise.all([
+        publicClient.readContract({
+          address: dataProvider,
+          abi: DATA_PROVIDER_ABI,
+          functionName: 'getReserveTokensAddresses',
+          args: [collateralAddr],
+        }),
+        publicClient.readContract({
+          address: dataProvider,
+          abi: DATA_PROVIDER_ABI,
+          functionName: 'getReserveTokensAddresses',
+          args: [debtAddr],
+        }),
+      ])
+      const aToken = collTokens[0]
+      const vDebt = debtTokens[2]
+
+      // 2. Live balances (wei): debt to repay, collateral available.
+      const [debt, collAmount] = await Promise.all([
+        publicClient.readContract({
+          address: vDebt,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [address],
+        }),
+        publicClient.readContract({
+          address: aToken,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [address],
+        }),
+      ])
+      if (debt === 0n) throw new Error('No debt to close')
+      if (collAmount === 0n) throw new Error('No collateral to withdraw')
+
+      // 3. Quote collateral -> debt on the compatible aggregators.
+      logFn('Fetching swap routes (KyberSwap, OpenOcean, Odos)…')
+      const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
+        (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
+      )
+      const quoteBest = async (amountIn: bigint) => {
+        const quotes = await Promise.all(
+          adapters.map((a) =>
+            a
+              .getQuote(collateral, debtAsset, amountIn.toString(), slippagePercent, chainId)
+              .catch(() => null),
+          ),
+        )
+        return pickBestRoute(quotes)
+      }
+
+      // Quote the full collateral first to gauge price and coverage.
+      const bestFull = await quoteBest(collAmount)
+      if (!bestFull) throw new Error('No compatible swap route available')
+      const fullOut = BigInt(bestFull.amountOut)
+      const covered = fullOut >= debt
+
+      // 4. Size the swap: only enough collateral to yield the debt + margin. If the
+      //    position is underwater, fall back to the full swap; the caller inspects
+      //    `covered` and decides (preview shows a warning; close throws).
+      const targetOut = (debt * MARGIN_NUM) / MARGIN_DEN
+      const requiredIn =
+        !covered || targetOut >= fullOut ? collAmount : ceilDiv(collAmount * targetOut, fullOut)
+
+      // 5. Re-quote at the sized input; fall back to the full-collateral route.
+      const best = requiredIn === collAmount ? bestFull : (await quoteBest(requiredIn)) ?? bestFull
+      const adapter = adapters.find((a) => a.name === best.aggregator)
+      if (!adapter) throw new Error('Selected adapter unavailable')
+
+      const expectedOut = BigInt(best.amountOut)
+      // What the router bakes in as its minimum return for this quote at this slippage.
+      const minDebtOut = (expectedOut * BigInt(10000 - slippageBps)) / 10000n
+      const guaranteed = covered && minDebtOut >= debt
+
+      return {
+        deleverager,
+        collateralAddr,
+        debtAddr,
+        aToken,
+        debt,
+        collAmount,
+        requiredIn,
+        expectedOut,
+        minDebtOut,
+        covered,
+        guaranteed,
+        best,
+        adapter,
+      }
+    },
+    [address, chainId, publicClient],
+  )
+
+  // Read-only: size + quote the swap and return the router numbers, no signature.
+  const preview = useCallback(
+    async (input: CloseInput): Promise<ClosePreview | null> => {
+      try {
+        const p = await buildPlan(input)
+        const cDec = input.collateral.decimals
+        const dDec = input.debtAsset.decimals
+        const collateralReturnedWei = p.collAmount - p.requiredIn
+        const collateralPrice = Number(input.collateral.priceInUsd ?? 0)
+        const collateralReturnedUsd =
+          collateralPrice > 0
+            ? Number(formatUnits(collateralReturnedWei, cDec)) * collateralPrice
+            : null
+        return {
+          covered: p.covered,
+          guaranteed: p.guaranteed,
+          aggregator: p.best.aggregator,
+          collateralSymbol: input.collateral.symbol,
+          debtSymbol: input.debtAsset.symbol,
+          debtRepaid: formatUnits(p.debt, dDec),
+          collateralSwapped: formatUnits(p.requiredIn, cDec),
+          collateralReturned: formatUnits(collateralReturnedWei, cDec),
+          minDebtOut: formatUnits(p.minDebtOut, dDec),
+          expectedDebtOut: formatUnits(p.expectedOut, dDec),
+          collateralReturnedUsd,
+        }
+      } catch {
+        return null
+      }
+    },
+    [buildPlan],
+  )
+
   const close = useCallback(
-    async ({ collateral, debtAsset, slippagePercent }: CloseInput) => {
+    async (input: CloseInput) => {
       setLogs([])
       setStep('running')
       try {
         if (!address || !publicClient || !walletClient) throw new Error('Wallet not connected')
-        const deleverager = getDeleveragerAddress(chainId)
-        if (!deleverager) throw new Error('One-click close is not available on this network')
-        const chainConfig = getChainConfig(chainId)
-        if (!chainConfig) throw new Error('Unsupported chain')
 
-        const collateralAddr = collateral.underlyingAsset as Address
-        const debtAddr = debtAsset.underlyingAsset as Address
-
-        // 1. Resolve Aave token addresses via the ProtocolDataProvider.
-        log('Reading Aave reserve token addresses…')
-        const dataProvider = await publicClient.readContract({
-          address: chainConfig.aave.poolAddressesProvider,
-          abi: PROVIDER_ABI,
-          functionName: 'getPoolDataProvider',
-        })
-        const [collTokens, debtTokens] = await Promise.all([
-          publicClient.readContract({
-            address: dataProvider,
-            abi: DATA_PROVIDER_ABI,
-            functionName: 'getReserveTokensAddresses',
-            args: [collateralAddr],
-          }),
-          publicClient.readContract({
-            address: dataProvider,
-            abi: DATA_PROVIDER_ABI,
-            functionName: 'getReserveTokensAddresses',
-            args: [debtAddr],
-          }),
-        ])
-        const aToken = collTokens[0]
-        const vDebt = debtTokens[2]
-
-        // 2. Live balances (wei): debt to repay, collateral to swap.
-        const [debt, collAmount] = await Promise.all([
-          publicClient.readContract({
-            address: vDebt,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [address],
-          }),
-          publicClient.readContract({
-            address: aToken,
-            abi: erc20Abi,
-            functionName: 'balanceOf',
-            args: [address],
-          }),
-        ])
-        if (debt === 0n) throw new Error('No debt to close')
-        if (collAmount === 0n) throw new Error('No collateral to withdraw')
-
-        // 3. Quote collateral -> debt on the compatible aggregators, pick the best.
-        log('Fetching swap routes (KyberSwap, OpenOcean)…')
-        const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
-          (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
+        const p = await buildPlan(input, log)
+        if (!p.covered) {
+          throw new Error('Collateral will not cover the debt (position underwater)')
+        }
+        log(
+          `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest is returned as collateral.`,
         )
-        const quotes = await Promise.all(
-          adapters.map((a) =>
-            a.getQuote(collateral, debtAsset, collAmount.toString(), slippagePercent, chainId),
-          ),
-        )
-        const best = pickBestRoute(quotes)
-        if (!best) throw new Error('No compatible swap route available')
-        const adapter = adapters.find((a) => a.name === best.aggregator)
-        if (!adapter) throw new Error('Selected adapter unavailable')
-        log(`Best route: ${best.aggregator}`)
 
-        // 4. Build router calldata with the DELEVERAGER as the swap recipient.
-        const tx = await adapter.buildTransaction(best, slippagePercent, deleverager, chainId)
+        // Build router calldata with the DELEVERAGER as the swap recipient.
+        const tx = await p.adapter.buildTransaction(p.best, input.slippagePercent, p.deleverager, chainId)
         const router = tx.to as Address
         const swapData = tx.data as `0x${string}`
         // The contract approves `router` and calls `router`, so the aggregator's approval
@@ -150,25 +300,19 @@ export function useDeleverageClose() {
           throw new Error('Router approval target and call target differ; incompatible with deleverager')
         }
 
-        // 5. Slippage floor + coverage. Block underwater closes before signing.
-        const slippageBps = Math.round(slippagePercent * 100)
-        if (slippageBps < 0 || slippageBps >= 10000) {
-          throw new Error('Slippage must be between 0% and 100%')
-        }
-        const { minOut, covered } = computeMinOut(BigInt(best.amountOut), debt, slippageBps)
-        if (!covered) {
-          throw new Error('Collateral will not cover the debt at this slippage (position underwater)')
-        }
+        // minOut floor = the debt itself: the swap output must cover the flash loan or
+        // the contract reverts cleanly (InsufficientOutput) instead of underflowing.
+        const minOut = p.debt
 
-        // 6. EIP-2612 permit on the collateral aToken (spender = deleverager).
+        // EIP-2612 permit on the collateral aToken (spender = deleverager).
         log('Requesting permit signature…')
         const aTokenName = await publicClient.readContract({
-          address: aToken,
+          address: p.aToken,
           abi: erc20Abi,
           functionName: 'name',
         })
         const nonce = await publicClient.readContract({
-          address: aToken,
+          address: p.aToken,
           abi: NONCES_ABI,
           functionName: 'nonces',
           args: [address],
@@ -179,13 +323,13 @@ export function useDeleverageClose() {
         // (it pulls min(live balance, permitValue)), leaving zero aToken dust supplied in Aave.
         // Interest over the ~20min deadline is a tiny fraction of 1%, so the buffer is ample; any
         // unused headroom is harmless since the aToken balance is drained to ~0 by the withdraw.
-        const permitValue = collAmount + collAmount / 100n
+        const permitValue = p.collAmount + p.collAmount / 100n
         const typedData = buildPermitTypedData({
-          aToken,
+          aToken: p.aToken,
           aTokenName,
           chainId,
           owner: address,
-          spender: deleverager,
+          spender: p.deleverager,
           value: permitValue,
           nonce,
           deadline,
@@ -194,17 +338,17 @@ export function useDeleverageClose() {
         const sig = parseSignature(signature)
         const v = sig.v !== undefined ? Number(sig.v) : sig.yParity + 27
 
-        // 7. Fire the one-tx close.
+        // Fire the one-tx close.
         const { maxFeePerGas, maxPriorityFeePerGas, gasPrice } = await estimateFeesPerGas(config)
         const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } = calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
 
         // Simulate before writing to catch reverts early
         log('Simulating close transaction…')
         const { request } = await simulateContract(config, {
-          address: deleverager,
+          address: p.deleverager,
           abi: DELEVERAGER_ABI,
           functionName: 'closePositionWithPermit',
-          args: [collateralAddr, debtAddr, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
+          args: [p.collateralAddr, p.debtAddr, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
           account: address,
           maxFeePerGas: adjustedMaxFeePerGas,
           maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
@@ -231,8 +375,8 @@ export function useDeleverageClose() {
         return { hash: null, status: 'error' as const }
       }
     },
-    [address, chainId, publicClient, walletClient, log, config],
+    [address, chainId, publicClient, walletClient, log, config, buildPlan],
   )
 
-  return { close, logs, step }
+  return { preview, close, logs, step }
 }

@@ -38,10 +38,10 @@ export const DELEVERAGER_ABI = [
     ],
     outputs: [],
   },
-  { type: 'error', name: 'NotManager', inputs: [] },
+  { type: 'error', name: 'NotMorpho', inputs: [] },
   { type: 'error', name: 'NoDebt', inputs: [] },
-  { type: 'error', name: 'BadRouter', inputs: [] },
   { type: 'error', name: 'SameAsset', inputs: [] },
+  { type: 'error', name: 'Paused', inputs: [] },
   {
     type: 'error',
     name: 'InsufficientOutput',
