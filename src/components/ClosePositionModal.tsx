@@ -116,6 +116,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         setTxHash(hash)
         log(`Transaction submitted! Hash: ${hash}`)
         setStep(2)
+        setAmountStr('')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         log(`Error: ${e.message || e}`)
@@ -133,6 +134,9 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
     setStep(result.status === 'success' ? 2 : 0)
+    if (result.status === 'success') {
+      setSelectedCollateral(null)
+    }
   }
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.
@@ -315,10 +319,10 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                     </span>
                   </div>
                   <div className="info-row">
-                    <span className="info-row-label" style={{ fontWeight: 600 }}>Collateral returned (est.)</span>
+                    <span className="info-row-label" style={{ fontWeight: 600 }}>Stays supplied in Aave (est.)</span>
                     <span className="info-row-value" style={{ color: 'var(--color-success)', fontWeight: 600 }}>
-                      {formatAmount(preview.collateralReturned)} {preview.collateralSymbol}
-                      {preview.collateralReturnedUsd != null ? ` (~$${preview.collateralReturnedUsd.toFixed(2)})` : ''}
+                      {formatAmount(preview.collateralKeptSupplied)} {preview.collateralSymbol}
+                      {preview.collateralKeptSuppliedUsd != null ? ` (~$${preview.collateralKeptSuppliedUsd.toFixed(2)})` : ''}
                     </span>
                   </div>
                   <div className="info-row">
@@ -331,7 +335,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                     </div>
                   )}
                   <p style={{ fontSize: 'var(--text-xs)', marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
-                    Only enough {preview.collateralSymbol} is swapped to repay the debt (+0.5% margin); the rest is returned to your wallet as {preview.collateralSymbol}. Estimated from your live balances.
+                    Only enough {preview.collateralSymbol} is swapped to repay the debt (+0.5% margin); the rest stays supplied in Aave. Estimated from your live balances.
                   </p>
                 </div>
               ) : preview && !preview.covered ? (

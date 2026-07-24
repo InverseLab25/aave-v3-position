@@ -21,6 +21,7 @@ export const DELEVERAGER_ABI = [
     inputs: [
       { name: 'collateral', type: 'address' },
       { name: 'debtAsset', type: 'address' },
+      { name: 'collateralToWithdraw', type: 'uint256' },
       { name: 'minOut', type: 'uint256' },
       { name: 'router', type: 'address' },
       { name: 'swapData', type: 'bytes' },

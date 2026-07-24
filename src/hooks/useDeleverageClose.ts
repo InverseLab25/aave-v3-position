@@ -88,10 +88,10 @@ export interface ClosePreview {
   debtSymbol: string
   debtRepaid: string
   collateralSwapped: string
-  collateralReturned: string
+  collateralKeptSupplied: string
   minDebtOut: string
   expectedDebtOut: string
-  collateralReturnedUsd: number | null
+  collateralKeptSuppliedUsd: number | null
 }
 
 export type CloseStep = 'idle' | 'running' | 'done' | 'error'
@@ -248,11 +248,12 @@ export function useDeleverageClose() {
         const p = await buildPlan(input)
         const cDec = input.collateral.decimals
         const dDec = input.debtAsset.decimals
-        const collateralReturnedWei = p.collAmount - p.requiredIn
+        // The collateral the swap does NOT consume is never withdrawn — it stays supplied in Aave.
+        const collateralKeptSuppliedWei = p.collAmount - p.requiredIn
         const collateralPrice = Number(input.collateral.priceInUsd ?? 0)
-        const collateralReturnedUsd =
+        const collateralKeptSuppliedUsd =
           collateralPrice > 0
-            ? Number(formatUnits(collateralReturnedWei, cDec)) * collateralPrice
+            ? Number(formatUnits(collateralKeptSuppliedWei, cDec)) * collateralPrice
             : null
         return {
           covered: p.covered,
@@ -262,10 +263,10 @@ export function useDeleverageClose() {
           debtSymbol: input.debtAsset.symbol,
           debtRepaid: formatUnits(p.debt, dDec),
           collateralSwapped: formatUnits(p.requiredIn, cDec),
-          collateralReturned: formatUnits(collateralReturnedWei, cDec),
+          collateralKeptSupplied: formatUnits(collateralKeptSuppliedWei, cDec),
           minDebtOut: formatUnits(p.minDebtOut, dDec),
           expectedDebtOut: formatUnits(p.expectedOut, dDec),
-          collateralReturnedUsd,
+          collateralKeptSuppliedUsd,
         }
       } catch {
         return null
@@ -303,6 +304,13 @@ export function useDeleverageClose() {
         // minOut floor = the debt itself: the swap output must cover the flash loan or
         // the contract reverts cleanly (InsufficientOutput) instead of underflowing.
         const minOut = p.debt
+        // Withdraw only the collateral the swap needs, plus a tiny cushion so a 1-wei aToken
+        // rounding never leaves the router short. If the swap needs (nearly) all the collateral,
+        // fall back to the full-drain sentinel. Everything not withdrawn stays supplied in Aave.
+        const MAX_UINT256 = (1n << 256n) - 1n
+        const cushion = p.requiredIn / 100_000n > 2n ? p.requiredIn / 100_000n : 2n
+        const drainAll = p.requiredIn + cushion >= p.collAmount
+        const collateralToWithdraw = drainAll ? MAX_UINT256 : p.requiredIn + cushion
 
         // EIP-2612 permit on the collateral aToken (spender = deleverager).
         log('Requesting permit signature…')
@@ -318,12 +326,9 @@ export function useDeleverageClose() {
           args: [address],
         })
         const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
-        // aTokens rebase upward between signing and inclusion. Sign the permit for a 1% buffer
-        // above the live balance so the contract can pull the *full* balance at execution
-        // (it pulls min(live balance, permitValue)), leaving zero aToken dust supplied in Aave.
-        // Interest over the ~20min deadline is a tiny fraction of 1%, so the buffer is ample; any
-        // unused headroom is harmless since the aToken balance is drained to ~0 by the withdraw.
-        const permitValue = p.collAmount + p.collAmount / 100n
+        // Full drain pulls the live (rebasing) balance so keep the +1% buffer; a fixed partial
+        // pull needs no buffer — the permit value is exactly what we pull.
+        const permitValue = drainAll ? p.collAmount + p.collAmount / 100n : collateralToWithdraw
         const typedData = buildPermitTypedData({
           aToken: p.aToken,
           aTokenName,
@@ -348,7 +353,7 @@ export function useDeleverageClose() {
           address: p.deleverager,
           abi: DELEVERAGER_ABI,
           functionName: 'closePositionWithPermit',
-          args: [p.collateralAddr, p.debtAddr, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
+          args: [p.collateralAddr, p.debtAddr, collateralToWithdraw, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
           account: address,
           maxFeePerGas: adjustedMaxFeePerGas,
           maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,

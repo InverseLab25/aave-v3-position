@@ -5,6 +5,7 @@ export const deleveragerAbi = [
     inputs: [
       { internalType: 'address', name: 'collateral', type: 'address' },
       { internalType: 'address', name: 'debtAsset', type: 'address' },
+      { internalType: 'uint256', name: 'collateralToWithdraw', type: 'uint256' },
       { internalType: 'uint256', name: 'minOut', type: 'uint256' },
       { internalType: 'address', name: 'router', type: 'address' },
       { internalType: 'bytes', name: 'swapData', type: 'bytes' },
