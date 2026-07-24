@@ -295,7 +295,7 @@ export function useDeleverageClose() {
         const router = tx.to as Address
         const swapData = tx.data as `0x${string}`
         // The contract approves `router` and calls `router`, so the aggregator's approval
-        // spender must equal its call target. True for KyberSwap/OpenOcean; guard in case a
+        // spender must equal its call target. True for KyberSwap/OpenOcean/Odos; guard in case a
         // future adapter with a separate spender is added to COMPATIBLE_ADAPTERS.
         if (tx.to.toLowerCase() !== tx.spender.toLowerCase()) {
           throw new Error('Router approval target and call target differ; incompatible with deleverager')

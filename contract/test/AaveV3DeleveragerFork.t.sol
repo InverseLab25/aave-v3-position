@@ -53,6 +53,16 @@ contract MockRouter {
     }
 }
 
+/// @notice Mock router that pulls a FIXED `amountIn` (less than the approved allowance),
+///         mirroring a real aggregator that swaps only `requiredIn` and leaves the cushion
+///         behind for the deleverager to sweep back to the user.
+contract MockRouterFixedPull {
+    function swap(address collateral, uint256 amountIn, address debtAsset, uint256 debtOut) external {
+        IERC20Like(collateral).transferFrom(msg.sender, address(this), amountIn);
+        IERC20Like(debtAsset).transfer(msg.sender, debtOut);
+    }
+}
+
 /*//////////////////////////////////////////////////////////////
                             FORK TEST
 ////////////////////////////////////////////////--------------*/
@@ -183,6 +193,51 @@ contract AaveV3DeleveragerForkTest is Test {
         // Nothing stuck in the deleverager.
         assertEq(IERC20Like(USDC).balanceOf(address(deleverager)), 0, "USDC stuck in contract");
         assertLt(IERC20Like(WETH).balanceOf(address(deleverager)), 1e12, "WETH stuck in contract");
+    }
+
+    /// @dev Real partial path: the router consumes only part of the approved collateral
+    ///      (requiredIn), and the leftover cushion must be swept to the user's wallet — not
+    ///      stranded in the contract. Also proves collateralAmount >= the router's pull.
+    function test_ClosePositionWithPermit_PartialWithdraw_SweepsCushionToWallet() public {
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
+        assertGt(debt, 0, "no debt set up");
+
+        uint256 debtOut = debt + 50e6;
+        MockRouterFixedPull fixedRouter = new MockRouterFixedPull();
+        deal(USDC, address(fixedRouter), debtOut);
+
+        uint256 collBefore = IERC20Like(aWeth).balanceOf(user);
+        uint256 userWethBefore = IERC20Like(WETH).balanceOf(user);
+
+        uint256 collateralToWithdraw = 1 ether;      // contract withdraws + approves ~1 WETH
+        uint256 routerPull = 0.999 ether;            // router consumes less; cushion = 0.001 WETH left
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Deleverager.Permit memory permit =
+            _signPermit(user, address(deleverager), collateralToWithdraw, deadline);
+
+        bytes memory swapData = abi.encodeCall(MockRouterFixedPull.swap, (WETH, routerPull, USDC, debtOut));
+
+        vm.prank(user);
+        deleverager.closePositionWithPermit(
+            WETH, USDC, collateralToWithdraw, debt, address(fixedRouter), swapData, permit
+        );
+
+        // Full debt repaid.
+        assertEq(IERC20Like(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
+        // The unswapped cushion (collateralToWithdraw - routerPull) is swept to the user's WALLET.
+        assertApproxEqAbs(
+            IERC20Like(WETH).balanceOf(user) - userWethBefore,
+            collateralToWithdraw - routerPull,
+            1e12,
+            "cushion not returned to wallet"
+        );
+        // The rest stays supplied in Aave.
+        assertApproxEqAbs(
+            IERC20Like(aWeth).balanceOf(user), collBefore - collateralToWithdraw, 1e12, "remainder not left supplied"
+        );
+        // Nothing stuck in the deleverager.
+        assertEq(IERC20Like(WETH).balanceOf(address(deleverager)), 0, "WETH stuck in contract");
+        assertEq(IERC20Like(USDC).balanceOf(address(deleverager)), 0, "USDC stuck in contract");
     }
 
     function _signPermit(address owner, address spender, uint256 value, uint256 deadline)

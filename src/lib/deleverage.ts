@@ -63,22 +63,6 @@ export function pickBestRoute(quotes: (QuoteResponse | null)[]): QuoteResponse |
   return compatible.reduce((best, q) => (q.netReturnUsd > best.netReturnUsd ? q : best))
 }
 
-/**
- * Slippage-adjusted minimum output, plus whether it still covers the debt.
- * @param amountOut expected debt-token output (wei) from the quote
- * @param debt live debt (wei) the swap must at least cover to repay the flash loan
- * @param slippageBps slippage tolerance in basis points (50 = 0.5%)
- */
-export function computeMinOut(
-  amountOut: bigint,
-  debt: bigint,
-  slippageBps: number,
-): { minOut: bigint; covered: boolean } {
-  const bps = BigInt(Math.round(slippageBps))
-  const minOut = (amountOut * (10000n - bps)) / 10000n
-  return { minOut, covered: minOut >= debt }
-}
-
 /** EIP-2612 typed data for an Aave V3 aToken permit (spender = deleverager). */
 export function buildPermitTypedData(args: {
   aToken: Address
