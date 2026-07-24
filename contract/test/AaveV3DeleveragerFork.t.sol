@@ -137,9 +137,9 @@ contract AaveV3DeleveragerForkTest is Test {
 
         uint256 userUsdcBefore = IERC20Like(USDC).balanceOf(user);
 
-        // minOut floor = the debt itself (what the frontend passes).
+        // minOut floor = the debt itself (what the frontend passes). Sentinel = drain all.
         vm.prank(user);
-        deleverager.closePositionWithPermit(WETH, USDC, debt, address(router), swapData, permit);
+        deleverager.closePositionWithPermit(WETH, USDC, type(uint256).max, debt, address(router), swapData, permit);
 
         // Debt fully repaid.
         assertEq(IERC20Like(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
@@ -150,6 +150,39 @@ contract AaveV3DeleveragerForkTest is Test {
         // No funds stuck in the deleverager.
         assertEq(IERC20Like(USDC).balanceOf(address(deleverager)), 0, "USDC stuck in contract");
         assertEq(IERC20Like(WETH).balanceOf(address(deleverager)), 0, "WETH stuck in contract");
+    }
+
+    /// @dev Partial withdraw: repay full debt but only pull ~1 WETH of collateral; the remaining
+    ///      ~9 WETH must stay supplied in Aave (aToken balance retained).
+    function test_ClosePositionWithPermit_PartialWithdraw_LeavesRestSupplied() public {
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
+        assertGt(debt, 0, "no debt set up");
+
+        uint256 debtOut = debt + 50e6;
+        deal(USDC, address(router), debtOut);
+
+        uint256 collBefore = IERC20Like(aWeth).balanceOf(user);
+        uint256 collateralToWithdraw = 1 ether; // withdraw ~1 WETH; ~9 WETH stays supplied
+
+        uint256 deadline = block.timestamp + 1200;
+        // Fixed-amount pull → permit value is the exact amount, no rebase buffer.
+        AaveV3Deleverager.Permit memory permit =
+            _signPermit(user, address(deleverager), collateralToWithdraw, deadline);
+
+        bytes memory swapData = abi.encodeCall(MockRouter.swap, (WETH, USDC, debtOut));
+
+        vm.prank(user);
+        deleverager.closePositionWithPermit(WETH, USDC, collateralToWithdraw, debt, address(router), swapData, permit);
+
+        // Full debt repaid.
+        assertEq(IERC20Like(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
+        // The remainder is still supplied in Aave (~9 WETH aToken).
+        assertApproxEqAbs(
+            IERC20Like(aWeth).balanceOf(user), collBefore - collateralToWithdraw, 1e12, "remainder not left supplied"
+        );
+        // Nothing stuck in the deleverager.
+        assertEq(IERC20Like(USDC).balanceOf(address(deleverager)), 0, "USDC stuck in contract");
+        assertLt(IERC20Like(WETH).balanceOf(address(deleverager)), 1e12, "WETH stuck in contract");
     }
 
     function _signPermit(address owner, address spender, uint256 value, uint256 deadline)

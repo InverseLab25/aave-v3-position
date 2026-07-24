@@ -73,6 +73,7 @@ contract AaveV3Deleverager is Ownable, ReentrancyGuardTransient {
         address user;
         address collateral;
         address debtAsset;
+        uint256 collateralToWithdraw;
         uint256 minOut;
         address router;
         Permit permit;
@@ -106,6 +107,7 @@ contract AaveV3Deleverager is Ownable, ReentrancyGuardTransient {
     function closePositionWithPermit(
         address collateral,
         address debtAsset,
+        uint256 collateralToWithdraw,
         uint256 minOut,
         address router,
         bytes calldata swapData,
@@ -124,6 +126,7 @@ contract AaveV3Deleverager is Ownable, ReentrancyGuardTransient {
                 user: msg.sender,
                 collateral: collateral,
                 debtAsset: debtAsset,
+                collateralToWithdraw: collateralToWithdraw,
                 minOut: minOut,
                 router: router,
                 permit: permit,
@@ -154,14 +157,20 @@ contract AaveV3Deleverager is Ownable, ReentrancyGuardTransient {
         POOL.repay(p.debtAsset, assets, VARIABLE_RATE, p.user);
         p.debtAsset.safeApproveWithRetry(address(POOL), 0);
 
-        // 2. Consume Permit & Pull aTokens
+        // 2. Consume Permit & pull the aTokens we intend to swap. Partial close pulls exactly
+        //    `collateralToWithdraw` (a fixed amount, so the permit needs no rebase buffer); the
+        //    sentinel type(uint256).max pulls the whole balance (full drain, prior behavior).
+        //    Anything not pulled stays supplied in Aave.
         if (p.permit.value > 0) {
             IATokenPermit(aToken)
                 .permit(p.user, address(this), p.permit.value, p.permit.deadline, p.permit.v, p.permit.r, p.permit.s);
         }
 
-        uint256 aBal = aToken.balanceOf(p.user);
-        aToken.safeTransferFrom(p.user, address(this), aBal);
+        uint256 pull =
+            p.collateralToWithdraw == type(uint256).max ? aToken.balanceOf(p.user) : p.collateralToWithdraw;
+        aToken.safeTransferFrom(p.user, address(this), pull);
+        // Withdraw MAX against our own holdings: burns exactly the aTokens we just pulled and
+        // returns the true underlying amount, immune to rayDiv/rayMul rounding on a fixed amount.
         uint256 collateralAmount = POOL.withdraw(p.collateral, type(uint256).max, address(this));
 
         uint256 beforeBalance = p.debtAsset.balanceOf(address(this));
