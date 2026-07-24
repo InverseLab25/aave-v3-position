@@ -89,7 +89,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
           address: gatewayAddress, abi: wethGatewayAbi as any,
           functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n
         })
-        setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
+        setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!'); setAmountStr('')
         return
       }
       setStep(3); setStatusMsg('Simulating borrow…')
@@ -98,7 +98,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         address: poolAddress, abi: aavePoolAbi as any,
         functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n
       })
-      setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!')
+      setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!'); setAmountStr('')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'

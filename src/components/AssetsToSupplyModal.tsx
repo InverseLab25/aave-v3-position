@@ -99,7 +99,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
           functionName: 'depositETH', args: [poolAddress, address, 0],
           value: parseUnits(amountStr, selectedAsset.decimals) as bigint,
         })
-        setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!')
+        setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!'); setAmountStr('')
         return
       }
       setStep(1)
@@ -121,7 +121,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
         address: poolAddress, abi: aavePoolAbi as any,
         functionName: 'supply', args: [selectedAsset.underlyingAsset as `0x${string}`, amount, address, 0],
       })
-      setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!')
+      setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!'); setAmountStr('')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'

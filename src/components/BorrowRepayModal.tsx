@@ -41,6 +41,9 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const [step, setStep] = useState(0)
   const [logs, setLogs] = useState<string[]>([])
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
+  const [useNativeEth, setUseNativeEth] = useState(false)
+  const isWeth = asset.symbol === 'WETH'
+  const isNativeEth = asset.symbol === 'ETH' || (isWeth && useNativeEth)
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
@@ -53,24 +56,24 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const { data: allowance, refetch: refetchAllowance } = useReadContract({
     address: asset.underlyingAsset, abi: erc20Abi, functionName: 'allowance',
     args: (address && poolAddress) ? [address, poolAddress] : undefined,
-    query: { enabled: !!address && !!poolAddress && activeTab === 'repay' && asset.symbol !== 'ETH' },
+    query: { enabled: !!address && !!poolAddress && activeTab === 'repay' && !isNativeEth },
   })
 
   const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({
-    address: asset?.symbol === 'ETH' ? asset.variableDebtTokenAddress : undefined,
+    address: isNativeEth ? asset.variableDebtTokenAddress : undefined,
     abi: debtTokenAbi, functionName: 'borrowAllowance',
-    args: (address && asset && asset.symbol === 'ETH' && gatewayAddress) ? [address, gatewayAddress] : undefined,
-    query: { enabled: !!address && !!asset && asset.symbol === 'ETH' && !!gatewayAddress && activeTab === 'borrow' },
+    args: (address && asset && isNativeEth && gatewayAddress) ? [address, gatewayAddress] : undefined,
+    query: { enabled: !!address && !!asset && isNativeEth && !!gatewayAddress && activeTab === 'borrow' },
   })
 
-  const { data: ethBalance } = useBalance({ address, query: { enabled: !!address && activeTab === 'repay' && asset.symbol === 'ETH' } })
+  const { data: ethBalance } = useBalance({ address, query: { enabled: !!address && activeTab === 'repay' && isNativeEth } })
   const { data: tokenBalanceData } = useReadContract({
     address: asset.underlyingAsset, abi: erc20Abi, functionName: 'balanceOf',
     args: address ? [address] : undefined,
-    query: { enabled: !!address && activeTab === 'repay' && asset.symbol !== 'ETH' },
+    query: { enabled: !!address && activeTab === 'repay' && !isNativeEth },
   })
 
-  const walletBalance = asset.symbol === 'ETH'
+  const walletBalance = isNativeEth
     ? (ethBalance ? Number(formatUnits(ethBalance.value, ethBalance.decimals)) : 0)
     : (tokenBalanceData ? Number(formatUnits(tokenBalanceData as bigint, asset.decimals)) : 0)
 
@@ -82,7 +85,6 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
       setStep(1)
       const amountParsed = parseUnits(amountStr, asset.decimals)
       const finalAmount = isMax && activeTab === 'repay' ? maxUint256 : amountParsed
-      const isNativeEth = asset.symbol === 'ETH'
 
       if (activeTab === 'borrow') {
         if (isNativeEth && gatewayAddress) {
@@ -102,18 +104,18 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           log('Simulating ETH borrow…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n })
-          log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
+          log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
         }
         log('Simulating borrow…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n })
-        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
+        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
       } else {
         if (isNativeEth && gatewayAddress) {
           log('Simulating ETH repay…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, address], value: amountParsed })
-          log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
+          log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
         }
         // For MAX repay we send maxUint256, and Aave pulls the *current* debt
         // (snapshot + interest accrued since load), so the approval must cover
@@ -130,7 +132,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
         log('Simulating repay…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'repay', args: [asset.underlyingAsset, finalAmount, RATE_MODE, address] })
-        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
+        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
       }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
@@ -202,6 +204,13 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[3] }}>
               <span>Outstanding debt</span>
               <span className="text-danger" style={{ fontFamily: T.font.mono, fontWeight: 600 }}>{asset.amount?.toFixed(4) ?? '0.00'} {asset.symbol}</span>
+            </div>
+          )}
+
+          {isWeth && gatewayAddress && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: T.space[2], marginBottom: T.space[4] }}>
+              <input type="checkbox" id="useNativeEth" checked={useNativeEth} onChange={e => setUseNativeEth(e.target.checked)} />
+              <label htmlFor="useNativeEth" style={{ fontSize: T.fontSize.sm, color: T.text, cursor: 'pointer' }}>Use native ETH to {activeTab}</label>
             </div>
           )}
 

@@ -66,13 +66,13 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
         log('Simulating ETH withdraw…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
-        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); return
+        log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
       }
 
       log('Simulating withdraw…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'withdraw', args: [asset.underlyingAsset, finalAmount, address] })
-      log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2)
+      log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
