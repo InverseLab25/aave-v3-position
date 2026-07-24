@@ -116,7 +116,6 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         setTxHash(hash)
         log(`Transaction submitted! Hash: ${hash}`)
         setStep(2)
-        setAmountStr('')
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } catch (e: any) {
         log(`Error: ${e.message || e}`)
@@ -134,9 +133,6 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
     setStep(result.status === 'success' ? 2 : 0)
-    if (result.status === 'success') {
-      setSelectedCollateral(null)
-    }
   }
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.

@@ -18,7 +18,7 @@ import {
 const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b
 
 // Swap only enough collateral to yield the debt plus this margin (0.5%), since debt
-// accrues between quote and execution. The rest is returned to the wallet as collateral.
+// accrues between quote and execution. The rest stays supplied in Aave.
 const MARGIN_NUM = 1005n
 const MARGIN_DEN = 1000n
 
@@ -287,7 +287,7 @@ export function useDeleverageClose() {
           throw new Error('Collateral will not cover the debt (position underwater)')
         }
         log(
-          `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest is returned as collateral.`,
+          `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
         )
 
         // Build router calldata with the DELEVERAGER as the swap recipient.
