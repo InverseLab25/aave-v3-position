@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
 import { erc20Abi, formatUnits, parseSignature, type Address } from 'viem'
-import { calculateAdjustedFees } from '../utils/gas'
+import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../adapters/native'
@@ -361,8 +361,25 @@ export function useDeleverageClose() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
 
+        // Pin a buffered gas limit — a flash-loan close touches far more state than a
+        // plain Aave action, and an unpinned limit leaves it to the wallet's estimate.
+        let gas: bigint | undefined
+        try {
+          gas = bufferedGasLimit(
+            await publicClient.estimateContractGas({
+              address: p.deleverager,
+              abi: DELEVERAGER_ABI,
+              functionName: 'closePositionWithPermit',
+              args: [p.collateralAddr, p.debtAddr, collateralToWithdraw, minOut, router, swapData, { value: permitValue, deadline, v, r: sig.r, s: sig.s }],
+              account: address,
+            }),
+          )
+        } catch {
+          gas = undefined
+        }
+
         log('Submitting close transaction…')
-        const hash = await walletClient.writeContract(request)
+        const hash = await walletClient.writeContract(gas ? { ...request, gas } : request)
         log(`Tx submitted: ${hash}`)
         const receipt = await publicClient.waitForTransactionReceipt({ hash })
         if (receipt.status === 'success') {

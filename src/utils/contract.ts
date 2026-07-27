@@ -13,9 +13,9 @@
  */
 
 import type { Config } from 'wagmi'
-import { simulateContract, estimateFeesPerGas } from 'wagmi/actions'
-import type { Abi } from 'viem'
-import { calculateAdjustedFees } from './gas'
+import { simulateContract, estimateFeesPerGas, estimateGas } from 'wagmi/actions'
+import { encodeFunctionData, type Abi } from 'viem'
+import { calculateAdjustedFees, bufferedGasLimit } from './gas'
 
 /**
  * USDT-safe ERC20 `approve` ABI.
@@ -92,8 +92,29 @@ export async function simulateAndWrite(
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
-    // 4. Execute with the exact request object returned by simulation
-    return await writeContractAsync(request)
+    // 4. Pin an explicit gas limit. Without one viem forwards `gas: undefined` to
+    //    `eth_sendTransaction` and the wallet's own estimate — made against current
+    //    state, with no buffer — becomes the limit. A failed estimate is not fatal:
+    //    fall back to the wallet's behaviour rather than blocking the write.
+    let gas: bigint | undefined
+    try {
+      const estimate = await estimateGas(config, {
+        to: params.address,
+        data: encodeFunctionData({
+          abi: params.abi as Abi,
+          functionName: params.functionName,
+          args: params.args,
+        }),
+        value: params.value,
+        account: (request as { account?: { address: `0x${string}` } }).account?.address,
+      })
+      gas = bufferedGasLimit(estimate)
+    } catch {
+      gas = undefined
+    }
+
+    // 5. Execute with the simulated request, plus the buffered gas limit.
+    return await writeContractAsync(gas ? { ...request, gas } : request)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } catch (err: any) {
     console.error('Simulation/Execution failed:', err)

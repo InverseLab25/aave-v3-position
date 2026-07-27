@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useConnection, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
 import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
-import { calculateAdjustedFees } from '../utils/gas';
+import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas';
 import { simulateAndWrite, approveAbi } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
 import { isNativeAddress } from '../adapters/native';
@@ -147,13 +147,18 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
 
     // Pre-flight the raw swap tx (eth_call-style dry run). Stale/bad aggregator calldata
     // reverts HERE for free instead of on-chain, where it would burn the user's gas.
+    let gas: bigint;
     try {
-      await estimateGas(config, {
+      const estimate = await estimateGas(config, {
         to: txPayload.to as `0x${string}`,
         data: txPayload.data as `0x${string}`,
         value,
         account: address,
       });
+      // Keep the estimate rather than discarding it — aggregator routes can take a
+      // costlier path than the one quoted, and an unpinned gas limit leaves that to
+      // the wallet's own unbuffered guess.
+      gas = bufferedGasLimit(estimate);
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       setExecError(`Swap would revert — refresh the quote and try again: ${(e?.shortMessage || e?.message || 'unknown error').slice(0, 120)}`);
@@ -166,6 +171,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
       to: txPayload.to as `0x${string}`,
       data: txPayload.data as `0x${string}`,
       value,
+      gas,
       maxFeePerGas: adjMax,
       maxPriorityFeePerGas: adjPriority,
     });

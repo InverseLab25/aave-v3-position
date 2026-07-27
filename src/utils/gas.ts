@@ -16,6 +16,25 @@
  *
  * For legacy networks (returning gasPrice), we bump gasPrice by 20% for high priority.
  */
+/**
+ * Safety buffer applied to an `eth_estimateGas` result before it is pinned as the
+ * transaction's gas limit (+25%).
+ *
+ * We must pin one. For an injected wallet viem's `sendTransaction` takes the
+ * `json-rpc` branch: it forwards `gas: undefined` straight to `eth_sendTransaction`
+ * and never calls `prepareTransactionRequest`, so the limit is whatever the wallet
+ * guesses. That guess is made against current state — an Aave supply estimated
+ * while `isFirstSupply` is false, but mined once it is true, has to fund an extra
+ * cold `setUsingAsCollateral` bitmap write it was never quoted for, and dies with
+ * out-of-gas inside SupplyLogic. Unused gas is refunded, so the buffer is free.
+ */
+export const GAS_LIMIT_BUFFER_PERCENT = 125n
+
+/** Apply the safety buffer to a raw gas estimate. */
+export function bufferedGasLimit(estimate: bigint): bigint {
+  return (estimate * GAS_LIMIT_BUFFER_PERCENT) / 100n
+}
+
 export function calculateAdjustedFees(
   maxFeePerGas?: bigint,
   maxPriorityFeePerGas?: bigint,
