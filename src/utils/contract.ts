@@ -13,7 +13,7 @@
  */
 
 import type { Config } from 'wagmi'
-import { simulateContract, estimateFeesPerGas, estimateGas } from 'wagmi/actions'
+import { simulateContract, estimateFeesPerGas, estimateGas, waitForTransactionReceipt } from 'wagmi/actions'
 import { encodeFunctionData, type Abi } from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from './gas'
 
@@ -141,4 +141,68 @@ export async function simulateAndWrite(
 // eslint-disable-next-line preserve-caught-error
     throw new Error(errorMsg)
   }
+}
+
+/**
+ * ERC-20 `approve` that survives tokens requiring a zero-reset.
+ *
+ * Mainnet USDT (0xdAC17…, and the bridged Polygon/Arbitrum/Optimism/Avalanche
+ * variants) reverts `approve` whenever the CURRENT allowance and the new value
+ * are both non-zero:
+ *
+ *   require(!((_value != 0) && (allowed[msg.sender][_spender] != 0)))
+ *
+ * The allowance has to be zeroed first. This bites whenever an allowance is left
+ * partially unspent — approve a swap and close the modal without executing, then
+ * come back with a larger amount, and the second approve reverts.
+ *
+ * Rather than hardcoding a token blocklist, we probe with a simulation and only
+ * fall back to the two-step reset when that probe actually fails. Compliant
+ * tokens pay nothing but a free `eth_call` and still take a single transaction;
+ * only USDT-likes see the extra reset. The probe runs as the connected account
+ * (wagmi defaults `account` on simulateContract), so `msg.sender` is correct and
+ * the require above is evaluated for real.
+ *
+ * Returns the hash of the FINAL approve. When a reset was needed its transaction
+ * is sent and awaited first, so the caller still gets one hash to track.
+ */
+export async function approveErc20(
+  config: Config,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  writeContractAsync: (request: any) => Promise<`0x${string}`>,
+  params: {
+    token: `0x${string}`
+    spender: `0x${string}`
+    amount: bigint
+    /** Allowance read on-chain before this call. Treat an unresolved read as 0n. */
+    currentAllowance: bigint
+  },
+): Promise<`0x${string}`> {
+  const { token, spender, amount, currentAllowance } = params
+  const call = { address: token, abi: approveAbi, functionName: 'approve' }
+
+  // Only a non-zero -> non-zero transition can trip the USDT guard.
+  if (currentAllowance > 0n && amount > 0n) {
+    let needsReset = false
+    try {
+      await simulateContract(config, {
+        ...call,
+        args: [spender, amount],
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any)
+    } catch {
+      needsReset = true
+    }
+
+    if (needsReset) {
+      const resetHash = await simulateAndWrite(config, writeContractAsync, {
+        ...call,
+        args: [spender, 0n],
+      })
+      // The real approve must see an allowance of 0, so this has to land first.
+      await waitForTransactionReceipt(config, { hash: resetHash })
+    }
+  }
+
+  return simulateAndWrite(config, writeContractAsync, { ...call, args: [spender, amount] })
 }

@@ -4,7 +4,7 @@ import { parseUnits, maxUint256, erc20Abi, formatUnits } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
-import { simulateAndWrite, approveAbi } from '../utils/contract'
+import { simulateAndWrite, approveErc20 } from '../utils/contract'
 import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -156,7 +156,12 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
         const currentAllowance = (allowance as bigint) ?? 0n
         if (currentAllowance < approveAmount) {
           log('Simulating approval…')
-          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.underlyingAsset, abi: approveAbi, functionName: 'approve', args: [poolAddress, approveAmount] })
+          const approveHash = await approveErc20(config, writeContractAsync, {
+            token: asset.underlyingAsset,
+            spender: poolAddress,
+            amount: approveAmount,
+            currentAllowance,
+          })
           log('Approved — click Repay again.'); setTxHash(approveHash); setStep(0); await refetchAllowance(); return
         }
         log('Simulating repay…')

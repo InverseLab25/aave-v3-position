@@ -4,7 +4,7 @@ import { formatUnits, parseUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
-import { simulateAndWrite, approveAbi } from '../utils/contract'
+import { simulateAndWrite, approveErc20 } from '../utils/contract'
 import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
@@ -112,9 +112,11 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
       const currentAllowance = (allowance as bigint) ?? 0n
       if (currentAllowance < amount) {
         setStatusMsg('Simulating approval…')
-        const hash = await simulateAndWrite(config, writeContractAsync, {
-          address: selectedAsset.underlyingAsset as `0x${string}`, abi: approveAbi,
-          functionName: 'approve', args: [poolAddress, maxUint256],
+        const hash = await approveErc20(config, writeContractAsync, {
+          token: selectedAsset.underlyingAsset as `0x${string}`,
+          spender: poolAddress,
+          amount: maxUint256,
+          currentAllowance,
         })
         setTxHash(hash); setStep(2); setStatusMsg('Approval sent. Click Supply again to continue.')
         await refetchAllowance()

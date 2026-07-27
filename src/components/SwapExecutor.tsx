@@ -3,7 +3,7 @@ import { useConnection, useReadContract, useWriteContract, useSendTransaction, u
 import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
 import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas';
-import { simulateAndWrite, approveAbi } from '../utils/contract';
+import { approveErc20 } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
 import { isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
@@ -131,12 +131,14 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
 
   const handleApprove = async () => {
     onSwapStart?.(); // user committed — parent freezes quote auto-refresh so this tx can't change
-    // simulateAndWrite: estimate fees → simulate → write with validated request
-    await simulateAndWrite(config, writeApproveAsync, {
-      address: fromAsset.underlyingAsset as `0x${string}`,
-      abi: approveAbi,
-      functionName: 'approve',
-      args: [txPayload.spender as `0x${string}`, amountInBigInt],
+    // approveErc20: simulate → write, with a zero-reset first for USDT-likes
+    await approveErc20(config, writeApproveAsync, {
+      token: fromAsset.underlyingAsset as `0x${string}`,
+      spender: txPayload.spender as `0x${string}`,
+      amount: amountInBigInt,
+      // An unresolved allowance read is treated as 0 — the reset path is only
+      // needed when we know a non-zero allowance is already in place.
+      currentAllowance: (allowanceData as bigint | undefined) ?? 0n,
     });
   };
 
