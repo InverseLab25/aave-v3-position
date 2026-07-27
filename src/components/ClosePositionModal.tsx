@@ -140,7 +140,9 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const isProcessing = isSameAsset ? step === 1 : closeStep === 'running'
   const canExecute = isSameAsset
     ? !!amountStr && parseFloat(amountStr) > 0
-    : deleveragerAvailable && !isQuoting && preview?.covered === true
+    // `guaranteed` gates execution too: close() refuses a route whose guaranteed
+    // output falls below the debt, so the button must not invite the click.
+    : deleveragerAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
 
   return (
     <div className="modal-overlay">
@@ -327,11 +329,11 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                   </div>
                   {!preview.guaranteed && (
                     <div style={{ marginTop: '10px', fontSize: 'var(--text-xs)', color: 'var(--color-danger)', lineHeight: 1.4 }}>
-                      ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, below your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt — the close may revert (your funds stay safe). Lower the slippage to guarantee it.
+                      ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, below your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt. Closing is blocked so you don't sign for a swap that would revert on-chain — lower the slippage to guarantee it.
                     </div>
                   )}
                   <p style={{ fontSize: 'var(--text-xs)', marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
-                    Only enough {preview.collateralSymbol} is swapped to repay the debt (+0.5% margin); the rest stays supplied in Aave. Estimated from your live balances.
+                    Only enough {preview.collateralSymbol} is swapped for the router's guaranteed output to repay the debt at {slippage}% slippage; the rest stays supplied in Aave. Estimated from your live balances.
                   </p>
                 </div>
               ) : preview && !preview.covered ? (

@@ -17,10 +17,15 @@ import {
 /** Ceiling division for bigints: smallest n such that n * b >= a. */
 const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b
 
-// Swap only enough collateral to yield the debt plus this margin (0.5%), since debt
-// accrues between quote and execution. The rest stays supplied in Aave.
-const MARGIN_NUM = 1005n
-const MARGIN_DEN = 1000n
+// Headroom over the debt for interest accruing between the quote and execution (0.5%).
+// This covers accrual ONLY — slippage is handled separately by sizing against the
+// router's guaranteed output, because the two compose multiplicatively: a fixed 0.5%
+// margin is entirely consumed by 0.5% slippage, leaving the swap short of the debt.
+const ACCRUAL_BUFFER_BPS = 50n
+
+// How many times to re-quote while converging on the collateral actually required.
+// Each round is one parallel fan-out across the compatible aggregators.
+const SIZING_ROUNDS = 3
 
 const PROVIDER_ABI = [
   {
@@ -205,21 +210,60 @@ export function useDeleverageClose() {
       const fullOut = BigInt(bestFull.amountOut)
       const covered = fullOut >= debt
 
-      // 4. Size the swap: only enough collateral to yield the debt + margin. If the
-      //    position is underwater, fall back to the full swap; the caller inspects
-      //    `covered` and decides (preview shows a warning; close throws).
-      const targetOut = (debt * MARGIN_NUM) / MARGIN_DEN
-      const requiredIn =
-        !covered || targetOut >= fullOut ? collAmount : ceilDiv(collAmount * targetOut, fullOut)
+      const slipNum = BigInt(10000 - slippageBps)
+      /** What a router contractually guarantees to deliver for a given quoted output. */
+      const guaranteedOut = (quotedOut: bigint) => (quotedOut * slipNum) / 10000n
+      // The swap has to clear the debt out of the router's GUARANTEED output, not its
+      // quoted output, plus headroom for interest accruing before it lands.
+      const needed = (debt * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
 
-      // 5. Re-quote at the sized input; fall back to the full-collateral route.
-      const best = requiredIn === collAmount ? bestFull : (await quoteBest(requiredIn)) ?? bestFull
+      // 4. Work out how much collateral actually has to be swapped.
+      //
+      //    Aggregators quote exact-INPUT only (`Adapter.getQuote` takes an amountIn), so
+      //    the required input cannot be asked for directly. We estimate it from an
+      //    observed rate, then VERIFY that estimate against a real quote at that size and
+      //    refine if it falls short. Pricing is non-linear — `fullOut` is the rate for
+      //    swapping the entire collateral, i.e. the worst price-impact point — so a single
+      //    back-out is an estimate, never an answer.
+      let requiredIn =
+        covered && fullOut > 0n ? ceilDiv(collAmount * needed * 10000n, fullOut * slipNum) : collAmount
+      if (!covered || requiredIn >= collAmount) requiredIn = collAmount
+
+      let best = bestFull
+      for (let round = 0; round < SIZING_ROUNDS && requiredIn !== collAmount; round++) {
+        const quote = await quoteBest(requiredIn)
+        // A failed re-quote must NOT fall back to the full-collateral quote: its calldata
+        // swaps `collAmount` while the contract only withdraws `requiredIn`, so the router
+        // would try to pull more than it was approved for. Drain instead, which keeps the
+        // quote and the withdrawal consistent.
+        if (!quote) {
+          requiredIn = collAmount
+          best = bestFull
+          break
+        }
+        best = quote
+
+        const quotedOut = BigInt(quote.amountOut)
+        if (guaranteedOut(quotedOut) >= needed) break // this size is enough — stop here
+
+        // Short. Scale the input up by the shortfall ratio and re-measure.
+        const scaled =
+          quotedOut > 0n ? ceilDiv(requiredIn * needed * 10000n, quotedOut * slipNum) : collAmount
+        if (scaled >= collAmount) {
+          requiredIn = collAmount
+          best = bestFull
+          break
+        }
+        if (scaled <= requiredIn) break // not converging — accept and let `guaranteed` decide
+        requiredIn = scaled
+      }
+
       const adapter = adapters.find((a) => a.name === best.aggregator)
       if (!adapter) throw new Error('Selected adapter unavailable')
 
       const expectedOut = BigInt(best.amountOut)
       // What the router bakes in as its minimum return for this quote at this slippage.
-      const minDebtOut = (expectedOut * BigInt(10000 - slippageBps)) / 10000n
+      const minDebtOut = guaranteedOut(expectedOut)
       const guaranteed = covered && minDebtOut >= debt
 
       return {
@@ -285,6 +329,17 @@ export function useDeleverageClose() {
         const p = await buildPlan(input, log)
         if (!p.covered) {
           throw new Error('Collateral will not cover the debt (position underwater)')
+        }
+        // Sizing targets a guaranteed output above the debt, but the verifying re-quote can
+        // still come back short (thin liquidity, a route change, price moving between
+        // quotes). Refuse here rather than take a permit signature for a swap the router
+        // does not guarantee: `minOut` below is the full debt, so the close would revert
+        // on-chain with InsufficientOutput after burning gas, leaving the signature live
+        // for the rest of its deadline.
+        if (!p.guaranteed) {
+          throw new Error(
+            `No route guarantees repaying the debt at ${input.slippagePercent}% slippage. Lower the slippage and try again.`,
+          )
         }
         log(
           `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
