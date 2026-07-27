@@ -2129,5 +2129,413 @@
         ],
         "stateMutability": "nonpayable",
         "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "CallerNotPoolOrEmergencyAdmin",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CallerNotRiskOrPoolAdmin",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CallerNotAssetListingOrPoolAdmin",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "AddressesProviderNotRegistered",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidAddressesProviderId",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NotContract",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidFlashloanExecutorReturn",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveAlreadyAdded",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NoMoreReservesAllowed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveLiquidityNotZero",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "FlashloanPremiumInvalid",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidReserveParams",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidEmodeCategoryParams",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CallerMustBePool",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidMintAmount",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidBurnAmount",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidAmount",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveInactive",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveFrozen",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReservePaused",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "BorrowingNotEnabled",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NotEnoughAvailableUserBalance",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidInterestRateModeSelected",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "HealthFactorLowerThanLiquidationThreshold",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CollateralCannotCoverNewBorrow",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NoDebtOfSelectedType",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NoExplicitAmountToRepayOnBehalf",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "UnderlyingBalanceZero",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "HealthFactorNotBelowThreshold",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CollateralCannotBeLiquidated",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "SpecifiedCurrencyNotBorrowedByUser",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InconsistentFlashloanParams",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "BorrowCapExceeded",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "SupplyCapExceeded",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "LtvValidationFailed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InconsistentEModeCategory",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveAlreadyInitialized",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "UserHasAssetWithZeroLtv",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidLtv",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidLiquidationThreshold",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidLiquidationBonus",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidDecimals",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidReserveFactor",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidBorrowCap",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidSupplyCap",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidLiquidationProtocolFee",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidReserveIndex",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "AclAdminCannotBeZero",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InconsistentParamsLength",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidExpiration",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidSignature",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "OperationNotSupported",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidOptimalUsageRatio",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "UnderlyingCannotBeRescued",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "AddressesProviderAlreadyAdded",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "PoolAddressesDoNotMatch",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveDebtNotZero",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "FlashloanDisabled",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidMaxRate",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "WithdrawToAToken",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "SupplyToAToken",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "Slope2MustBeGteSlope1",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "CallerNotRiskOrPoolOrEmergencyAdmin",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "LiquidationGraceSentinelCheckFailed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidGracePeriod",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidFreezeState",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InvalidLtvzeroState",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "NotBorrowableInEMode",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ReserveNotInDeficit",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "MustNotLeaveDust",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "UserCannotHaveDebt",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "SelfLiquidation",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "reserve",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "categoryId",
+                "type": "uint256"
+            }
+        ],
+        "name": "InvalidCollateralInEmode",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "reserve",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "categoryId",
+                "type": "uint256"
+            }
+        ],
+        "name": "InvalidDebtInEmode",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "reserve",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "categoryId",
+                "type": "uint256"
+            }
+        ],
+        "name": "MustBeEmodeCollateral",
+        "type": "error"
     }
 ]
