@@ -264,6 +264,9 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         underlyingAsset: reserve.underlyingAsset,
         decimals: Number(reserve.decimals),
         amount: formattedAmount,
+        // Raw aToken balance. `amount` is a lossy double — MAX buttons must size
+        // from this bigint so the sent amount matches the balance to the wei.
+        amountRaw: balanceAmount,
         valueUsd,
         priceInUsd: priceUsd.toString(),
         apy: apy * 100,
@@ -311,6 +314,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         underlyingAsset: reserve.underlyingAsset,
         decimals: Number(reserve.decimals),
         amount: formattedAmount,
+        // Raw variable-debt balance — see the note on the supplied-asset counterpart.
+        amountRaw: balanceAmount,
         valueUsd,
         priceInUsd: priceUsd.toString(),
         apy: apy * 100,

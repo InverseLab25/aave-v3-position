@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useWriteContract, useConnection, useReadContract, useWaitForTransactionReceipt, useConfig } from 'wagmi'
-import { parseUnits, maxUint256, erc20Abi } from 'viem'
+import { parseUnits, formatUnits, maxUint256, erc20Abi } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
@@ -85,6 +85,15 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const lastLog = logs[logs.length - 1] ?? ''
   const isError = lastLog.startsWith('Error')
 
+  // Size MAX from the raw aToken balance, not from `asset.amount` — that is a
+  // double, and `.toFixed(decimals)` on it drifts from the true balance in both
+  // directions. An overshoot survives as long as `isMax` holds (we send
+  // maxUint256), but the moment the user edits the field `isMax` clears and the
+  // drifted value is what goes on-chain.
+  const maxWithdrawableStr = asset.amountRaw !== undefined
+    ? formatUnits(asset.amountRaw as bigint, asset.decimals)
+    : (asset.amount ?? 0).toFixed(asset.decimals)
+
   const amountNum = parseFloat(amountStr) || 0
   const isInsufficient = amountNum > (asset.amount || 0)
 
@@ -129,7 +138,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
               onBlur={e => (e.currentTarget.style.borderColor = T.border)}
             />
             <button
-              onClick={() => { setAmountStr((asset.amount ?? 0).toFixed(asset.decimals)); setIsMax(true) }}
+              onClick={() => { setAmountStr(maxWithdrawableStr); setIsMax(true) }}
               style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
             >MAX</button>
           </div>

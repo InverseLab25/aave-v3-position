@@ -5,11 +5,14 @@ import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
+import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+
+const SUPPLY_GAS_LIMIT = 250000n /* Aave supply */
 
 interface AssetsToSupplyModalProps {
   chainId: number
@@ -38,7 +41,9 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(250000n /* Aave supply */, ethPriceUsd, parseFloat(amountStr) > 0)
+  // Fees are fetched as soon as an asset is picked, not just once an amount is
+  // typed: the native-ETH MAX button needs `maxFee` to size its gas reserve.
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(SUPPLY_GAS_LIMIT, ethPriceUsd, !!selectedAsset)
 
   const { data: ethBalance } = useBalance({ address })
 
@@ -133,6 +138,17 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const isError = statusMsg.startsWith('Error')
 
   const selectedWalletBalance = selectedAsset ? getWalletBalance(selectedAsset) : 0
+  const selectedDecimals = selectedAsset?.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : selectedAsset?.decimals ?? 18
+
+  // Native ETH is supplied as `msg.value`, so MAX must hold gas back — sending
+  // the whole balance leaves nothing to pay the fee and always reverts at
+  // simulation. ERC-20s are pulled by the Pool, so they can go to the wei.
+  const maxSuppliableRaw = !selectedAsset
+    ? 0n
+    : selectedAsset.symbol === 'ETH'
+      ? maxNativeSpendable(getRawBalance(selectedAsset), maxFee, SUPPLY_GAS_LIMIT)
+      : getRawBalance(selectedAsset)
+
   const amountNum = parseFloat(amountStr) || 0
   const isInsufficient = selectedAsset && amountNum > selectedWalletBalance
 
@@ -216,7 +232,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                   onBlur={e => (e.currentTarget.style.borderColor = T.border)}
                 />
                 <button
-                  onClick={() => setAmountStr(formatUnits(getRawBalance(selectedAsset), selectedAsset.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : selectedAsset.decimals))}
+                  onClick={() => setAmountStr(formatUnits(maxSuppliableRaw, selectedDecimals))}
                   style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
                 >MAX</button>
               </div>

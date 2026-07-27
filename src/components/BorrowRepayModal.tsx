@@ -5,6 +5,7 @@ import { getChainConfig } from '../config/chains'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
+import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
@@ -12,6 +13,16 @@ import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 const RATE_MODE = 2n
+const BORROW_REPAY_GAS_LIMIT = 300000n /* Aave borrow/repay */
+
+/**
+ * Overshoot applied to a MAX native-ETH repay (0.1%).
+ *
+ * `WrappedTokenGatewayV3.repayETH` repays the LIVE debt and refunds whatever
+ * `msg.value` is left over, so overshooting the stale snapshot costs nothing but
+ * covers the interest that accrues between page load and the tx being mined.
+ */
+const REPAY_INTEREST_BUFFER_BPS = 10n
 
 const debtTokenAbi = [
   { inputs: [{ internalType: 'address', name: 'delegatee', type: 'address' }, { internalType: 'uint256', name: 'amount', type: 'uint256' }], name: 'approveDelegation', outputs: [], stateMutability: 'nonpayable', type: 'function' },
@@ -49,7 +60,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow/repay */, ethPriceUsd, parseFloat(amountStr) > 0, activeTab === 'borrow' ? 10n : 1n)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(BORROW_REPAY_GAS_LIMIT, ethPriceUsd, parseFloat(amountStr) > 0, activeTab === 'borrow' ? 10n : 1n)
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
@@ -112,9 +123,28 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
       } else {
         if (isNativeEth && gatewayAddress) {
+          // `finalAmount` (maxUint256 on MAX) has to be threaded through here too:
+          // passing the stale snapshot leaves the interest accrued since load as
+          // dust debt. The gateway clamps the payback to the live debt and
+          // refunds the unused msg.value, so we overshoot the snapshot — capped
+          // so the wallet can still pay for gas.
+          let repayAmount = amountParsed
+          let repayValue = amountParsed
+          if (isMax) {
+            const spendable = maxNativeSpendable(ethBalance?.value ?? 0n, maxFee, BORROW_REPAY_GAS_LIMIT)
+            const buffered = amountParsed + (amountParsed * REPAY_INTEREST_BUFFER_BPS) / 10_000n
+            if (buffered <= spendable) {
+              repayAmount = maxUint256
+              repayValue = buffered
+            } else {
+              // Not enough ETH to clear the debt outright — repay what gas leaves us.
+              repayAmount = spendable
+              repayValue = spendable
+            }
+          }
           log('Simulating ETH repay…')
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, amountParsed, address], value: amountParsed })
+          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, repayAmount, address], value: repayValue })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
         }
         // For MAX repay we send maxUint256, and Aave pulls the *current* debt
@@ -145,6 +175,12 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const canExecute = !!amountStr && parseFloat(amountStr) > 0
   const lastLog = logs[logs.length - 1] ?? ''
   const isError = lastLog.startsWith('Error')
+
+  // Size MAX from the raw debt balance — `asset.amount` is a double and
+  // `.toFixed(decimals)` on it drifts from the true balance by a few wei.
+  const maxRepayableStr = asset.amountRaw !== undefined
+    ? formatUnits(asset.amountRaw as bigint, asset.decimals)
+    : (asset.amount ?? 0).toFixed(asset.decimals)
 
   const amountNum = parseFloat(amountStr) || 0
   const isInsufficientRepay = activeTab === 'repay' && amountNum > Math.max(0, walletBalance)
@@ -227,7 +263,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             />
             {activeTab === 'repay' && (
               <button
-                onClick={() => { setAmountStr((asset.amount ?? 0).toFixed(asset.decimals)); setIsMax(true) }}
+                onClick={() => { setAmountStr(maxRepayableStr); setIsMax(true) }}
                 style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
               >MAX</button>
             )}
