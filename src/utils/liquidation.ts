@@ -94,5 +94,35 @@ export function computeLiquidationView(
     return b.bufferPct - a.bufferPct
   })
 
-  return { rows, marketWideDropPct: null }
+  return { rows, marketWideDropPct: marketWideDrop(usable, totalWeighted, debtUsd) }
+}
+
+/**
+ * The single factor by which every volatile collateral would have to fall
+ * *together* to reach HF = 1, with stablecoin collateral holding its value.
+ *
+ * Returns null when the figure would be noise or meaningless:
+ *  - fewer than 2 volatile collaterals (identical to that one asset's own row)
+ *  - no volatile weight at all
+ *  - stablecoin collateral alone already covers the debt
+ */
+function marketWideDrop(
+  usable: CollateralInput[],
+  totalWeighted: number,
+  debtUsd: number,
+): number | null {
+  const volatile = usable.filter(c => isVolatilePrice(c.priceUsd))
+  if (volatile.length < 2) return null
+
+  const weightedVolatile = volatile.reduce(
+    (sum, c) => sum + c.amount * c.priceUsd * c.liquidationThreshold,
+    0,
+  )
+  if (!(weightedVolatile > 0)) return null
+
+  const weightedStable = totalWeighted - weightedVolatile
+  const factor = (debtUsd - weightedStable) / weightedVolatile
+  if (!(factor > 0)) return null
+
+  return factor - 1
 }

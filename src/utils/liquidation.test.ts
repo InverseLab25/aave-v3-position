@@ -99,3 +99,76 @@ describe('computeLiquidationView — row ordering', () => {
     expect(view.rows.map(r => r.symbol)).toEqual(['cbBTC', 'WETH', 'USDC'])
   })
 })
+
+describe('computeLiquidationView — market-wide correlated drop', () => {
+  it('is null with a single volatile collateral (identical to that row)', () => {
+    const view = computeLiquidationView(
+      [{ symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 }],
+      209824,
+    )
+    expect(view.marketWideDropPct).toBeNull()
+  })
+
+  it('is null when all collateral is stablecoins', () => {
+    const view = computeLiquidationView(
+      [
+        { symbol: 'USDC', amount: 400000, priceUsd: 1, liquidationThreshold: 0.8 },
+        { symbol: 'USDT', amount: 100000, priceUsd: 1, liquidationThreshold: 0.75 },
+      ],
+      100000,
+    )
+    expect(view.marketWideDropPct).toBeNull()
+  })
+
+  it('computes the shared fall across two volatile collaterals', () => {
+    // weightedVolatile = 308,550 + 336,000 = 644,550 ; no stables ; debt 400,000
+    // f = 400000 / 644550 = 0.6205880  ->  drop = -0.3794120
+    const view = computeLiquidationView(
+      [
+        { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
+        { symbol: 'cbBTC', amount: 5, priceUsd: 96000, liquidationThreshold: 0.7 },
+      ],
+      400000,
+    )
+    expect(view.marketWideDropPct).toBeCloseTo(-0.3794120, 6)
+  })
+
+  it('excludes stablecoin collateral from the volatile weight', () => {
+    // weightedStable = 80,000 ; weightedVolatile = 644,550 ; debt 500,000
+    // f = (500000 - 80000) / 644550 = 0.6516174  ->  drop = -0.3483826
+    const view = computeLiquidationView(
+      [
+        { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
+        { symbol: 'cbBTC', amount: 5, priceUsd: 96000, liquidationThreshold: 0.7 },
+        { symbol: 'USDC', amount: 100000, priceUsd: 1, liquidationThreshold: 0.8 },
+      ],
+      500000,
+    )
+    expect(view.marketWideDropPct).toBeCloseTo(-0.3483826, 6)
+  })
+
+  it('is null when stablecoin collateral alone already covers the debt', () => {
+    // weightedStable = 320,000 > debt 100,000, so no fall in volatile prices liquidates.
+    const view = computeLiquidationView(
+      [
+        { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
+        { symbol: 'cbBTC', amount: 5, priceUsd: 96000, liquidationThreshold: 0.7 },
+        { symbol: 'USDC', amount: 400000, priceUsd: 1, liquidationThreshold: 0.8 },
+      ],
+      100000,
+    )
+    expect(view.marketWideDropPct).toBeNull()
+  })
+
+  it('requires a smaller fall than any single asset falling alone', () => {
+    const view = computeLiquidationView(
+      [
+        { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
+        { symbol: 'cbBTC', amount: 5, priceUsd: 96000, liquidationThreshold: 0.7 },
+      ],
+      400000,
+    )
+    const worstSingle = Math.min(...view.rows.map(r => Math.abs(r.bufferPct as number)))
+    expect(Math.abs(view.marketWideDropPct as number)).toBeLessThan(worstSingle)
+  })
+})
