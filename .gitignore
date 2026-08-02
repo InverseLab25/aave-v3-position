@@ -40,3 +40,6 @@ cache/
 
 # Local scratch — recommendations, notes (not committed)
 idea/
+
+# subagent-driven-development scratch workspace
+.superpowers/
