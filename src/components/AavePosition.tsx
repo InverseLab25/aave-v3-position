@@ -9,6 +9,9 @@ import { BorrowRepayModal } from './BorrowRepayModal'
 import { EModeModal } from './EModeModal'
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
+import { LiquidationPriceBlock } from './LiquidationPriceBlock'
+import { computeLiquidationView } from '../utils/liquidation'
+import type { CollateralInput } from '../utils/liquidation'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 
@@ -319,6 +322,21 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   }
 
   const netInterestUsd = totalInterestEarnedUsd - totalInterestPaidUsd
+  // Only collateral-enabled supplies carry liquidation weight. Prices come from the
+  // Aave oracle (`priceInUsd`), never `apiEthPrice` — Aave liquidates on its own oracle.
+  const liquidationView = computeLiquidationView(
+    suppliedAssets
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((a: any) => a.usageAsCollateralEnabledOnUser)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((a: any): CollateralInput => ({
+        symbol: a.symbol,
+        amount: a.amount,
+        priceUsd: Number(a.priceInUsd),
+        liquidationThreshold: a.liquidationThreshold,
+      })),
+    debtUsd,
+  )
   const chainConfig = getChainConfig(chainId)
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -390,6 +408,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
             </div>
           </div>
         </div>
+
+        <LiquidationPriceBlock view={liquidationView} isEModeEnabled={isEModeEnabled} />
       </div>
 
       <div className="asset-tables">
@@ -487,7 +507,6 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                     <th>Balance</th>
                     <th>Value (USD)</th>
                     <th>APY</th>
-                    <th>Liquidation Price</th>
                     <th>Interest Paid</th>
                     <th>Position P&amp;L</th>
                     {!isViewMode && <th style={{ textAlign: 'right' }}>Actions</th>}
@@ -497,19 +516,12 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
 {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {borrowedAssets.map((a: any, i: number) => {
                     const r = applyOverride(a, 'borrow');
-                    // Liquidation for a borrowed (debt) asset: the price it would have to RISE
-                    // to for the growing debt to push HF to 1, holding collateral and other
-                    // debts fixed. Mirror of the collateral-side formula.
-                    const otherDebtUsd = debtUsd - a.valueUsd;
-                    const allowedThisDebtUsd = collateralUsd * liquidationThreshold - otherDebtUsd;
-                    const liquidationPrice = a.amount > 0 && allowedThisDebtUsd > 0 ? allowedThisDebtUsd / a.amount : 0;
                     return (
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="borrow" r={r} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
-                        <td className="number" data-label="Liquidation Price">{liquidationPrice > 0 ? `$${liquidationPrice.toFixed(2)}` : 'At risk'}</td>
                         <td className="number text-danger" data-label="Interest Paid">
                           {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
