@@ -235,13 +235,6 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     setEditingKey(null)
   }
 
-  const getDisplaySymbol = (assetSymbol: string) => {
-    const chainConfig = getChainConfig(chainId)
-    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-    const nativeSymbol = nativeWrappedSymbol.startsWith('W') ? nativeWrappedSymbol.substring(1) : 'ETH'
-    return assetSymbol.toUpperCase() === nativeWrappedSymbol ? nativeSymbol : assetSymbol
-  }
-
   /** P&L cell with breakdown on separate lines. Shared by both tables. */
   const PnlCell = ({ r, side }: { r: ReturnType<typeof applyOverride>; side: 'supply' | 'borrow' }) => {
     if (!r || r.effectiveAvgEntry <= 0) {
@@ -464,12 +457,12 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
 
                     return (
                       <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{getDisplaySymbol(a.symbol)}</td>
+                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="supply" r={r} />
                         <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-success" data-label="Interest Earned">
-                          {a.interestEarnedTokens.toFixed(4)} {getDisplaySymbol(a.symbol)} <br />
+                          {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
                             +${a.interestEarnedUsd.toFixed(2)}
                           </span>
@@ -534,12 +527,12 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                     const r = applyOverride(a, 'borrow');
                     return (
                       <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{getDisplaySymbol(a.symbol)}</td>
+                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="borrow" r={r} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-danger" data-label="Interest Paid">
-                          {a.interestPaidTokens.toFixed(4)} {getDisplaySymbol(a.symbol)} <br />
+                          {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
                             -${a.interestPaidUsd.toFixed(2)}
                           </span>

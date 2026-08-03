@@ -13,14 +13,14 @@ import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface WithdrawModalProps {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   asset: any
   ethPriceUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
   suppliedAssets?: any[]
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   availableReserves?: any[]
   onClose: () => void
 }
@@ -28,11 +28,6 @@ interface WithdrawModalProps {
 export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], availableReserves = [], onClose }: WithdrawModalProps) {
   const { address, chainId } = useConnection()
   const chainConfig = getChainConfig(chainId)
-  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-  const nativeSymbol = nativeWrappedSymbol.startsWith('W') ? nativeWrappedSymbol.substring(1) : 'ETH'
-  const isNativeWrapped = asset.symbol.toUpperCase() === nativeWrappedSymbol
-
-  const [unwrapNative, setUnwrapNative] = useState(true)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
   const [amountStr, setAmountStr] = useState('')
   const [isMax, setIsMax] = useState(false)
@@ -63,24 +58,24 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
       const finalAmount = isMax ? maxUint256 : amountParsed
       const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
-      if (isNativeWrapped && unwrapNative && gatewayAddress) {
+      if (asset.symbol === 'ETH' && gatewayAddress) {
         const currentAllowance = (aTokenAllowance as bigint) ?? 0n
         if (currentAllowance < amountParsed) {
           log('Simulating aToken approval…')
           const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.aTokenAddress, abi: approveAbi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
           log('Approved — click Withdraw again.'); setTxHash(approveHash); setStep(0); await refetchATokenAllowance(); return
         }
-        log(`Simulating ${nativeSymbol} withdraw…`)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+        log('Simulating ETH withdraw…')
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
       }
 
       log('Simulating withdraw…')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'withdraw', args: [asset.underlyingAsset, finalAmount, address] })
       log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (e: any) {
       const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
       log(`Error: ${reason}`); setStep(0)
@@ -163,20 +158,6 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
               style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
             >MAX</button>
           </div>
-
-          {isNativeWrapped && chainConfig?.aave?.wethGateway && (
-            <div style={{ marginBottom: T.space[4], display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <input 
-                type="checkbox" 
-                id="unwrapNative" 
-                checked={unwrapNative} 
-                onChange={e => setUnwrapNative(e.target.checked)} 
-              />
-              <label htmlFor="unwrapNative" style={{ fontSize: T.fontSize.sm, color: T.text, cursor: 'pointer' }}>
-                Receive {nativeSymbol} instead of {asset.symbol} (Unwrap)
-              </label>
-            </div>
-          )}
 
           <GasInfoCard
             maxFee={maxFee}

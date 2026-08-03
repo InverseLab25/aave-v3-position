@@ -23,7 +23,7 @@ function App() {
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wethAsset = suppliedAssets.find((a: any) => a.symbol.toUpperCase() === nativeWrappedSymbol)
-  const ethPrice = wethAsset ? Number(wethAsset.priceInUsd) : apiEthPrice
+  const ethPrice = apiEthPrice !== null ? apiEthPrice : (wethAsset ? Number(wethAsset.priceInUsd) : 0)
 
   const isViewMode = !!viewAddress
   const [selectedTab, setSelectedTab] = useState<'aave' | 'dex'>('aave')
