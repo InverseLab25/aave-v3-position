@@ -7,6 +7,7 @@ import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
+import { computeLiquidationView } from '../utils/liquidation'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
@@ -20,7 +21,7 @@ interface AssetsToBorrowModalProps {
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
-  borrowedAssets?: any[]
+  suppliedAssets?: any[]
   onClose: () => void
 }
 
@@ -31,7 +32,7 @@ const debtTokenAbi = [
   { inputs: [{ internalType: 'address', name: 'fromUser', type: 'address' }, { internalType: 'address', name: 'toUser', type: 'address' }], name: 'borrowAllowance', outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' }
 ] as const
 
-export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 0, availableBorrowsUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, borrowedAssets = [], onClose }: AssetsToBorrowModalProps) {
+export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 0, availableBorrowsUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], onClose }: AssetsToBorrowModalProps) {
   const { address } = useConnection()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
@@ -119,16 +120,19 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
     ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowAmountUsd)
     : '∞'
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
-
-  const matchAddress = selectedAsset?.symbol === 'ETH' && wethReserve ? wethReserve.underlyingAsset : selectedAsset?.underlyingAsset;
-  const existingBorrow = borrowedAssets.find(a => a.underlyingAsset.toLowerCase() === matchAddress?.toLowerCase())
-  const currentAssetAmount = existingBorrow?.amount || 0;
-  const currentAssetValueUsd = existingBorrow?.valueUsd || (currentAssetAmount * Number(selectedAsset?.priceInUsd || 0));
-  const newAssetAmount = currentAssetAmount + amountNum;
   
-  const otherDebtUsd = debtUsd - currentAssetValueUsd;
-  const allowedThisDebtUsd = collateralUsd * liquidationThreshold - otherDebtUsd;
-  const newLiquidationPrice = newAssetAmount > 0 && allowedThisDebtUsd > 0 ? allowedThisDebtUsd / newAssetAmount : 0;
+  const amountUsd = amountNum * Number(selectedAsset?.priceInUsd || 0);
+  const newDebtUsd = debtUsd + amountUsd;
+  
+  const liquidationView = computeLiquidationView(
+    (suppliedAssets || []).map((a: any) => ({
+      symbol: a.symbol,
+      amount: a.amount || 0,
+      priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,
+      liquidationThreshold: a.liquidationThreshold || 0
+    })),
+    newDebtUsd
+  )
 
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -211,16 +215,8 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
                 estimatedFeeUsd={estimatedFeeUsd}
                 currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
                 newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+                liquidationView={amountNum > 0 ? liquidationView : undefined}
               />
-
-              {amountNum > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, marginTop: T.space[2], marginBottom: T.space[4] }}>
-                  <span style={{ color: T.textMuted }}>New Liquidation Price</span>
-                  <span style={{ fontFamily: T.font.mono, fontWeight: 600 }}>
-                    {newLiquidationPrice > 0 ? `$${newLiquidationPrice.toFixed(2)}` : 'At risk'}
-                  </span>
-                </div>
-              )}
 
               {hfGuard.message && <div style={alertStyle(hfGuard.level === 'block' ? 'danger' : 'warning')}>{hfGuard.message}</div>}
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}

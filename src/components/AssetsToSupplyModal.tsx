@@ -8,6 +8,7 @@ import { simulateAndWrite, approveErc20 } from '../utils/contract'
 import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
+import { computeLiquidationView } from '../utils/liquidation'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
@@ -22,10 +23,11 @@ interface AssetsToSupplyModalProps {
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
+  suppliedAssets?: any[]
   onClose: () => void
 }
 
-export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: AssetsToSupplyModalProps) {
+export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], onClose }: AssetsToSupplyModalProps) {
   const { address } = useConnection()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
@@ -161,6 +163,20 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
     : '∞'
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
 
+  const liquidationView = computeLiquidationView(
+    (suppliedAssets || []).map((a: any) => {
+      const isTarget = a.symbol === selectedAsset?.symbol;
+      const originalAmount = a.amount || 0;
+      return {
+        symbol: a.symbol,
+        amount: isTarget ? originalAmount + amountNum : originalAmount,
+        priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,
+        liquidationThreshold: a.liquidationThreshold || 0
+      }
+    }),
+    debtUsd
+  )
+
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal-content" style={{ ...modalStyle, maxWidth: '600px' }}>
@@ -245,6 +261,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                 estimatedFeeUsd={estimatedFeeUsd}
                 currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
                 newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+                liquidationView={amountNum > 0 ? liquidationView : undefined}
               />
 
               {hfGuard.message && <div style={alertStyle(hfGuard.level === 'block' ? 'danger' : 'warning')}>{hfGuard.message}</div>}

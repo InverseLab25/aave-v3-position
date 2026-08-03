@@ -10,6 +10,7 @@ import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
+import { computeLiquidationView } from '../utils/liquidation'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 const RATE_MODE = 2n
@@ -37,12 +38,13 @@ interface BorrowRepayModalProps {
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
+  suppliedAssets?: any[]
   onClose: () => void
 }
 
 const TAB_LABELS = { borrow: 'Borrow', repay: 'Repay' } as const
 
-export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, onClose }: BorrowRepayModalProps) {
+export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], onClose }: BorrowRepayModalProps) {
   const { address, chainId } = useConnection()
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
@@ -201,15 +203,17 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
   const hfGuardBlocked = hfGuard.level === 'block'
 
-  const currentAssetAmount = asset.amount || 0;
-  const currentAssetValueUsd = asset.valueUsd || (currentAssetAmount * Number(asset.priceInUsd || 0));
-  const newAssetAmount = activeTab === 'borrow' 
-    ? currentAssetAmount + amountNum 
-    : Math.max(0, currentAssetAmount - amountNum);
-    
-  const otherDebtUsd = debtUsd - currentAssetValueUsd;
-  const allowedThisDebtUsd = collateralUsd * liquidationThreshold - otherDebtUsd;
-  const newLiquidationPrice = newAssetAmount > 0 && allowedThisDebtUsd > 0 ? allowedThisDebtUsd / newAssetAmount : 0;
+  const newDebtUsd = activeTab === 'borrow' ? debtUsd + borrowRepayUsd : Math.max(0, debtUsd - borrowRepayUsd);
+  
+  const liquidationView = computeLiquidationView(
+    suppliedAssets.map((a: any) => ({
+      symbol: a.symbol,
+      amount: a.amount || 0,
+      priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,
+      liquidationThreshold: a.liquidationThreshold || 0
+    })),
+    newDebtUsd
+  )
 
   const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
@@ -281,16 +285,8 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             estimatedFeeUsd={estimatedFeeUsd}
             currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
             newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+            liquidationView={amountNum > 0 ? liquidationView : undefined}
           />
-
-          {amountNum > 0 && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, marginTop: T.space[2], marginBottom: T.space[4] }}>
-              <span style={{ color: T.textMuted }}>New Liquidation Price</span>
-              <span style={{ fontFamily: T.font.mono, fontWeight: 600 }}>
-                {newLiquidationPrice > 0 ? `$${newLiquidationPrice.toFixed(2)}` : 'At risk'}
-              </span>
-            </div>
-          )}
 
           {hfGuard.message && <div style={alertStyle(hfGuardBlocked ? 'danger' : 'warning')}>{hfGuard.message}</div>}
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}

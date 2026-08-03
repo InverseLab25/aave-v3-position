@@ -1,13 +1,15 @@
 import { formatGwei } from 'viem'
+import type { LiquidationView } from '../utils/liquidation'
+import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { T, infoCardStyle, labelStyle } from '../styles/theme'
 
 interface GasInfoCardProps {
   maxFee?: bigint
   maxPriority?: bigint
   estimatedFeeUsd?: number
-  /** Show the "current → new" health-factor row (omit for supply-only flows without a position). */
   currentHealthFactor?: string
   newHealthFactor?: string
+  liquidationView?: LiquidationView
 }
 
 const hfColor = (hf: string) =>
@@ -18,19 +20,24 @@ const hfColor = (hf: string) =>
  * Aave supply / borrow / repay / withdraw modals. Renders nothing until it has
  * either a health factor to show or fee data.
  */
-export function GasInfoCard({ maxFee, maxPriority, estimatedFeeUsd = 0, currentHealthFactor, newHealthFactor }: GasInfoCardProps) {
+export function GasInfoCard({ maxFee, maxPriority, estimatedFeeUsd = 0, currentHealthFactor, newHealthFactor, liquidationView }: GasInfoCardProps) {
   const showHealth = !!newHealthFactor
   const showGas = !!maxFee && !!maxPriority
-  if (!showHealth && !showGas) return null
+  if (!showHealth && !showGas && !liquidationView) return null
 
   return (
     <div style={infoCardStyle}>
       {showHealth && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: liquidationView?.rows.length ? T.space[2] : T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
           <span>Health Factor</span>
           <span style={{ color: hfColor(newHealthFactor!), fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
             {currentHealthFactor} → {newHealthFactor}
           </span>
+        </div>
+      )}
+      {liquidationView && liquidationView.rows.length > 0 && (
+        <div style={{ marginBottom: T.space[4] }}>
+          <LiquidationPriceBlock view={liquidationView} isModal />
         </div>
       )}
       {showGas && (

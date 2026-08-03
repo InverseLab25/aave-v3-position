@@ -7,6 +7,7 @@ import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
+import { computeLiquidationView } from '../utils/liquidation'
 import wethGatewayAbi from '../config/wethGatewayAbi.json'
 import aavePoolAbi from '../config/aavev3Abi.json'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
@@ -18,14 +19,20 @@ interface WithdrawModalProps {
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
+  suppliedAssets?: any[]
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
   availableReserves?: any[]
   onClose: () => void
 }
 
-export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, availableReserves = [], onClose }: WithdrawModalProps) {
+export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], availableReserves = [], onClose }: WithdrawModalProps) {
   const { address, chainId } = useConnection()
   const chainConfig = getChainConfig(chainId)
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+  const nativeSymbol = nativeWrappedSymbol.startsWith('W') ? nativeWrappedSymbol.substring(1) : 'ETH'
+  const isNativeWrapped = asset.symbol.toUpperCase() === nativeWrappedSymbol
+
+  const [unwrapNative, setUnwrapNative] = useState(true)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
   const [amountStr, setAmountStr] = useState('')
   const [isMax, setIsMax] = useState(false)
@@ -56,14 +63,14 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
       const finalAmount = isMax ? maxUint256 : amountParsed
       const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
-      if (asset.symbol === 'ETH' && gatewayAddress) {
+      if (isNativeWrapped && unwrapNative && gatewayAddress) {
         const currentAllowance = (aTokenAllowance as bigint) ?? 0n
         if (currentAllowance < amountParsed) {
           log('Simulating aToken approval…')
           const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.aTokenAddress, abi: approveAbi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
           log('Approved — click Withdraw again.'); setTxHash(approveHash); setStep(0); await refetchATokenAllowance(); return
         }
-        log('Simulating ETH withdraw…')
+        log(`Simulating ${nativeSymbol} withdraw…`)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
@@ -108,6 +115,20 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
   const hfGuardBlocked = hfGuard.level === 'block'
 
+  const liquidationView = computeLiquidationView(
+    suppliedAssets.map((a: any) => {
+      const isTarget = a.symbol === asset.symbol;
+      const originalAmount = a.amount || 0;
+      return {
+        symbol: a.symbol,
+        amount: isTarget ? Math.max(0, originalAmount - amountNum) : originalAmount,
+        priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,
+        liquidationThreshold: a.liquidationThreshold || 0
+      }
+    }),
+    debtUsd
+  )
+
   const btnLabel = isInsufficient ? 'Insufficient supplied' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Withdraw'
 
   return (
@@ -143,13 +164,27 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
             >MAX</button>
           </div>
 
-          {/* Gas + health factor */}
+          {isNativeWrapped && chainConfig?.aave?.wethGateway && (
+            <div style={{ marginBottom: T.space[4], display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input 
+                type="checkbox" 
+                id="unwrapNative" 
+                checked={unwrapNative} 
+                onChange={e => setUnwrapNative(e.target.checked)} 
+              />
+              <label htmlFor="unwrapNative" style={{ fontSize: T.fontSize.sm, color: T.text, cursor: 'pointer' }}>
+                Receive {nativeSymbol} instead of {asset.symbol} (Unwrap)
+              </label>
+            </div>
+          )}
+
           <GasInfoCard
             maxFee={maxFee}
             maxPriority={maxPriority}
             estimatedFeeUsd={estimatedFeeUsd}
             currentHealthFactor={amountNum > 0 ? currentHealthFactor : undefined}
             newHealthFactor={amountNum > 0 ? newHealthFactor : undefined}
+            liquidationView={amountNum > 0 ? liquidationView : undefined}
           />
 
           {hfGuard.message && <div style={alertStyle(hfGuardBlocked ? 'danger' : 'warning')}>{hfGuard.message}</div>}

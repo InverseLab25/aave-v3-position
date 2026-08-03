@@ -6,7 +6,6 @@ import { WithdrawModal } from './WithdrawModal'
 import { AssetsToSupplyModal } from './AssetsToSupplyModal'
 import { AssetsToBorrowModal } from './AssetsToBorrowModal'
 import { BorrowRepayModal } from './BorrowRepayModal'
-import { EModeModal } from './EModeModal'
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
@@ -19,6 +18,27 @@ interface AavePositionProps {
   viewAddress?: `0x${string}`
   viewChainId?: number
   apiEthPrice?: number | null
+}
+
+function StatBox({ label, value, valueClass, title }: { label: string; value: React.ReactNode; valueClass?: string; title?: string }) {
+  return (
+    <div className="stat" title={title}>
+      <label>{label}</label>
+      <div className={valueClass}>{value}</div>
+    </div>
+  )
+}
+
+function DetailRow({ label, value, icon }: { label: string; value: React.ReactNode; icon: React.ReactNode }) {
+  return (
+    <div className="info-row" style={{ fontSize: T.fontSize.md, padding: 0, paddingBottom: T.space[2] }}>
+      <span className="info-row-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+        {icon}
+        {label}
+      </span>
+      <span className="info-row-value" style={{ fontSize: '1.25rem' }}>{value}</span>
+    </div>
+  )
 }
 
 export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePositionProps = {}) {
@@ -39,20 +59,16 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     suppliedAssets,
     borrowedAssets,
     availableReserves,
-    chainId,
-    eModeCategoryId,
-    isEModeEnabled,
-    eModeLabel
+    chainId
   } = useAavePositions({ viewAddress, viewChainId })
 
   const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [withdrawTarget, setWithdrawTarget] = useState<{ asset: any } | null>(null)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
-  const [isEModeModalOpen, setIsEModeModalOpen] = useState(false)
 
   const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
 
@@ -145,7 +161,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   }, 0)
 
   /** Value(USD) cell — shows just the value + a clickable Avg row that opens the editor modal. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ValueCell = ({ a, side, r }: { a: any; side: 'supply' | 'borrow'; r: ReturnType<typeof applyOverride> }) => {
     const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
@@ -191,7 +207,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     if (!editingKey) return null
     const [side, addr] = editingKey.split(':') as ['supply' | 'borrow', string]
     const list = side === 'supply' ? suppliedAssets : borrowedAssets
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const asset = list.find((a: any) => a.underlyingAsset.toLowerCase() === addr)
     if (!asset) return null
     const chainConfig = getChainConfig(chainId)
@@ -217,6 +233,13 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
       return n
     })
     setEditingKey(null)
+  }
+
+  const getDisplaySymbol = (assetSymbol: string) => {
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const nativeSymbol = nativeWrappedSymbol.startsWith('W') ? nativeWrappedSymbol.substring(1) : 'ETH'
+    return assetSymbol.toUpperCase() === nativeWrappedSymbol ? nativeSymbol : assetSymbol
   }
 
   /** P&L cell with breakdown on separate lines. Shared by both tables. */
@@ -281,8 +304,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           </p>
           <div style={{ display: 'flex', gap: T.space[3], justifyContent: 'center' }}>
             <button className="btn-primary" onClick={() => setIsAssetsToSupplyModalOpen(true)}>Supply</button>
-            <button 
-              className="btn-secondary" 
+            <button
+              className="btn-secondary"
               onClick={() => setIsAssetsToBorrowModalOpen(true)}
               disabled={true}
               title="You must supply collateral first to borrow"
@@ -305,23 +328,26 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           />
         )}
         {isAssetsToBorrowModalOpen && (
-        <AssetsToBorrowModal
-          chainId={chainId}
-          availableReserves={availableReserves}
-          ethPriceUsd={emptyEthPriceUsd}
-          availableBorrowsUsd={availableBorrowsUsd}
-          collateralUsd={collateralUsd}
-          debtUsd={debtUsd}
-          liquidationThreshold={liquidationThreshold}
-          borrowedAssets={borrowedAssets}
-          onClose={() => setIsAssetsToBorrowModalOpen(false)}
-        />
-      )}
+          <AssetsToBorrowModal
+            chainId={chainId}
+            availableReserves={availableReserves}
+            ethPriceUsd={emptyEthPriceUsd}
+            availableBorrowsUsd={availableBorrowsUsd}
+            collateralUsd={collateralUsd}
+            debtUsd={debtUsd}
+            liquidationThreshold={liquidationThreshold}
+            suppliedAssets={suppliedAssets}
+            onClose={() => setIsAssetsToBorrowModalOpen(false)}
+          />
+        )}
       </div>
     )
   }
 
   const netInterestUsd = totalInterestEarnedUsd - totalInterestPaidUsd
+  const exposure = (collateralUsd - debtUsd) > 0 ? (collateralUsd / (collateralUsd - debtUsd)) : 1
+  const borrowPowerUsed = (debtUsd + availableBorrowsUsd) > 0 ? (debtUsd / (debtUsd + availableBorrowsUsd)) * 100 : 0
+
   // Only collateral-enabled supplies carry liquidation weight. Prices come from the
   // Aave oracle (`priceInUsd`), never `apiEthPrice` — Aave liquidates on its own oracle.
   const liquidationView = computeLiquidationView(
@@ -339,77 +365,67 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   )
   const chainConfig = getChainConfig(chainId)
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
 
   return (
     <div className="dashboard-container">
       {renderViewModeBanner()}
 
-      <div className="card">
-        <div className="header">
-          <h1>Aave V3 Portfolio</h1>
-        </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: T.space[4], marginBottom: T.space[4] }}>
+        <div className="card" style={{ marginBottom: 0 }}>
+          <div className="header">
+            <h1 style={{ fontSize: T.fontSize.lg }}>Aave V3 Portfolio</h1>
+          </div>
 
-        <div className="stats-grid">
-          <div className="stat">
-            <label>Net Worth</label>
-            <div>${(collateralUsd - debtUsd).toFixed(2)}</div>
-          </div>
-          <div className="stat">
-            <label>Net APY</label>
-            <div className={netApy >= 0 ? 'text-success' : 'text-danger'}>
-              {netApy.toFixed(2)}%
-            </div>
-          </div>
-          <div className="stat">
-            <label>Net Interest (Till Date)</label>
-            <div className={netInterestUsd >= 0 ? 'text-success' : 'text-danger'}>
-              {fmtSigned(netInterestUsd)}
-            </div>
-          </div>
-          <div className="stat" title="Unrealized price P&L on open positions + realized P&L from partial exits + net interest. Uses your override avg price where set.">
-            <label>Position P&amp;L</label>
-            <div className={effectiveTotalPnlUsd >= 0 ? 'text-success' : 'text-danger'}>
-              {fmtSigned(effectiveTotalPnlUsd)}
-            </div>
-          </div>
-          <div className="stat">
-            <label>Health Factor</label>
-            <div>{formattedHealthFactor === '∞' ? '∞' : Number(formattedHealthFactor).toFixed(2)}</div>
-          </div>
-          <div className="stat">
-            <label>Total Supplied</label>
-            <div>${collateralUsd.toFixed(2)}</div>
-          </div>
-          <div className="stat">
-            <label>Total Borrowed</label>
-            <div>${debtUsd.toFixed(2)}</div>
-          </div>
-          <div className="stat">
-            <label>Avg. LTV</label>
-            <div>{ltvPercent.toFixed(2)}%</div>
-          </div>
-          <div className="stat">
-            <label>E-Mode</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: T.space[2] }}>
-              <span className={isEModeEnabled ? 'text-success' : ''} style={{ fontWeight: isEModeEnabled ? 600 : 400 }}>
-                {isEModeEnabled ? `⚡ ${eModeLabel}` : 'Disabled'}
-              </span>
-              {!isViewMode && (
-                <button
-                  className="btn-ghost"
-                  onClick={() => setIsEModeModalOpen(true)}
-                  style={{ padding: '2px 6px', fontSize: '0.75rem', textDecoration: 'underline' }}
-                >
-                  Manage
-                </button>
-              )}
-            </div>
+          <div className="stats-grid">
+            <StatBox label="Net Worth" value={`$${(collateralUsd - debtUsd).toFixed(2)}`} />
+            <StatBox label="Net APY" value={`${netApy.toFixed(2)}%`} valueClass={netApy >= 0 ? 'text-success' : 'text-danger'} />
+            <StatBox label="Net Interest (Till Date)" value={fmtSigned(netInterestUsd)} valueClass={netInterestUsd >= 0 ? 'text-success' : 'text-danger'} />
+            <StatBox
+              label="Position P&amp;L"
+              value={fmtSigned(effectiveTotalPnlUsd)}
+              valueClass={effectiveTotalPnlUsd >= 0 ? 'text-success' : 'text-danger'}
+              title="Unrealized price P&L on open positions + realized P&L from partial exits + net interest. Uses your override avg price where set."
+            />
+            <StatBox label="Health Factor" value={formattedHealthFactor === '∞' ? '∞' : Number(formattedHealthFactor).toFixed(2)} />
+            <StatBox label="Total Supplied" value={`$${collateralUsd.toFixed(2)}`} />
+            <StatBox label="Total Borrowed" value={`$${debtUsd.toFixed(2)}`} />
           </div>
         </div>
 
-        <LiquidationPriceBlock view={liquidationView} isEModeEnabled={isEModeEnabled} />
+        <div className="card" style={{ marginBottom: 0, display: 'flex', flexDirection: 'column' }}>
+          <div className="header">
+            <h1 style={{ fontSize: T.fontSize.lg }}>Details</h1>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, justifyContent: 'space-between', marginTop: T.space[2] }}>
+            <LiquidationPriceBlock view={liquidationView} />
+            {liquidationView.rows.length > 0 && (
+              <div style={{ borderTop: `1px dashed ${T.border}`, margin: `${T.space[2]} 0` }} />
+            )}
+            <DetailRow
+              label="Avg. LTV"
+              value={`${ltvPercent.toFixed(2)}%`}
+              icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>}
+            />
+            <DetailRow
+              label="Exposure"
+              value={`${exposure.toFixed(2)}X`}
+              icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}><circle cx="12" cy="12" r="10"></circle><polyline points="12 16 16 12 12 8"></polyline><line x1="8" y1="12" x2="16" y2="12"></line></svg>}
+            />
+            <DetailRow
+              label="Borrow power used"
+              value={`${borrowPowerUsed.toFixed(2)}%`}
+              icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}><circle cx="12" cy="12" r="10"></circle><polyline points="12 8 8 12 12 16"></polyline><line x1="16" y1="12" x2="8" y2="12"></line></svg>}
+            />
+            <DetailRow
+              label="Left to borrow"
+              value={`$${availableBorrowsUsd.toFixed(2)}`}
+              icon={<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.5 }}><path d="M12 2v20"></path><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>}
+            />
+          </div>
+        </div>
       </div>
 
       <div className="asset-tables">
@@ -442,18 +458,18 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                   </tr>
                 </thead>
                 <tbody>
-{/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {suppliedAssets.map((a: any, i: number) => {
                     const r = applyOverride(a, 'supply');
 
                     return (
                       <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
+                        <td style={{ fontWeight: 600 }}>{getDisplaySymbol(a.symbol)}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="supply" r={r} />
                         <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-success" data-label="Interest Earned">
-                          {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
+                          {a.interestEarnedTokens.toFixed(4)} {getDisplaySymbol(a.symbol)} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
                             +${a.interestEarnedUsd.toFixed(2)}
                           </span>
@@ -513,17 +529,17 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                   </tr>
                 </thead>
                 <tbody>
-{/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
                   {borrowedAssets.map((a: any, i: number) => {
                     const r = applyOverride(a, 'borrow');
                     return (
                       <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{a.symbol}</td>
+                        <td style={{ fontWeight: 600 }}>{getDisplaySymbol(a.symbol)}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
                         <ValueCell a={a} side="borrow" r={r} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-danger" data-label="Interest Paid">
-                          {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />
+                          {a.interestPaidTokens.toFixed(4)} {getDisplaySymbol(a.symbol)} <br />
                           <span style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
                             -${a.interestPaidUsd.toFixed(2)}
                           </span>
@@ -631,6 +647,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
       {withdrawTarget && (
         <WithdrawModal
           asset={withdrawTarget.asset}
+          suppliedAssets={suppliedAssets}
           ethPriceUsd={ethPriceUsd}
           collateralUsd={collateralUsd}
           debtUsd={debtUsd}
@@ -643,6 +660,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
       {isAssetsToSupplyModalOpen && (
         <AssetsToSupplyModal
           chainId={chainId}
+          suppliedAssets={suppliedAssets}
           availableReserves={availableReserves}
           ethPriceUsd={ethPriceUsd}
           collateralUsd={collateralUsd}
@@ -661,7 +679,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           collateralUsd={collateralUsd}
           debtUsd={debtUsd}
           liquidationThreshold={liquidationThreshold}
-          borrowedAssets={borrowedAssets}
+          suppliedAssets={suppliedAssets}
           onClose={() => setIsAssetsToBorrowModalOpen(false)}
         />
       )}
@@ -674,6 +692,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           collateralUsd={collateralUsd}
           debtUsd={debtUsd}
           liquidationThreshold={liquidationThreshold}
+          suppliedAssets={suppliedAssets}
           onClose={() => setBorrowRepayTarget(null)}
         />
       )}
@@ -683,15 +702,6 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           borrowedAsset={closeTarget}
           suppliedAssets={suppliedAssets}
           onClose={() => setCloseTarget(null)}
-        />
-      )}
-
-      {isEModeModalOpen && (
-        <EModeModal
-          chainId={chainId}
-          currentCategoryId={eModeCategoryId}
-          currentLabel={eModeLabel}
-          onClose={() => setIsEModeModalOpen(false)}
         />
       )}
     </div>

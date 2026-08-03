@@ -52,7 +52,7 @@ export function computeLiquidationView(
   collateral: CollateralInput[],
   debtUsd: number,
 ): LiquidationView {
-  if (!(debtUsd > 0)) return { rows: [], marketWideDropPct: null }
+  if (debtUsd <= 0.001) return { rows: [], marketWideDropPct: null }
 
   const usable = collateral.filter(c => c.amount > 0 && c.priceUsd > 0)
   if (usable.length === 0) return { rows: [], marketWideDropPct: null }

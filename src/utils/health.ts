@@ -6,7 +6,9 @@
  * no debt (no liquidation risk).
  */
 export function healthFactor(weightedCollateralUsd: number, debtUsd: number): string {
-  return debtUsd > 0 ? (weightedCollateralUsd / debtUsd).toFixed(2) : '∞'
+  if (debtUsd <= 0.001) return '∞'
+  const hf = weightedCollateralUsd / debtUsd
+  return hf > 100 ? '∞' : hf.toFixed(2)
 }
 
 /** Projected HF below this → the transaction is blocked (1.0 + a safety buffer). */
