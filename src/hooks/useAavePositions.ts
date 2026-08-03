@@ -272,6 +272,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         apy: apy * 100,
         aTokenAddress: reserve.aTokenAddress,
         usageAsCollateralEnabledOnUser: uRes.usageAsCollateralEnabledOnUser,
+        liquidationThreshold: Number(reserve.reserveLiquidationThreshold) / 10000,
         interestEarnedTokens,
         interestEarnedUsd,
         positionPnl: {
