@@ -8,20 +8,22 @@ import { simulateAndWrite } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import { computeLiquidationView } from '../utils/liquidation'
-import wethGatewayAbi from '../config/wethGatewayAbi.json'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import type { SuppliedAssetLike } from '../utils/liquidation'
+import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
+import { extractRevertMessage } from '../utils/errors'
+import { wethGatewayAbi } from '../config/wethGatewayAbi'
+import { aavePoolAbi } from '../config/aavev3Abi'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface AssetsToBorrowModalProps {
   chainId: number
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  availableReserves: any[]
+  availableReserves: AvailableReserve[]
   ethPriceUsd?: number
   availableBorrowsUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
-  suppliedAssets?: any[]
+  suppliedAssets?: SuppliedAssetLike[]
   onClose: () => void
 }
 
@@ -34,8 +36,7 @@ const debtTokenAbi = [
 
 export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 0, availableBorrowsUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], onClose }: AssetsToBorrowModalProps) {
   const { address } = useConnection()
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
+  const [selectedAsset, setSelectedAsset] = useState<ReserveOption | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [step, setStep] = useState<number>(0)
   const [statusMsg, setStatusMsg] = useState<string>('')
@@ -53,12 +54,12 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
   const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === nativeWrappedSymbol)
-  const borrowOptions = [...filteredReserves]
+  const borrowOptions: ReserveOption[] = [...filteredReserves]
   if (wethReserve) borrowOptions.unshift({ ...wethReserve, symbol: 'ETH', underlyingAsset: 'native' })
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
-  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({
+  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({ chainId,
     address: selectedAsset?.symbol === 'ETH' ? selectedAsset.variableDebtTokenAddress : undefined,
     abi: debtTokenAbi, functionName: 'borrowAllowance',
     args: (address && selectedAsset && selectedAsset.symbol === 'ETH' && gatewayAddress) ? [address, gatewayAddress] : undefined,
@@ -75,7 +76,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         const currentDelegation = (delegationAllowance as bigint) ?? 0n
         if (currentDelegation < amountParsed) {
           setStatusMsg('Simulating delegation approval…')
-          const hash = await simulateAndWrite(config, writeContractAsync, {
+          const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
             address: selectedAsset.variableDebtTokenAddress as `0x${string}`, abi: debtTokenAbi,
             functionName: 'approveDelegation', args: [gatewayAddress, maxUint256], priorityMultiplier: 10n
           })
@@ -85,24 +86,21 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         }
 
         setStep(3); setStatusMsg('Simulating borrowETH…')
-        const hash = await simulateAndWrite(config, writeContractAsync, {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          address: gatewayAddress, abi: wethGatewayAbi as any,
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+          address: gatewayAddress, abi: wethGatewayAbi,
           functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n
         })
         setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!'); setAmountStr('')
         return
       }
       setStep(3); setStatusMsg('Simulating borrow…')
-      const hash = await simulateAndWrite(config, writeContractAsync, {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        address: poolAddress, abi: aavePoolAbi as any,
+      const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+        address: poolAddress, abi: aavePoolAbi,
         functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n
       })
       setTxHash(hash); setStep(4); setStatusMsg('Borrow transaction sent!'); setAmountStr('')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'
+    } catch (e) {
+      const reason = extractRevertMessage(e, 'Unknown error')
       setStatusMsg(`Error: ${reason}`); setStep(0)
     }
   }
@@ -111,7 +109,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const isError = statusMsg.startsWith('Error')
 
   const amountNum = parseFloat(amountStr) || 0
-  const maxBorrowAmount = selectedAsset && selectedAsset.priceInUsd > 0 ? (availableBorrowsUsd / Number(selectedAsset.priceInUsd)) * 0.99 : 0 // 99% safety margin
+  const maxBorrowAmount = selectedAsset && Number(selectedAsset.priceInUsd) > 0 ? (availableBorrowsUsd / Number(selectedAsset.priceInUsd)) * 0.99 : 0 // 99% safety margin
   const isInsufficient = amountNum > maxBorrowAmount
 
   const borrowAmountUsd = amountNum * (Number(selectedAsset?.priceInUsd) || 0)
@@ -125,7 +123,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const newDebtUsd = debtUsd + amountUsd;
   
   const liquidationView = computeLiquidationView(
-    (suppliedAssets || []).map((a: any) => ({
+    (suppliedAssets || []).map((a: SuppliedAssetLike) => ({
       symbol: a.symbol,
       amount: a.amount || 0,
       priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,

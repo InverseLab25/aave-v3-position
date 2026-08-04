@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { extractRevertMessage } from '../utils/errors'
 import { useConnection, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
 import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
@@ -49,7 +50,7 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
   const [execError, setExecError] = useState<string | null>(null);
 
   // 1. Read current allowance
-  const { data: allowanceData, refetch: refetchAllowance } = useReadContract({
+  const { data: allowanceData, refetch: refetchAllowance } = useReadContract({ chainId,
     address: fromAsset.underlyingAsset as `0x${string}`,
     abi: ERC20_ABI,
     functionName: 'allowance',
@@ -161,9 +162,8 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
       // costlier path than the one quoted, and an unpinned gas limit leaves that to
       // the wallet's own unbuffered guess.
       gas = bufferedGasLimit(estimate);
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      setExecError(`Swap would revert — refresh the quote and try again: ${(e?.shortMessage || e?.message || 'unknown error').slice(0, 120)}`);
+    } catch (e) {
+      setExecError(`Swap would revert — refresh the quote and try again: ${extractRevertMessage(e, 'unknown error').slice(0, 120)}`);
       return;
     }
 

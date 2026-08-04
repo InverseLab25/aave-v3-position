@@ -1,26 +1,33 @@
 import { http, createConfig } from 'wagmi'
+import { createClient } from 'viem'
 import { mainnet, sepolia, arbitrum, optimism, polygon, base, avalanche, bsc, baseSepolia } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors'
 
-// batch: true coalesces concurrent eth_calls into a single JSON-RPC HTTP request.
-// The Aave dashboard fires many reads per load (account data + reserves + user
-// reserves, plus the deleverager's token/balance reads), so this cuts round-trips.
-const batched = (url?: string) => http(url, { batch: true })
+/** Per-chain RPC overrides. Chains without an entry fall back to the chain's public RPC. */
+const RPC_URLS: Partial<Record<number, string>> = {
+  [mainnet.id]: import.meta.env.VITE_RPC_URL,
+}
 
 export const config = createConfig({
   chains: [mainnet, arbitrum, optimism, polygon, base, avalanche, bsc, sepolia, baseSepolia],
-  connectors: [
-    injected(),
-  ],
-  transports: {
-    [mainnet.id]: batched(import.meta.env.VITE_RPC_URL),
-    [arbitrum.id]: batched(),
-    [optimism.id]: batched(),
-    [polygon.id]: batched(),
-    [base.id]: batched(),
-    [avalanche.id]: batched(),
-    [bsc.id]: batched(),
-    [sepolia.id]: batched(),
-    [baseSepolia.id]: batched(),
+  connectors: [injected()],
+  // A client factory rather than a `transports` map, because `batch.multicall` is a viem
+  // client option and is not reachable through `transports`.
+  client({ chain }) {
+    return createClient({
+      chain,
+      // Transport-level batching: coalesce concurrent JSON-RPC requests into one HTTP POST.
+      transport: http(RPC_URLS[chain.id], { batch: true }),
+      // eth_call-level batching: aggregate independent contract reads issued in the same
+      // tick into a single Multicall3 call. Every chain configured above has Multicall3 at
+      // the canonical 0xca11bde0…76ca11, so this applies everywhere.
+      //
+      // These two compose rather than overlap. Transport batching still sends N eth_calls,
+      // just in one POST; multicall collapses them into one eth_call, so the node does one
+      // state lookup instead of N. The dashboard issues several independent reads per load
+      // (account data, e-mode, reserves, user reserves, then per-token balances and
+      // allowances), which is exactly the shape this targets.
+      batch: { multicall: true },
+    })
   },
 })

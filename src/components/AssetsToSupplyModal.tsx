@@ -9,28 +9,29 @@ import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import { computeLiquidationView } from '../utils/liquidation'
-import wethGatewayAbi from '../config/wethGatewayAbi.json'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import type { SuppliedAssetLike } from '../utils/liquidation'
+import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
+import { extractRevertMessage } from '../utils/errors'
+import { wethGatewayAbi } from '../config/wethGatewayAbi'
+import { aavePoolAbi } from '../config/aavev3Abi'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 const SUPPLY_GAS_LIMIT = 250000n /* Aave supply */
 
 interface AssetsToSupplyModalProps {
   chainId: number
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  availableReserves: any[]
+  availableReserves: AvailableReserve[]
   ethPriceUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
-  suppliedAssets?: any[]
+  suppliedAssets?: SuppliedAssetLike[]
   onClose: () => void
 }
 
 export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 0, collateralUsd = 0, debtUsd = 0, liquidationThreshold = 0, suppliedAssets = [], onClose }: AssetsToSupplyModalProps) {
   const { address } = useConnection()
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [selectedAsset, setSelectedAsset] = useState<any | null>(null)
+  const [selectedAsset, setSelectedAsset] = useState<ReserveOption | null>(null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [step, setStep] = useState<number>(0)
   const [statusMsg, setStatusMsg] = useState<string>('')
@@ -47,19 +48,19 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   // typed: the native-ETH MAX button needs `maxFee` to size its gas reserve.
   const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(SUPPLY_GAS_LIMIT, ethPriceUsd, !!selectedAsset)
 
-  const { data: ethBalance } = useBalance({ address })
+  const { data: ethBalance } = useBalance({ chainId, address, query: { enabled: !!address } })
 
   const targetSymbols = chainConfig?.defaultTokens?.map(t => t.symbol.toUpperCase()) || ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
   const wethReserve = filteredReserves.find(r => r.symbol.toUpperCase() === nativeWrappedSymbol)
-  const supplyOptions = [...filteredReserves]
+  const supplyOptions: ReserveOption[] = [...filteredReserves]
   if (wethReserve) supplyOptions.unshift({ ...wethReserve, symbol: 'ETH', underlyingAsset: 'native' })
 
   // Native ETH uses useBalance above; only ERC-20s go through the multicall
   // (a balanceOf on the zero address always fails and wastes a call slot).
   const tokenOptions = supplyOptions.filter(o => o.underlyingAsset !== 'native')
-  const { data: tokenBalances } = useReadContracts({
+  const { data: tokenBalances } = useReadContracts({ chainId,
     contracts: tokenOptions.map(opt => ({
       address: opt.underlyingAsset as `0x${string}`,
       abi: erc20Abi, functionName: 'balanceOf' as const,
@@ -73,20 +74,18 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
     balanceByAddress[opt.underlyingAsset.toLowerCase()] = (tokenBalances?.[i]?.result as bigint | undefined) ?? 0n
   })
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const getRawBalance = (opt: any): bigint => {
+  const getRawBalance = (opt: ReserveOption): bigint => {
     if (opt.symbol === 'ETH') return ethBalance?.value ?? 0n
     return balanceByAddress[opt.underlyingAsset.toLowerCase()] ?? 0n
   }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const getWalletBalance = (opt: any) => {
+  const getWalletBalance = (opt: ReserveOption) => {
     const raw = getRawBalance(opt)
     const decimals = opt.symbol === 'ETH' ? (ethBalance?.decimals ?? 18) : opt.decimals
     return Number(formatUnits(raw, decimals))
   }
 
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({ chainId,
     address: selectedAsset?.underlyingAsset !== 'native' ? selectedAsset?.underlyingAsset : undefined,
     abi: erc20Abi, functionName: 'allowance',
     args: (address && selectedAsset && selectedAsset.underlyingAsset !== 'native' && poolAddress) ? [address, poolAddress] : undefined,
@@ -100,9 +99,8 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
         const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
         if (!gatewayAddress) { alert('Native ETH supplying is not supported on this network.'); return }
         setStep(3); setStatusMsg('Simulating depositETH…')
-        const hash = await simulateAndWrite(config, writeContractAsync, {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          address: gatewayAddress, abi: wethGatewayAbi as any,
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+          address: gatewayAddress, abi: wethGatewayAbi,
           functionName: 'depositETH', args: [poolAddress, address, 0],
           value: parseUnits(amountStr, selectedAsset.decimals) as bigint,
         })
@@ -125,15 +123,13 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
         return
       }
       setStep(3); setStatusMsg('Simulating supply…')
-      const hash = await simulateAndWrite(config, writeContractAsync, {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        address: poolAddress, abi: aavePoolAbi as any,
+      const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+        address: poolAddress, abi: aavePoolAbi,
         functionName: 'supply', args: [selectedAsset.underlyingAsset as `0x${string}`, amount, address, 0],
       })
       setTxHash(hash); setStep(4); setStatusMsg('Supply transaction sent!'); setAmountStr('')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Unknown error'
+    } catch (e) {
+      const reason = extractRevertMessage(e, 'Unknown error')
       setStatusMsg(`Error: ${reason}`); setStep(0)
     }
   }
@@ -164,7 +160,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
 
   const liquidationView = computeLiquidationView(
-    (suppliedAssets || []).map((a: any) => {
+    (suppliedAssets || []).map((a: SuppliedAssetLike) => {
       const isTarget = a.symbol === selectedAsset?.symbol;
       const originalAmount = a.amount || 0;
       return {

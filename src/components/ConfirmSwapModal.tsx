@@ -77,9 +77,20 @@ export function ConfirmSwapModal({
     }
   }, [quote.amountOut]);
 
-  // Human "Xs ago" for the refresh timestamp — recomputes each render (parent re-renders on interval).
-// eslint-disable-next-line react-hooks/purity
-  const secondsSinceRefresh = lastRefreshedAt > 0 ? Math.max(0, Math.floor((Date.now() - lastRefreshedAt) / 1000)) : null;
+  // Human "Xs ago" for the refresh timestamp. The clock is sampled in an effect, not during
+  // render: a render-time Date.now() yields output that changes with no state change, and it
+  // silently relied on the parent re-rendering on an interval to stay current. Owning the
+  // tick here keeps render pure and makes the countdown correct regardless of the parent.
+  // Seeded to lastRefreshedAt so the first render reads "0s ago" without a synchronous
+  // setState in the effect (which would cascade a second render immediately).
+  const [now, setNow] = useState(lastRefreshedAt);
+  useEffect(() => {
+    if (lastRefreshedAt <= 0) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [lastRefreshedAt]);
+
+  const secondsSinceRefresh = lastRefreshedAt > 0 ? Math.max(0, Math.floor((now - lastRefreshedAt) / 1000)) : null;
 
   const formatAddress = (addr: string) => {
     if (!addr) return '';

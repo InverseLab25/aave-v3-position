@@ -3,7 +3,8 @@ import { useConfig, useWriteContract, useWaitForTransactionReceipt } from 'wagmi
 import { getChainConfig } from '../config/chains'
 import { simulateAndWrite } from '../utils/contract'
 import { ExplorerLink } from './ExplorerLink'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import { aavePoolAbi } from '../config/aavev3Abi'
+import { extractRevertMessage } from '../utils/errors'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface EModeModalProps {
@@ -38,19 +39,17 @@ export function EModeModal({ chainId, currentCategoryId, currentLabel, onClose }
       setIsSubmitting(true)
       setStatusMsg('Simulating setUserEMode transaction…')
 
-      const hash = await simulateAndWrite(config, writeContractAsync, {
+      const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
         address: poolAddress,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        abi: aavePoolAbi as any,
+        abi: aavePoolAbi,
         functionName: 'setUserEMode',
         args: [selectedCat],
       })
 
       setTxHash(hash)
       setStatusMsg('E-Mode transaction sent!')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      let reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? 'Transaction failed'
+    } catch (e) {
+      let reason = extractRevertMessage(e)
       
       if (String(e).includes('0x2c906631') || reason.includes('0x2c906631') || reason.includes('execution reverted')) {
         reason = selectedCat === 0

@@ -1,6 +1,7 @@
+import { useMemo } from 'react'
 import { useConnection, useReadContract, useReadContracts, useChainId } from 'wagmi'
 import { formatUnits } from 'viem'
-import uiPoolDataProviderAbi from '../config/uiPoolDataProviderAbi.json'
+import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { getChainConfig } from '../config/chains'
 
 const aavePoolAbi = [
@@ -58,12 +59,83 @@ function calculateAPY(rateInRay: bigint) {
 
 import { useAaveHistoricalInterest } from './useAaveHistoricalInterest'
 
+/** Profit/loss breakdown attached to every supplied and borrowed row. */
+export interface PositionPnl {
+  avgEntryPriceUsd: number
+  realizedPnlUsd: number
+  unrealizedPriceGainUsd: number
+  interestUsd: number
+  totalPnlUsd: number
+}
+
+export interface SuppliedAsset {
+  symbol: string
+  underlyingAsset: `0x${string}`
+  decimals: number
+  amount: number
+  /** Raw aToken balance. `amount` is a lossy double — size MAX buttons from this. */
+  amountRaw: bigint
+  valueUsd: number
+  priceInUsd: string
+  apy: number
+  aTokenAddress: `0x${string}`
+  usageAsCollateralEnabledOnUser: boolean
+  liquidationThreshold: number
+  interestEarnedTokens: number
+  interestEarnedUsd: number
+  positionPnl: PositionPnl
+}
+
+export interface BorrowedAsset {
+  symbol: string
+  underlyingAsset: `0x${string}`
+  decimals: number
+  amount: number
+  /** Raw variable-debt balance — see the note on the supplied-asset counterpart. */
+  amountRaw: bigint
+  valueUsd: number
+  priceInUsd: string
+  apy: number
+  variableDebtTokenAddress: `0x${string}`
+  interestPaidTokens: number
+  interestPaidUsd: number
+  positionPnl: PositionPnl
+}
+
+export interface AvailableReserve {
+  symbol: string
+  underlyingAsset: `0x${string}`
+  decimals: number
+  priceInUsd: string
+  apy: number
+  borrowApy: number
+  variableDebtTokenAddress: `0x${string}`
+  aTokenAddress: `0x${string}`
+  liquidationThreshold: number
+}
+
+/**
+ * A reserve as offered in the supply/borrow pickers: every on-chain reserve, plus one
+ * synthetic entry for the chain native currency. That entry reuses the wrapped reserve
+ * but carries the string sentinel `native` in place of an address, so balance reads and
+ * gateway routing can branch on it.
+ */
+export type ReserveOption = Omit<AvailableReserve, "underlyingAsset"> & {
+  underlyingAsset: `0x${string}` | "native"
+}
+
 export interface UseAavePositionsOptions {
   /** View mode: fetch positions for this address instead of the connected wallet. */
   viewAddress?: `0x${string}`
   /** View mode: chain to read from. Falls back to the connected chain. */
   viewChainId?: number
 }
+
+// Frozen module-scope singletons: the not-connected / loading branch returned fresh []
+// literals on every render, which invalidated every downstream useMemo keyed on them.
+const EMPTY_SUPPLIED: SuppliedAsset[] = []
+const EMPTY_BORROWED: BorrowedAsset[] = []
+const EMPTY_RESERVES: AvailableReserve[] = []
 
 export function useAavePositions(options?: UseAavePositionsOptions) {
   const { address: connectedAddress, isConnected: isWalletConnected } = useConnection()
@@ -102,8 +174,9 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
 
   const eModeCategoryId = userEModeData ? Number(userEModeData) : 0
 
-  // 1c. Fetch E-Mode category details if active
-  const { data: eModeCategoryData } = useReadContract({
+  // 1c. Fetch E-Mode category details if active. `aavePoolAbi` is an `as const` literal,
+  // so viem infers the returned struct — no cast needed.
+  const { data: eModeCategory } = useReadContract({
     chainId,
     address: chainConfig?.aave.poolAddress,
     abi: aavePoolAbi,
@@ -111,6 +184,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     args: eModeCategoryId > 0 ? [eModeCategoryId] : undefined,
     query: { enabled: eModeCategoryId > 0 && hasAaveConfig }
   })
+
+  // Narrowed once so the typed ABI's `args` tuples accept it: both reads below require a
+  // defined provider address, which `hasAaveConfig` already guarantees at runtime but
+  // TypeScript cannot see through `chainConfig?.aave`.
+  const addressesProvider = chainConfig?.aave.poolAddressesProvider
 
   // 2. Fetch detailed asset breakdown
   const { data: uiData, isLoading: isUiLoading } = useReadContracts({
@@ -120,14 +198,14 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
         address: chainConfig?.aave.uiPoolDataProvider as `0x${string}`,
         abi: uiPoolDataProviderAbi,
         functionName: 'getReservesData',
-        args: [chainConfig?.aave.poolAddressesProvider]
+        args: addressesProvider ? [addressesProvider] : undefined
       },
       {
         chainId,
         address: chainConfig?.aave.uiPoolDataProvider as `0x${string}`,
         abi: uiPoolDataProviderAbi,
         functionName: 'getUserReservesData',
-        args: targetAddress ? [chainConfig?.aave.poolAddressesProvider, targetAddress] : undefined
+        args: addressesProvider && targetAddress ? [addressesProvider, targetAddress] : undefined
       }
     ],
     query: { enabled: !!targetAddress && hasAaveConfig }
@@ -160,16 +238,18 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     eModeLabel: 'Disabled',
     eModeLtv: 0,
     eModeLiquidationThreshold: 0,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    suppliedAssets: [] as any[],
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    borrowedAssets: [] as any[],
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    availableReserves: [] as any[]
+    suppliedAssets: EMPTY_SUPPLIED,
+    borrowedAssets: EMPTY_BORROWED,
+    availableReserves: EMPTY_RESERVES
   }
 
+  // ~200 lines of reserve parsing, interest and P&L maths. It is a pure function of the
+  // contract reads below, but it used to run on every render of every one of the eight
+  // components that call this hook. Memoising also stabilises suppliedAssets/borrowedAssets
+  // identity, which is what previously forced consumers into latest-ref workarounds.
+  const derived = useMemo(() => {
   if (!targetAddress || !hasAaveConfig || !accountData || !uiData || !uiData[0].result || !uiData[1].result) {
-    return emptyResult
+    return null
   }
 
   const [
@@ -179,8 +259,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     currentLiquidationThreshold,
     ltv,
     healthFactor
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ] = accountData as any
+  ] = accountData
 
   const collateralUsd = Number(formatUnits(totalCollateralBase, 8))
   const debtUsd = Number(formatUnits(totalDebtBase, 8))
@@ -191,10 +270,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   const MAX_UINT256 = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
   const formattedHealthFactor = healthFactor === MAX_UINT256 ? '∞' : formatUnits(healthFactor, 18)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const globalReserves = (uiData[0].result as any)[0]
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const userReserves = (uiData[1].result as any)[0]
+  const globalReserves = uiData[0].result[0]
+  const userReserves = uiData[1].result[0]
 
   let totalEarningsUsd = 0
   let totalCostsUsd = 0
@@ -203,13 +280,10 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   let totalInterestPaidUsd = 0
   let totalPositionPnlUsd = 0
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const suppliedAssets: any[] = []
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const borrowedAssets: any[] = []
+  const suppliedAssets: SuppliedAsset[] = []
+  const borrowedAssets: BorrowedAsset[] = []
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const availableReserves = globalReserves.map((reserve: any) => ({
+  const availableReserves = globalReserves.map((reserve) => ({
     symbol: reserve.symbol,
     underlyingAsset: reserve.underlyingAsset,
     decimals: Number(reserve.decimals),
@@ -222,12 +296,10 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   }))
 
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  userReserves.forEach((uRes: any) => {
+  userReserves.forEach((uRes) => {
     if (uRes.scaledATokenBalance === 0n && uRes.scaledVariableDebt === 0n) return;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const reserve = globalReserves.find((r: any) => r.underlyingAsset === uRes.underlyingAsset)
+    const reserve = globalReserves.find((r) => r.underlyingAsset === uRes.underlyingAsset)
     if (!reserve) return;
 
     const priceUsd = Number(reserve.priceInMarketReferenceCurrency) / 1e8
@@ -339,14 +411,10 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     ? ((totalEarningsUsd - totalCostsUsd) / netWorthUsd) * 100
     : 0
 
+  // Only the values actually derived from the contract reads live inside the memo.
+  // Render-scope flags (isLoading, isConnected, chain metadata) are assembled outside,
+  // so a loading-state flip does not throw away the parsed reserves.
   return {
-    isConnected,
-    isViewMode,
-    viewedAddress: targetAddress,
-    chainId,
-    chainName: chainConfig?.name ?? 'Unknown',
-    isUnsupportedChain: false,
-    isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
     collateralUsd,
     debtUsd,
     availableBorrowsUsd,
@@ -357,13 +425,27 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestEarnedUsd,
     totalInterestPaidUsd,
     totalPositionPnlUsd,
-    eModeCategoryId,
-    isEModeEnabled: eModeCategoryId > 0,
-    eModeLabel: (eModeCategoryData as any)?.label || (eModeCategoryId === 1 ? 'ETH Correlated' : eModeCategoryId === 2 ? 'Stablecoins' : eModeCategoryId > 0 ? `Category ${eModeCategoryId}` : 'Disabled'),
-    eModeLtv: (eModeCategoryData as any)?.ltv ? Number((eModeCategoryData as any).ltv) / 100 : 0,
-    eModeLiquidationThreshold: (eModeCategoryData as any)?.liquidationThreshold ? Number((eModeCategoryData as any).liquidationThreshold) / 10000 : 0,
     suppliedAssets,
     borrowedAssets,
     availableReserves
+  }
+  }, [targetAddress, hasAaveConfig, accountData, uiData, netPrincipals, costBasis])
+
+  if (!derived) return emptyResult
+
+  return {
+    isConnected,
+    isViewMode,
+    viewedAddress: targetAddress,
+    chainId,
+    chainName: chainConfig?.name ?? 'Unknown',
+    isUnsupportedChain: false,
+    isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
+    eModeCategoryId,
+    isEModeEnabled: eModeCategoryId > 0,
+    eModeLabel: eModeCategory?.label || (eModeCategoryId === 1 ? 'ETH Correlated' : eModeCategoryId === 2 ? 'Stablecoins' : eModeCategoryId > 0 ? `Category ${eModeCategoryId}` : 'Disabled'),
+    eModeLtv: eModeCategory?.ltv ? Number(eModeCategory.ltv) / 100 : 0,
+    eModeLiquidationThreshold: eModeCategory?.liquidationThreshold ? Number(eModeCategory.liquidationThreshold) / 10000 : 0,
+    ...derived
   }
 }

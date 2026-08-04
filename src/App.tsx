@@ -1,4 +1,5 @@
 import { useState, lazy, Suspense } from 'react'
+import type { SuppliedAsset } from './hooks/useAavePositions'
 import { useChainId } from 'wagmi'
 import { WalletConnect } from './components/WalletConnect'
 import { AavePosition } from './components/AavePosition'
@@ -21,8 +22,7 @@ function App() {
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
 
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const wethAsset = suppliedAssets.find((a: any) => a.symbol.toUpperCase() === nativeWrappedSymbol)
+  const wethAsset = suppliedAssets.find((a: SuppliedAsset) => a.symbol.toUpperCase() === nativeWrappedSymbol)
   const ethPrice = apiEthPrice !== null ? apiEthPrice : (wethAsset ? Number(wethAsset.priceInUsd) : 0)
 
   const isViewMode = !!viewAddress

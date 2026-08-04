@@ -2,7 +2,9 @@ import { useState, useEffect } from 'react'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import { aavePoolAbi } from '../config/aavev3Abi'
+import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
+import { extractRevertMessage } from '../utils/errors'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 
 import { simulateAndWrite } from '../utils/contract'
@@ -20,18 +22,15 @@ const formatAmount = (s: string): string => {
 }
 
 interface ClosePositionModalProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  borrowedAsset: any
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  suppliedAssets: any[]
+  borrowedAsset: BorrowedAsset
+  suppliedAssets: SuppliedAsset[]
   onClose: () => void
 }
 
 export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: ClosePositionModalProps) {
   const { address } = useConnection()
   const chainId = useChainId()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [selectedCollateral, setSelectedCollateral] = useState<any>(suppliedAssets[0] || null)
+  const [selectedCollateral, setSelectedCollateral] = useState<SuppliedAsset | null>(suppliedAssets[0] ?? null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [isMax, setIsMax] = useState<boolean>(false)
   const [slippage, setSlippage] = useState<number>(0.5)
@@ -39,8 +38,12 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const [step, setStep] = useState<number>(0)
   const [logs, setLogs] = useState<string[]>([])
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
+  /** A close/repay has landed and the form has been reset for it. Cleared on the next attempt. */
+  const [isComplete, setIsComplete] = useState<boolean>(false)
 
   const [preview, setPreview] = useState<ClosePreview | null>(null)
+  /** Why the preview could not be produced — paused contract, empty router allowlist, etc. */
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
 
@@ -63,7 +66,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     let isMounted = true
     const run = async () => {
       if (!shouldQuote) {
-        if (isMounted) setPreview(null)
+        if (isMounted) { setPreview(null); setPreviewError(null) }
         return
       }
       setIsQuoting(true)
@@ -73,7 +76,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
           debtAsset: borrowedAsset,
           slippagePercent: slippage,
         })
-        if (isMounted) setPreview(p)
+        if (isMounted) { setPreview(p.preview); setPreviewError(p.error) }
       } finally {
         if (isMounted) setIsQuoting(false)
       }
@@ -96,8 +99,28 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
 
   const log = (msg: string) => setLogs((prev) => [...prev, msg])
 
+  // Clear the inputs and the quote once an action lands. Without this every gate on the
+  // Execute button is still satisfied afterwards — `amountStr` still holds the repaid
+  // amount, `preview` still holds a quote for debt that no longer exists, and the effect
+  // never re-runs because none of its deps changed — so the button re-enables and a second
+  // click costs two more permit signatures before reverting on-chain. The tx hash and the
+  // logs are deliberately kept: they are the record of what just happened.
+  const resetForm = () => {
+    setAmountStr('')
+    setIsMax(false)
+    setPreview(null)
+    setPreviewError(null)
+    setIsComplete(true)
+  }
+
   const executeClose = async () => {
     if (!address || !selectedCollateral || !poolAddress) return
+
+    // A hash or log lines carried over from a previous attempt would read as belonging to
+    // this one. The cross-asset path's logs live in the hook, which clears them itself.
+    setIsComplete(false)
+    setTxHash(undefined)
+    setLogs([])
 
     if (isSameAsset) {
       if (!amountStr) return
@@ -106,19 +129,18 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
         const finalAmount = isMax ? maxUint256 : amountParsed
         log(`Simulating repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
-        const hash = await simulateAndWrite(config, writeContractAsync, {
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
           address: poolAddress,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          abi: aavePoolAbi as any,
+          abi: aavePoolAbi,
           functionName: 'repayWithATokens',
           args: [borrowedAsset.underlyingAsset, finalAmount, 2n],
         })
         setTxHash(hash)
         log(`Transaction submitted! Hash: ${hash}`)
         setStep(2)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (e: any) {
-        log(`Error: ${e.message || e}`)
+        resetForm()
+      } catch (e) {
+        log(`Error: ${extractRevertMessage(e)}`)
         setStep(0)
       }
       return
@@ -132,7 +154,12 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
       slippagePercent: slippage,
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
-    setStep(result.status === 'success' ? 2 : 0)
+    if (result.status === 'success') {
+      setStep(2)
+      resetForm()
+    } else {
+      setStep(0)
+    }
   }
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.
@@ -179,7 +206,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
               className="input"
               value={selectedCollateral?.underlyingAsset || ''}
               onChange={(e) =>
-                setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value))
+                setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null)
               }
               style={{ appearance: 'none', backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2364748b%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px top 50%', backgroundSize: '10px auto' }}
             >
@@ -275,7 +302,19 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                   </span>
                 </div>
                 <p style={{ fontSize: 'var(--text-xs)', marginTop: '8px', marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
-                  Swaps only enough {selectedCollateral?.symbol} to repay {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}. No signature is requested until you press Execute.
+                  Swaps only enough {selectedCollateral?.symbol} to repay {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}. Nothing is requested until you press Execute — then your wallet asks for{' '}
+                  <strong>two signatures and one transaction</strong>.
+                </p>
+                {/*
+                  The second signature is the one users do not expect, and an unexplained
+                  extra prompt reads as a phishing attempt. Spell out what it does: it is a
+                  permit for zero, consumed in the same transaction, so the approval the
+                  first signature grants cannot outlive the close.
+                */}
+                <p style={{ fontSize: 'var(--text-xs)', marginTop: '6px', marginBottom: 0, opacity: 0.75, lineHeight: 1.4 }}>
+                  The first signature approves your a{selectedCollateral?.symbol}; the second revokes it
+                  again in the same transaction, so no spending allowance is left behind afterwards.
+                  Both are free — only the transaction costs gas.
                 </p>
               </div>
             ) : (
@@ -286,7 +325,25 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
             )}
           </div>
 
-          {!isSameAsset && deleveragerAvailable && (
+          {/*
+            Once the action has landed the quote has been cleared, and an empty quote panel
+            renders as "no swap route available" — which reads as a failure directly under a
+            successful transaction. Show what actually happened instead.
+          */}
+          {isComplete && (
+            <div className="alert alert-success" style={{ marginBottom: 'var(--space-5)' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                <span>✅</span>
+                <span style={{ fontSize: 'var(--text-sm)' }}>
+                  {isSameAsset
+                    ? `Repayment submitted. Your ${borrowedAsset.symbol} position will update once it confirms.`
+                    : `Position closed. Your ${borrowedAsset.symbol} debt is repaid and the unswapped ${selectedCollateral?.symbol} stays supplied in Aave.`}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {!isSameAsset && deleveragerAvailable && !isComplete && (
             <div style={{ marginBottom: 'var(--space-5)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <h4 style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Estimated Output</h4>
@@ -349,6 +406,16 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                 <div style={{ padding: '14px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)' }}>
                   Calculating your output…
                 </div>
+              ) : previewError ? (
+                // A deployment-level problem (paused, empty router allowlist, unsupported
+                // network) is not fixable by picking different collateral, so it must not
+                // render as "no route for this pair" — that sends users round in circles.
+                <div className="alert alert-warning" style={{ margin: 0 }}>
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <span>⚠️</span>
+                    <span style={{ fontSize: 'var(--text-sm)' }}>{previewError}</span>
+                  </div>
+                </div>
               ) : (
                 <div style={{ padding: '14px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)' }}>
                   No swap route available for this pair right now.
@@ -387,7 +454,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
 
         <div className="modal-footer">
           <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
-            Cancel
+            {isComplete ? 'Done' : 'Cancel'}
           </button>
           <button
             onClick={executeClose}

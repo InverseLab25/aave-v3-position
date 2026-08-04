@@ -8,20 +8,21 @@ import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
 import { computeLiquidationView } from '../utils/liquidation'
-import wethGatewayAbi from '../config/wethGatewayAbi.json'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import type { SuppliedAssetLike } from '../utils/liquidation'
+import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
+import { extractRevertMessage } from '../utils/errors'
+import { wethGatewayAbi } from '../config/wethGatewayAbi'
+import { aavePoolAbi } from '../config/aavev3Abi'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface WithdrawModalProps {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  asset: any
+  asset: SuppliedAsset
   ethPriceUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
-  suppliedAssets?: any[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  availableReserves?: any[]
+  suppliedAssets?: SuppliedAssetLike[]
+  availableReserves?: AvailableReserve[]
   onClose: () => void
 }
 
@@ -41,7 +42,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
 
   const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(250000n /* Aave withdraw */, ethPriceUsd, parseFloat(amountStr) > 0)
 
-  const { data: aTokenAllowance, refetch: refetchATokenAllowance } = useReadContract({
+  const { data: aTokenAllowance, refetch: refetchATokenAllowance } = useReadContract({ chainId,
     address: asset?.symbol === 'ETH' ? asset.aTokenAddress : undefined,
     abi: erc20Abi, functionName: 'allowance',
     args: (address && asset && asset.symbol === 'ETH' && chainConfig?.aave?.wethGateway) ? [address, chainConfig.aave.wethGateway] : undefined,
@@ -62,22 +63,19 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
         const currentAllowance = (aTokenAllowance as bigint) ?? 0n
         if (currentAllowance < amountParsed) {
           log('Simulating aToken approval…')
-          const approveHash = await simulateAndWrite(config, writeContractAsync, { address: asset.aTokenAddress, abi: approveAbi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
+          const approveHash = await simulateAndWrite(config, writeContractAsync, { chainId, address: asset.aTokenAddress, abi: approveAbi, functionName: 'approve', args: [gatewayAddress, maxUint256] })
           log('Approved — click Withdraw again.'); setTxHash(approveHash); setStep(0); await refetchATokenAllowance(); return
         }
         log('Simulating ETH withdraw…')
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: gatewayAddress, abi: wethGatewayAbi, functionName: 'withdrawETH', args: [poolAddress, finalAmount, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
       }
 
       log('Simulating withdraw…')
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'withdraw', args: [asset.underlyingAsset, finalAmount, address] })
+      const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: poolAddress, abi: aavePoolAbi, functionName: 'withdraw', args: [asset.underlyingAsset, finalAmount, address] })
       log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
+    } catch (e) {
+      const reason = extractRevertMessage(e)
       log(`Error: ${reason}`); setStep(0)
     }
   }
@@ -111,7 +109,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const hfGuardBlocked = hfGuard.level === 'block'
 
   const liquidationView = computeLiquidationView(
-    suppliedAssets.map((a: any) => {
+    suppliedAssets.map((a: SuppliedAssetLike) => {
       const isTarget = a.symbol === asset.symbol;
       const originalAmount = a.amount || 0;
       return {

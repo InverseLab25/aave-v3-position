@@ -8,9 +8,12 @@ import { simulateAndWrite, approveErc20 } from '../utils/contract'
 import { maxNativeSpendable } from '../utils/maxAmount'
 import { GasInfoCard } from './GasInfoCard'
 import { ExplorerLink } from './ExplorerLink'
-import wethGatewayAbi from '../config/wethGatewayAbi.json'
-import aavePoolAbi from '../config/aavev3Abi.json'
+import { wethGatewayAbi } from '../config/wethGatewayAbi'
+import { aavePoolAbi } from '../config/aavev3Abi'
 import { computeLiquidationView } from '../utils/liquidation'
+import type { SuppliedAssetLike } from '../utils/liquidation'
+import type { BorrowedAsset } from '../hooks/useAavePositions'
+import { extractRevertMessage } from '../utils/errors'
 import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 const RATE_MODE = 2n
@@ -31,14 +34,13 @@ const debtTokenAbi = [
 ] as const
 
 interface BorrowRepayModalProps {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  asset: any
+  asset: BorrowedAsset
   initialTab?: 'borrow' | 'repay'
   ethPriceUsd?: number
   collateralUsd?: number
   debtUsd?: number
   liquidationThreshold?: number
-  suppliedAssets?: any[]
+  suppliedAssets?: SuppliedAssetLike[]
   onClose: () => void
 }
 
@@ -66,21 +68,21 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
+  const { data: allowance, refetch: refetchAllowance } = useReadContract({ chainId,
     address: asset.underlyingAsset, abi: erc20Abi, functionName: 'allowance',
     args: (address && poolAddress) ? [address, poolAddress] : undefined,
     query: { enabled: !!address && !!poolAddress && activeTab === 'repay' && !isNativeEth },
   })
 
-  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({
+  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({ chainId,
     address: isNativeEth ? asset.variableDebtTokenAddress : undefined,
     abi: debtTokenAbi, functionName: 'borrowAllowance',
     args: (address && asset && isNativeEth && gatewayAddress) ? [address, gatewayAddress] : undefined,
     query: { enabled: !!address && !!asset && isNativeEth && !!gatewayAddress && activeTab === 'borrow' },
   })
 
-  const { data: ethBalance } = useBalance({ address, query: { enabled: !!address && activeTab === 'repay' && isNativeEth } })
-  const { data: tokenBalanceData } = useReadContract({
+  const { data: ethBalance } = useBalance({ chainId, address, query: { enabled: !!address && activeTab === 'repay' && isNativeEth } })
+  const { data: tokenBalanceData } = useReadContract({ chainId,
     address: asset.underlyingAsset, abi: erc20Abi, functionName: 'balanceOf',
     args: address ? [address] : undefined,
     query: { enabled: !!address && activeTab === 'repay' && !isNativeEth },
@@ -104,7 +106,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           const currentDelegation = (delegationAllowance as bigint) ?? 0n
           if (currentDelegation < amountParsed) {
             log('Simulating delegation approval…')
-            const hash = await simulateAndWrite(config, writeContractAsync, {
+            const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
               address: asset.variableDebtTokenAddress as `0x${string}`, abi: debtTokenAbi,
               functionName: 'approveDelegation', args: [gatewayAddress, maxUint256],
               priorityMultiplier: 10n
@@ -115,13 +117,11 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           }
 
           log('Simulating ETH borrow…')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n })
+          const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: gatewayAddress, abi: wethGatewayAbi, functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
         }
         log('Simulating borrow…')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n })
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: poolAddress, abi: aavePoolAbi, functionName: 'borrow', args: [asset.underlyingAsset, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
       } else {
         if (isNativeEth && gatewayAddress) {
@@ -145,8 +145,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             }
           }
           log('Simulating ETH repay…')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const hash = await simulateAndWrite(config, writeContractAsync, { address: gatewayAddress, abi: wethGatewayAbi as any, functionName: 'repayETH', args: [poolAddress, repayAmount, address], value: repayValue })
+          const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: gatewayAddress, abi: wethGatewayAbi, functionName: 'repayETH', args: [poolAddress, repayAmount, address], value: repayValue })
           log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr(''); return
         }
         // For MAX repay we send maxUint256, and Aave pulls the *current* debt
@@ -167,13 +166,11 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           log('Approved — click Repay again.'); setTxHash(approveHash); setStep(0); await refetchAllowance(); return
         }
         log('Simulating repay…')
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const hash = await simulateAndWrite(config, writeContractAsync, { address: poolAddress, abi: aavePoolAbi as any, functionName: 'repay', args: [asset.underlyingAsset, finalAmount, RATE_MODE, address] })
+        const hash = await simulateAndWrite(config, writeContractAsync, { chainId, address: poolAddress, abi: aavePoolAbi, functionName: 'repay', args: [asset.underlyingAsset, finalAmount, RATE_MODE, address] })
         log(`Submitted: ${hash.slice(0, 10)}…`); setTxHash(hash); setStep(2); setAmountStr('')
       }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } catch (e: any) {
-      const reason = e?.cause?.reason ?? e?.shortMessage ?? e?.message ?? String(e)
+    } catch (e) {
+      const reason = extractRevertMessage(e)
       log(`Error: ${reason}`); setStep(0)
     }
   }
@@ -206,7 +203,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const newDebtUsd = activeTab === 'borrow' ? debtUsd + borrowRepayUsd : Math.max(0, debtUsd - borrowRepayUsd);
   
   const liquidationView = computeLiquidationView(
-    suppliedAssets.map((a: any) => ({
+    suppliedAssets.map((a: SuppliedAssetLike) => ({
       symbol: a.symbol,
       amount: a.amount || 0,
       priceUsd: a.priceInUsd ? parseFloat(a.priceInUsd) : 0,

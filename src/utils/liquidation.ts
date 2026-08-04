@@ -21,6 +21,20 @@ export interface CollateralInput {
   liquidationThreshold: number
 }
 
+/**
+ * The subset of a supplied-asset row that the liquidation views read. Deliberately
+ * narrower than the full row `useAavePositions` produces — callers map it into
+ * `CollateralInput` and touch nothing else. Fields are optional because the source
+ * row is assembled from on-chain reads that can legitimately be absent, which is why
+ * every call site already defaults them.
+ */
+export interface SuppliedAssetLike {
+  symbol: string
+  amount?: number
+  priceInUsd?: string
+  liquidationThreshold?: number
+}
+
 export interface LiquidationRow {
   symbol: string
   /** null when this asset cannot liquidate the position on its own. */

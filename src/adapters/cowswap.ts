@@ -76,8 +76,7 @@ export const cowSwapAdapter: Adapter = {
  
  
  
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-  buildTransaction: async (_quote: QuoteResponse, _slippage: number, _walletAddress: string, _chainId: number): Promise<TransactionPayload> => {
+  buildTransaction: async (): Promise<TransactionPayload> => {
     throw new Error('CowSwap execution is not supported yet. It requires EIP-712 off-chain signatures.');
   }
 };

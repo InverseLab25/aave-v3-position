@@ -15,6 +15,14 @@ const getOpenOceanChain = (chainId: number): string | null => {
   }
 };
 
+/** The fields this adapter reads back out of its own quote payload. */
+interface OpenOceanQuote {
+  gasPrice?: string | number;
+  inAmount: string;
+  inToken: { address: string; decimals: number };
+  outToken: { address: string };
+}
+
 export const openOceanAdapter: Adapter = {
   name: 'OpenOcean',
   supportsExecution: true,
@@ -27,10 +35,8 @@ export const openOceanAdapter: Adapter = {
       let gasJson;
       try {
         gasJson = JSON.parse(gasText);
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
-// eslint-disable-next-line preserve-caught-error
-        throw new Error("OpenOcean blocked (gas): " + gasText.slice(0, 50));
+        throw new Error("OpenOcean blocked (gas): " + gasText.slice(0, 50), { cause: e });
       }
       const gasPrice = gasJson.data?.fast?.maxFeePerGas ?? gasJson.data?.fast ?? 500000000;
       const formattedAmount = formatUnits(BigInt(amountIn), fromAsset.decimals);
@@ -44,10 +50,8 @@ export const openOceanAdapter: Adapter = {
       let json;
       try {
         json = JSON.parse(text);
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
       } catch (e) {
-// eslint-disable-next-line preserve-caught-error
-        throw new Error("OpenOcean blocked (swap): " + text.slice(0, 50));
+        throw new Error("OpenOcean blocked (swap): " + text.slice(0, 50), { cause: e });
       }
 
       // 429 / 403 API Error blocks disguised as 200 JSON
@@ -88,20 +92,19 @@ export const openOceanAdapter: Adapter = {
   buildTransaction: async (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number): Promise<TransactionPayload> => {
     const chainStr = getOpenOceanChain(chainId);
     if (!chainStr) throw new Error(`OpenOcean: unsupported chain ${chainId}`);
-    const gasPrice = quote.rawQuote.gasPrice || 500000000;
-    const formattedAmount = formatUnits(BigInt(quote.rawQuote.inAmount), quote.rawQuote.inToken.decimals);
+    const raw = quote.rawQuote as OpenOceanQuote;
+    const gasPrice = raw.gasPrice || 500000000;
+    const formattedAmount = formatUnits(BigInt(raw.inAmount), raw.inToken.decimals);
     // OpenOcean v4 slippage is a PERCENT (1 = 1%), not basis points — pass `slippage` as-is.
-    const url = `https://open-api.openocean.finance/v4/${chainStr}/swap?inTokenAddress=${quote.rawQuote.inToken.address}&outTokenAddress=${quote.rawQuote.outToken.address}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage}&account=${walletAddress}`;
+    const url = `https://open-api.openocean.finance/v4/${chainStr}/swap?inTokenAddress=${raw.inToken.address}&outTokenAddress=${raw.outToken.address}&amount=${formattedAmount}&gasPrice=${gasPrice}&slippage=${slippage}&account=${walletAddress}`;
     
     const res = await fetch(url);
     const text = await res.text();
     let json;
     try {
       json = JSON.parse(text);
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
     } catch (e) {
-// eslint-disable-next-line preserve-caught-error
-      throw new Error("OpenOcean API blocked: " + text.slice(0, 50));
+      throw new Error("OpenOcean API blocked: " + text.slice(0, 50), { cause: e });
     }
 
     if (json.code !== 200 && json.error) throw new Error("OpenOcean API Error: " + json.error);

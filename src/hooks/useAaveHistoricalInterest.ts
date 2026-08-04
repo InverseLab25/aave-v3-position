@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useConnection, useChainId } from 'wagmi'
 import { getChainConfig } from '../config/chains'
@@ -150,6 +151,11 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
     staleTime: 5 * 60 * 1000,
   })
 
+  // Replaying the whole transaction history on every render is pure waste: the result is a
+  // function of `data` alone, and this hook feeds useAavePositions, which feeds eight
+  // components. Without this memo every one of them re-derived cost basis on every render,
+  // and the fresh object identities invalidated every downstream useMemo.
+  const { netPrincipals, costBasis } = useMemo(() => {
   const supplyAcc: Record<string, Accumulator> = {}
   const borrowAcc: Record<string, Accumulator> = {}
 
@@ -238,6 +244,9 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
       realizedPnlUsd: 0
     }
   }
+
+  return { netPrincipals, costBasis }
+  }, [data])
 
   return {
     netPrincipals,

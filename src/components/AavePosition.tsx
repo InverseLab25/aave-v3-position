@@ -1,16 +1,34 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense, type ComponentType } from 'react'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
-import { ClosePositionModal } from './ClosePositionModal'
-import { WithdrawModal } from './WithdrawModal'
-import { AssetsToSupplyModal } from './AssetsToSupplyModal'
-import { AssetsToBorrowModal } from './AssetsToBorrowModal'
-import { BorrowRepayModal } from './BorrowRepayModal'
+
+/**
+ * Modals only ever render in response to a click, so eagerly bundling them cost every
+ * visitor ~70 kB of JS they may never open. Suspense is folded into the wrapper so the
+ * call sites below stay exactly as they were.
+ */
+function lazyModal<P extends object>(load: () => Promise<ComponentType<P>>) {
+  const Loaded = lazy(async () => ({ default: await load() }))
+  return function LazyModal(props: P) {
+    return (
+      <Suspense fallback={null}>
+        <Loaded {...props} />
+      </Suspense>
+    )
+  }
+}
+
+const ClosePositionModal = lazyModal(() => import('./ClosePositionModal').then((m) => m.ClosePositionModal))
+const WithdrawModal = lazyModal(() => import('./WithdrawModal').then((m) => m.WithdrawModal))
+const AssetsToSupplyModal = lazyModal(() => import('./AssetsToSupplyModal').then((m) => m.AssetsToSupplyModal))
+const AssetsToBorrowModal = lazyModal(() => import('./AssetsToBorrowModal').then((m) => m.AssetsToBorrowModal))
+const BorrowRepayModal = lazyModal(() => import('./BorrowRepayModal').then((m) => m.BorrowRepayModal))
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { computeLiquidationView } from '../utils/liquidation'
 import type { CollateralInput } from '../utils/liquidation'
+import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 
@@ -62,11 +80,9 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     chainId
   } = useAavePositions({ viewAddress, viewChainId })
 
-  const [closeTarget, setCloseTarget] = useState<Record<string, unknown> | null>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [withdrawTarget, setWithdrawTarget] = useState<{ asset: any } | null>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: any, tab: 'borrow' | 'repay' } | null>(null)
+  const [closeTarget, setCloseTarget] = useState<BorrowedAsset | null>(null)
+  const [withdrawTarget, setWithdrawTarget] = useState<{ asset: SuppliedAsset } | null>(null)
+  const [borrowRepayTarget, setBorrowRepayTarget] = useState<{ asset: BorrowedAsset, tab: 'borrow' | 'repay' } | null>(null)
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
 
@@ -161,8 +177,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   }, 0)
 
   /** Value(USD) cell — shows just the value + a clickable Avg row that opens the editor modal. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ValueCell = ({ a, side, r }: { a: any; side: 'supply' | 'borrow'; r: ReturnType<typeof applyOverride> }) => {
+  const ValueCell = ({ a, side, r }: { a: SuppliedAsset | BorrowedAsset; side: 'supply' | 'borrow'; r: ReturnType<typeof applyOverride> }) => {
     const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
     const isOverride = !!r?.isOverride
@@ -207,8 +222,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     if (!editingKey) return null
     const [side, addr] = editingKey.split(':') as ['supply' | 'borrow', string]
     const list = side === 'supply' ? suppliedAssets : borrowedAssets
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const asset = list.find((a: any) => a.underlyingAsset.toLowerCase() === addr)
+    const asset = list.find((a: SuppliedAsset | BorrowedAsset) => a.underlyingAsset.toLowerCase() === addr)
     if (!asset) return null
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
@@ -345,10 +359,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   // Aave oracle (`priceInUsd`), never `apiEthPrice` — Aave liquidates on its own oracle.
   const liquidationView = computeLiquidationView(
     suppliedAssets
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .filter((a: any) => a.usageAsCollateralEnabledOnUser)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((a: any): CollateralInput => ({
+      .filter((a: SuppliedAsset) => a.usageAsCollateralEnabledOnUser)
+      .map((a: SuppliedAsset): CollateralInput => ({
         symbol: a.symbol,
         amount: a.amount,
         priceUsd: Number(a.priceInUsd),
@@ -358,8 +370,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   )
   const chainConfig = getChainConfig(chainId)
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const ethPriceUsd = Number(availableReserves?.find((r: any) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
+  const ethPriceUsd = Number(availableReserves?.find((r: AvailableReserve) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
 
   return (
     <div className="dashboard-container">
@@ -451,8 +462,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                   </tr>
                 </thead>
                 <tbody>
-                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                  {suppliedAssets.map((a: any, i: number) => {
+                  {suppliedAssets.map((a: SuppliedAsset, i: number) => {
                     const r = applyOverride(a, 'supply');
 
                     return (
@@ -522,8 +532,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
                   </tr>
                 </thead>
                 <tbody>
-                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                  {borrowedAssets.map((a: any, i: number) => {
+                  {borrowedAssets.map((a: BorrowedAsset, i: number) => {
                     const r = applyOverride(a, 'borrow');
                     return (
                       <tr key={i}>

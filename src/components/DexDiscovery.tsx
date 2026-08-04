@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAavePositions } from '../hooks/useAavePositions';
 import { useConnection, useReadContract, useBalance } from 'wagmi';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
@@ -6,10 +6,9 @@ import { getAdaptersForChain } from '../adapters';
 import { NATIVE_ADDRESS, isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
 import { ConfirmSwapModal } from './ConfirmSwapModal';
-import type { Asset, QuoteResponse, TransactionPayload } from '../adapters';
+import type { Asset, QuoteResponse, TransactionPayload, KyberHop } from '../adapters';
 
 type Token = Asset & { source?: 'supplied' | 'borrowed' | 'default' };
-type KyberHop = { tokenIn: string; tokenOut: string; swapAmount: string; exchange?: string; poolType?: string };
 
 export function DexDiscovery() {
   const { suppliedAssets, borrowedAssets, isConnected, chainId } = useAavePositions();
@@ -185,15 +184,22 @@ export function DexDiscovery() {
 
   const isTxActive = Object.values(builtTxs).some(Boolean) || Object.values(isBuildingTx).some(Boolean);
 
+  // Latest-ref pattern: the interval must call the *current* fetchAllQuotes without listing
+  // it as a dependency. `suppliedAssets` from useAavePositions is a fresh array each render,
+  // so fromAsset/toAsset change identity constantly — depending on the closure directly would
+  // tear down and rebuild the interval on every render, and it would never fire.
+  const fetchAllQuotesRef = useRef(fetchAllQuotes);
+  useEffect(() => {
+    fetchAllQuotesRef.current = fetchAllQuotes;
+  });
+
   useEffect(() => {
     if (!isValidInput || isTxActive) return;
-    fetchAllQuotes();
-    const intervalId = setInterval(() => {
-      fetchAllQuotes();
-    }, 1000);
+    const tick = () => fetchAllQuotesRef.current();
+    tick();
+    const intervalId = setInterval(tick, 1000);
     return () => clearInterval(intervalId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isValidInput, fromAsset, toAsset, amountStr, slippage, isTxActive]);
+  }, [isValidInput, isTxActive, requestKey]);
 
   // Active aggregator: the modal currently showing (or null).
   const activeAggregator = Object.keys(builtTxs).find(k => builtTxs[k]) ?? null;
@@ -240,16 +246,25 @@ export function DexDiscovery() {
   // Auto-refresh the open confirm modal's quote/tx every 2s so a slow review (quotes can take
   // 5-10s to go stale) doesn't execute against an old price. Freezes the instant the user
   // commits (swapStarted) so the reviewed tx can never be swapped out from under them.
+  // Same latest-ref pattern. The old dependency list named `fromAsset?.underlyingAsset`
+  // rather than `fromAsset` specifically to dodge identity churn; going through a ref makes
+  // that intent explicit and lets the deps shrink to what actually gates the interval —
+  // which modal is open, and whether the user has committed.
+  const refreshActiveQuoteRef = useRef(refreshActiveQuote);
+  useEffect(() => {
+    refreshActiveQuoteRef.current = refreshActiveQuote;
+  });
+
   useEffect(() => {
     if (!activeAggregator || swapStarted) return;
-    const kickoff = setTimeout(refreshActiveQuote, 0);
-    const id = setInterval(refreshActiveQuote, 2000);
+    const tick = () => refreshActiveQuoteRef.current();
+    const kickoff = setTimeout(tick, 0);
+    const id = setInterval(tick, 2000);
     return () => {
       clearTimeout(kickoff);
       clearInterval(id);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeAggregator, swapStarted, address, fromAsset?.underlyingAsset, toAsset?.underlyingAsset, amountStr, slippage, chainId]);
+  }, [activeAggregator, swapStarted]);
 
   const clearTx = (aggregatorName: string) => {
     setSwapStarted(false); // reopening a fresh review — allow auto-refresh again
@@ -260,7 +275,9 @@ export function DexDiscovery() {
     });
   };
 
-  const buildTx = async (aggregatorName: string) => {
+  // useCallback marks this as an event handler rather than render-time work: it only ever
+  // runs from an onClick, and it reads the clock to stamp when the quote was refreshed.
+  const buildTx = useCallback(async (aggregatorName: string) => {
     const quote = quoteMap[aggregatorName];
     const adapter = adapters.find(a => a.name === aggregatorName);
     if (!quote || !adapter || !address) return;
@@ -277,7 +294,7 @@ export function DexDiscovery() {
     } finally {
       setIsBuildingTx(prev => ({ ...prev, [aggregatorName]: false }));
     }
-  };
+  }, [quoteMap, adapters, address, slippage, chainId]);
 
   const formatAddress = (addr: string) => {
     if (!addr) return '';
@@ -541,12 +558,17 @@ export function DexDiscovery() {
                             <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Route Details</div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
 
-                              {route.routeDetails.type === 'kyber' && (
+                              {route.routeDetails.type === 'kyber' && (() => {
+                                // Bind the narrowed union member: TypeScript drops narrowing on a
+                                // property access once it crosses into a callback, but keeps it on
+                                // an immutable local.
+                                const kyber = route.routeDetails;
+                                return (
                                 <>
-                                  {route.routeDetails.paths.map((path: KyberHop[], pathIdx: number) => {
+                                  {kyber.paths.map((path: KyberHop[], pathIdx: number) => {
                                     const firstHop = path[0];
                                     const pathAmountIn = BigInt(firstHop.swapAmount);
-                                    const totalAmountIn: bigint = route.routeDetails.totalAmountIn;
+                                    const totalAmountIn: bigint = kyber.totalAmountIn;
                                     const percentage = totalAmountIn > 0n
                                       ? Number((pathAmountIn * 10000n) / totalAmountIn) / 100
                                       : 100;
@@ -574,9 +596,10 @@ export function DexDiscovery() {
                                     );
                                   })}
                                 </>
-                              )}
+                                );
+                              })()}
 
-                              {['openocean', 'paraswap', 'cowswap'].includes(route.routeDetails.type) && (
+                              {(route.routeDetails.type === 'openocean' || route.routeDetails.type === 'paraswap' || route.routeDetails.type === 'cowswap') && (
                                 <div style={{ fontSize: '13px', color: '#4b5563' }}>
                                   100% ➔ <span style={{ backgroundColor: '#f3f4f6', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>{route.routeDetails.info}</span>
                                 </div>

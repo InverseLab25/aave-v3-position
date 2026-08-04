@@ -6,6 +6,25 @@ export interface Asset {
   amount?: number;
 }
 
+/** One hop of a KyberSwap split route. */
+export interface KyberHop {
+  tokenIn: string;
+  tokenOut: string;
+  swapAmount: string;
+  exchange?: string;
+  poolType?: string;
+}
+
+/**
+ * Per-aggregator route metadata for the UI, discriminated by `type`. Consumers must
+ * narrow on `type` before reading anything else, which is what makes the route-details
+ * panel type-safe without an escape hatch.
+ */
+export type RouteDetails =
+  | { type: 'kyber'; totalAmountIn: bigint; paths: KyberHop[][] }
+  | { type: 'odos-defillama' }
+  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap'; info: string };
+
 export interface QuoteResponse {
   aggregator: string;
   amountIn: string;
@@ -13,10 +32,13 @@ export interface QuoteResponse {
   amountOutUsd: string;
   gasUsd: string;
   netReturnUsd: number;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  routeDetails: any;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  rawQuote: any;
+  routeDetails: RouteDetails;
+  /**
+   * The aggregator's own quote payload, replayed verbatim into `buildTransaction`.
+   * Opaque by design — only the adapter that produced it knows the shape, so each
+   * narrows it locally rather than leaking a shared `any` to every consumer.
+   */
+  rawQuote: unknown;
 }
 
 export interface TransactionPayload {

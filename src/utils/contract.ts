@@ -13,6 +13,14 @@
  */
 
 import type { Config } from 'wagmi'
+import type { UseWriteContractReturnType } from 'wagmi'
+
+/** The parameter bag `simulateContract` accepts, before per-ABI narrowing. */
+type SimulateParams = Parameters<typeof simulateContract>[1]
+import { extractDetailedError } from './errors'
+
+/** wagmi's async write, as returned by `useWriteContract().writeContractAsync`. */
+type WriteContract = UseWriteContractReturnType['writeContractAsync']
 import { simulateContract, estimateFeesPerGas, estimateGas, waitForTransactionReceipt } from 'wagmi/actions'
 import { encodeFunctionData, type Abi } from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from './gas'
@@ -49,6 +57,13 @@ export interface ContractCallParams {
   args?: readonly unknown[]
   value?: bigint
   priorityMultiplier?: bigint
+  /**
+   * Chain the call is meant for. Pass it whenever the caller resolved its addresses from a
+   * specific chain config: wagmi then raises ChainMismatchError if the wallet has since been
+   * switched, instead of silently simulating and submitting against the connected chain with
+   * another chain's addresses.
+   */
+  chainId?: number
   [key: string]: unknown
 }
 
@@ -62,8 +77,7 @@ export interface ContractCallParams {
  */
 export async function simulateAndWrite(
   config: Config,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  writeContractAsync: (request: any) => Promise<`0x${string}`>,
+  writeContractAsync: WriteContract,
   params: ContractCallParams,
 ): Promise<`0x${string}`> {
   // 1. Fetch current network fees
@@ -86,11 +100,17 @@ export async function simulateAndWrite(
       functionName: params.functionName,
       args: params.args,
       value: params.value,
-      maxFeePerGas: adjustedMaxFeePerGas,
-      maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas,
-      gasPrice: adjustedGasPrice,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any)
+      chainId: params.chainId,
+      // viem's fee parameters are a union: EIP-1559 or legacy, never both. Passing all
+      // three fell outside every member — what the old `as any` was hiding.
+      ...(adjustedMaxFeePerGas
+        ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+        : { gasPrice: adjustedGasPrice }),
+      // simulateContract is generic over a literal ABI so it can tell payable from
+      // non-payable. This helper is deliberately generic over *any* contract, so that
+      // narrowing is impossible here — assert the parameter bag rather than reach for
+      // `any`, which would also discard the checks that do apply.
+    } as SimulateParams)
 
     // 4. Pin an explicit gas limit. Without one viem forwards `gas: undefined` to
     //    `eth_sendTransaction` and the wallet's own estimate — made against current
@@ -106,6 +126,7 @@ export async function simulateAndWrite(
           args: params.args,
         }),
         value: params.value,
+        chainId: params.chainId,
         account: (request as { account?: { address: `0x${string}` } }).account?.address,
       })
       gas = bufferedGasLimit(estimate)
@@ -115,31 +136,12 @@ export async function simulateAndWrite(
 
     // 5. Execute with the simulated request, plus the buffered gas limit.
     return await writeContractAsync(gas ? { ...request, gas } : request)
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } catch (err: any) {
+  } catch (err) {
     console.error('Simulation/Execution failed:', err)
     
-    let errorMsg = err.shortMessage || err.message || 'Transaction failed'
-    
-    // Viem throws nested errors. .walk() helps find the specific revert reason.
-    if (typeof err.walk === 'function') {
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const revertError = err.walk((e: any) => e.name === 'ContractFunctionRevertedError')
-      if (revertError) {
-        errorMsg = revertError.reason || revertError.shortMessage || revertError.message || errorMsg
-      }
-    } else if (err.cause) {
-      errorMsg = err.cause.reason || err.cause.shortMessage || err.cause.message || errorMsg
-    }
-
-    // Append raw details (often contains the actual "vm error: ...") if not already present
-    if (err.details && !errorMsg.includes(err.details)) {
-      errorMsg = `${errorMsg}: ${err.details}`
-    }
-
-    // Throw a standard Error so that `e.message` in the UI gets this exact formatted string
-// eslint-disable-next-line preserve-caught-error
-    throw new Error(errorMsg)
+    // viem nests the real revert several levels down; extractDetailedError walks to it
+    // and appends the node's raw `details` when it adds anything.
+    throw new Error(extractDetailedError(err), { cause: err })
   }
 }
 
@@ -168,8 +170,7 @@ export async function simulateAndWrite(
  */
 export async function approveErc20(
   config: Config,
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  writeContractAsync: (request: any) => Promise<`0x${string}`>,
+  writeContractAsync: WriteContract,
   params: {
     token: `0x${string}`
     spender: `0x${string}`
@@ -188,8 +189,7 @@ export async function approveErc20(
       await simulateContract(config, {
         ...call,
         args: [spender, amount],
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any)
+      } as SimulateParams)
     } catch {
       needsReset = true
     }

@@ -3,6 +3,15 @@ import { formatUnits } from 'viem';
 
 const PARASWAP_TOKEN_TRANSFER_PROXY = '0x216B4B4Ba9F3e719726886d34a177484278Bfcae';
 
+/** The fields this adapter reads back out of ParaSwap's priceRoute payload. */
+interface ParaSwapPriceRoute {
+  srcToken: string;
+  srcDecimals: number;
+  destToken: string;
+  destDecimals: number;
+  srcAmount: string;
+}
+
 export const paraSwapAdapter: Adapter = {
   name: 'ParaSwap',
   supportsExecution: true,
@@ -49,7 +58,7 @@ export const paraSwapAdapter: Adapter = {
 
   buildTransaction: async (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number): Promise<TransactionPayload> => {
     const partner = 'llamaswap';
-    const priceRoute = quote.rawQuote;
+    const priceRoute = quote.rawQuote as ParaSwapPriceRoute;
     
     const url = `https://apiv5.paraswap.io/transactions/${chainId}?ignoreChecks=true`;
     const res = await fetch(url, {
