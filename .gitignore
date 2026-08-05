@@ -34,9 +34,9 @@ aave-schema.graphql
 
 
 .audit
-lib/
-out/
-cache/
+/contract/lib/
+/contract/out/
+/contract/cache/
 
 # Local scratch — recommendations, notes (not committed)
 idea/
