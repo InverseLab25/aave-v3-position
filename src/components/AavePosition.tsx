@@ -701,6 +701,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
 
       {closeTarget && (
         <ClosePositionModal
+          ethPriceUsd={ethPriceUsd}
           borrowedAsset={closeTarget}
           suppliedAssets={suppliedAssets}
           onClose={() => setCloseTarget(null)}

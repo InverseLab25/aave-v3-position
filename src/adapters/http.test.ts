@@ -1,0 +1,146 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { fetchQuoteJson, limitedFetch, clearQuoteCache, resetHttpGate } from './http'
+
+const KYBER = 'https://aggregator-api.kyberswap.com/ethereum/api/v1/routes'
+
+describe('fetchQuoteJson', () => {
+  beforeEach(() => {
+    resetHttpGate()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('de-duplicates concurrent requests for the same URL', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ json: async () => ({ code: 0, n: 1 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const [a, b, c] = await Promise.all([
+      fetchQuoteJson(`${KYBER}?amountIn=1`),
+      fetchQuoteJson(`${KYBER}?amountIn=1`),
+      fetchQuoteJson(`${KYBER}?amountIn=1`),
+    ])
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(a).toEqual(b)
+    expect(b).toEqual(c)
+  })
+
+  it('reuses a completed response inside the TTL and refetches after it', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchQuoteJson(`${KYBER}?amountIn=2`)
+    await fetchQuoteJson(`${KYBER}?amountIn=2`)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(4_001)
+    await fetchQuoteJson(`${KYBER}?amountIn=2`)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('treats different amountIn as different requests', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await Promise.all([
+      fetchQuoteJson(`${KYBER}?amountIn=1`),
+      fetchQuoteJson(`${KYBER}?amountIn=2`),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not cache a failed request', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('network'))
+      .mockResolvedValue({ json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchQuoteJson(`${KYBER}?amountIn=3`)).rejects.toThrow('network')
+    await fetchQuoteJson(`${KYBER}?amountIn=3`)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not share an abortable request, so one caller cannot cancel another', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const controller = new AbortController()
+    await Promise.all([
+      fetchQuoteJson(`${KYBER}?amountIn=9`),
+      fetchQuoteJson(`${KYBER}?amountIn=9`, { signal: controller.signal }),
+    ])
+
+    // The plain one may be cached; the abortable one must have gone to the network on its own.
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('clearQuoteCache forces the next identical request back to the network', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchQuoteJson(`${KYBER}?amountIn=4`)
+    clearQuoteCache()
+    await fetchQuoteJson(`${KYBER}?amountIn=4`)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('rate limiting', () => {
+  beforeEach(() => {
+    resetHttpGate()
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('allows at most 3 requests per second to one origin', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    // Distinct URLs so the quote cache can't collapse them.
+    const inFlight = Promise.all(
+      [1, 2, 3, 4, 5].map((i) => limitedFetch(`${KYBER}?amountIn=${i}`)),
+    )
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+
+    await inFlight
+  })
+
+  it('meters origins independently', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const inFlight = Promise.all([
+      limitedFetch(`${KYBER}?amountIn=1`),
+      limitedFetch(`${KYBER}?amountIn=2`),
+      limitedFetch(`${KYBER}?amountIn=3`),
+      limitedFetch('https://open-api.openocean.finance/v3/1/quote?a=1'),
+      limitedFetch('https://open-api.openocean.finance/v3/1/quote?a=2'),
+    ])
+
+    // Three on KyberSwap plus two on a different origin — no cross-throttling.
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+
+    await inFlight
+  })
+})

@@ -48,7 +48,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   const config = useConfig()
   const { isLoading: isWaitingTx } = useWaitForTransactionReceipt({ hash: txHash })
 
-  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0, 10n)
+  const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(300000n /* Aave borrow */, ethPriceUsd, parseFloat(amountStr) > 0, 5n)
 
   const targetSymbols = chainConfig?.defaultTokens?.map(t => t.symbol.toUpperCase()) || ['WETH', 'USDC', 'USDT']
   const filteredReserves = availableReserves.filter(r => targetSymbols.includes(r.symbol.toUpperCase()))
@@ -59,7 +59,8 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
 
   const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
 
-  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({ chainId,
+  const { data: delegationAllowance, refetch: refetchDelegation } = useReadContract({
+    chainId,
     address: selectedAsset?.symbol === 'ETH' ? selectedAsset.variableDebtTokenAddress : undefined,
     abi: debtTokenAbi, functionName: 'borrowAllowance',
     args: (address && selectedAsset && selectedAsset.symbol === 'ETH' && gatewayAddress) ? [address, gatewayAddress] : undefined,
@@ -72,11 +73,12 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
       const amountParsed = parseUnits(amountStr, selectedAsset.decimals)
       if (selectedAsset.symbol === 'ETH') {
         if (!gatewayAddress) { alert('Native ETH borrowing is not supported on this network.'); return }
-        
+
         const currentDelegation = (delegationAllowance as bigint) ?? 0n
         if (currentDelegation < amountParsed) {
           setStatusMsg('Simulating delegation approval…')
-          const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+          const hash = await simulateAndWrite(config, writeContractAsync, {
+            chainId,
             address: selectedAsset.variableDebtTokenAddress as `0x${string}`, abi: debtTokenAbi,
             functionName: 'approveDelegation', args: [gatewayAddress, maxUint256], priorityMultiplier: 10n
           })
@@ -86,7 +88,8 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         }
 
         setStep(3); setStatusMsg('Simulating borrowETH…')
-        const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+        const hash = await simulateAndWrite(config, writeContractAsync, {
+          chainId,
           address: gatewayAddress, abi: wethGatewayAbi,
           functionName: 'borrowETH', args: [poolAddress, amountParsed, 0], priorityMultiplier: 10n
         })
@@ -94,7 +97,8 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
         return
       }
       setStep(3); setStatusMsg('Simulating borrow…')
-      const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+      const hash = await simulateAndWrite(config, writeContractAsync, {
+        chainId,
         address: poolAddress, abi: aavePoolAbi,
         functionName: 'borrow', args: [selectedAsset.underlyingAsset as `0x${string}`, amountParsed, RATE_MODE, 0, address], priorityMultiplier: 10n
       })
@@ -118,10 +122,10 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
     ? healthFactor(collateralUsd * liquidationThreshold, debtUsd + borrowAmountUsd)
     : '∞'
   const hfGuard = evaluateHf(amountNum > 0 ? newHealthFactor : '∞')
-  
+
   const amountUsd = amountNum * Number(selectedAsset?.priceInUsd || 0);
   const newDebtUsd = debtUsd + amountUsd;
-  
+
   const liquidationView = computeLiquidationView(
     (suppliedAssets || []).map((a: SuppliedAssetLike) => ({
       symbol: a.symbol,

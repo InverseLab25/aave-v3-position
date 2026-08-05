@@ -29,7 +29,20 @@ export interface QuoteResponse {
   aggregator: string;
   amountIn: string;
   amountOut: string;
+  /**
+   * The aggregator's OWN USD figures for both sides, untouched.
+   *
+   * Kept separate from `amountOutUsd`, which is deliberately re-priced against the Aave
+   * oracle for ranking and display. Comparing a raw input against a re-priced output would
+   * measure oracle-vs-market divergence as though it were route cost — these two must come
+   * from the same pricing source to mean anything.
+   */
+  rawAmountInUsd?: string;
+  rawAmountOutUsd?: string;
+  /** Output value re-priced against the Aave oracle. Used for ranking and display. */
   amountOutUsd: string;
+  /** Aggregator's gas estimate for the swap itself, in gas units. */
+  gasEstimate?: string;
   gasUsd: string;
   netReturnUsd: number;
   routeDetails: RouteDetails;
@@ -46,12 +59,25 @@ export interface TransactionPayload {
   data: string;
   value: string;
   spender: string; // The address that needs ERC20 approval
+  /**
+   * The aggregator's own output figure for THIS build, re-simulated at build time and
+   * therefore authoritative over the quote's. It is what the router's `minReturnAmount` is
+   * derived from, so any floor we enforce has to be derived from the same number.
+   */
+  amountOut?: string;
+  /**
+   * How far the built route moved from the quoted one, in percent (negative = worse). The
+   * aggregator computes this itself; a materially negative value means the route degraded
+   * between quote and build and the user is no longer getting what they reviewed.
+   */
+  outputChangePercent?: number;
 }
 
 export interface Adapter {
   name: string;
   /** Whether this adapter supports on-chain execution (CowSwap = false) */
   supportsExecution: boolean;
-  getQuote: (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number) => Promise<QuoteResponse | null>;
+  /** `signal` aborts a superseded request so it stops consuming the aggregator. */
+  getQuote: (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number, signal?: AbortSignal) => Promise<QuoteResponse | null>;
   buildTransaction: (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number) => Promise<TransactionPayload>;
 }

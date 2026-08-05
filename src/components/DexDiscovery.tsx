@@ -69,7 +69,7 @@ export function DexDiscovery() {
   const [fromAssetOverride, setFromAssetOverride] = useState<Token | null>(null);
   const [toAssetOverride, setToAssetOverride] = useState<Token | null>(null);
   const [amountStr, setAmountStr] = useState<string>('');
-  const [slippage, setSlippage] = useState<number>(1);
+  const [slippage, setSlippage] = useState<number>(0.1);
   const [quoteMap, setQuoteMap] = useState<Record<string, QuoteResponse | null>>({});
   const [, setErrors] = useState<Record<string, string>>({});
   const [builtTxs, setBuiltTxs] = useState<Record<string, TransactionPayload>>({});

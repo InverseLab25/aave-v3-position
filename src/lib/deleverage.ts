@@ -1,16 +1,95 @@
-import type { Address } from 'viem'
+import { formatUnits, type Address } from 'viem'
 import type { QuoteResponse } from '../adapters/types'
 
 /**
- * Aggregators whose ERC20 approval-spender equals their call target, that need
- * no per-swap signature, AND that can direct swap output to an arbitrary
- * recipient. AaveV3Deleverager approves `router`, calls `router`, and expects
- * the output on itself, so only these are usable. Excluded: ParaSwap (separate
- * TokenTransferProxy), CowSwap (off-chain intent), and any Permit2-signature
- * flow (1inch/0x) a contract can't sign. Odos qualifies: spender === to,
- * Permit2 is opt-in only, and /sor/assemble takes a `receiver`.
+ * Why a close could not be planned. The three cases need different responses, and prose
+ * alone cannot be branched on:
+ *
+ *  - `wallet`     — nothing connected yet. Not something the modal asks the user to fix.
+ *  - `deployment` — paused contract, empty router allowlist, unsupported chain. Picking
+ *                   different collateral cannot help; only the operator can fix it.
+ *  - `pair`       — no route, underwater position, native sentinel. Actionable: try other
+ *                   collateral.
+ *
+ * Reporting a `deployment` failure as if it were a `pair` failure is what sends users
+ * round in circles trying every collateral they hold.
  */
-export const COMPATIBLE_ADAPTERS = ['KyberSwap', 'OpenOcean', 'Odos'] as const
+export type CloseErrorKind = 'wallet' | 'deployment' | 'pair'
+
+export class CloseError extends Error {
+  readonly kind: CloseErrorKind
+
+  constructor(kind: CloseErrorKind, message: string) {
+    super(message)
+    this.name = 'CloseError'
+    this.kind = kind
+  }
+}
+
+/**
+ * Normalise anything thrown during planning into a kind and a message. An unrecognised
+ * throw is reported as `pair` — the only kind that invites the user to try something else,
+ * which is the safe default when we do not actually know what failed.
+ */
+export function toCloseError(e: unknown): { kind: CloseErrorKind; message: string } {
+  if (e instanceof CloseError) return { kind: e.kind, message: e.message }
+  return { kind: 'pair', message: e instanceof Error ? e.message : String(e) }
+}
+
+/**
+ * Decimal places the quoted rate is carried at before formatting. Display-only precision —
+ * a rate smaller than 1e-6 rounds to zero here, which only bites on pairs where one
+ * collateral token is worth less than a millionth of a debt token.
+ */
+const RATE_DECIMALS = 6n
+
+/**
+ * Debt token per 1 collateral token on a quote, as a decimal string.
+ *
+ * The two sides have different decimals, so the ratio has to be rescaled:
+ *   rate = (expectedOut / 10^debtDec) / (requiredIn / 10^collDec)
+ * Evaluated in bigint by folding both scales and RATE_DECIMALS into the numerator before
+ * the single division, so the only rounding is one truncation at the end — converting each
+ * side to a double first would round twice before the divide even happens.
+ *
+ * Returns null when nothing is being swapped and no rate is defined.
+ */
+export function quoteRate(
+  expectedOut: bigint,
+  requiredIn: bigint,
+  collateralDecimals: number,
+  debtDecimals: number,
+): string | null {
+  if (requiredIn <= 0n) return null
+  const numerator = expectedOut * 10n ** BigInt(collateralDecimals) * 10n ** RATE_DECIMALS
+  const denominator = requiredIn * 10n ** BigInt(debtDecimals)
+  return formatUnits(numerator / denominator, Number(RATE_DECIMALS))
+}
+
+/**
+ * Aggregators the deleverager can actually route through.
+ *
+ * Two conditions have to hold, and only the first is a property of the aggregator:
+ *
+ *  1. Its ERC20 approval-spender equals its call target, it needs no per-swap signature,
+ *     and it can direct output to an arbitrary recipient — AaveV3Deleverager approves
+ *     `router`, calls `router`, and expects the output on itself. This rules out ParaSwap
+ *     (separate TokenTransferProxy), CowSwap (off-chain intent), and any Permit2-signature
+ *     flow (1inch/0x) a contract can't sign. OpenOcean and Odos both satisfy it.
+ *
+ *  2. Its router is on the deleverager's on-chain allowlist. Only KyberSwap's mainnet
+ *     router is — see script/RouterSetup.s.sol — so it is the only entry here.
+ *
+ * A router's address is only known after `buildTransaction`, i.e. after a quote has been
+ * paid for, so condition 2 cannot be checked during sizing. Listing an aggregator whose
+ * router isn't allowlisted therefore doesn't just waste quota: it can win the ranking and
+ * be previewed to the user, and `close()` then silently falls back to a different route
+ * that repays at a different rate than the one shown.
+ *
+ * To widen this: allowlist the router on-chain FIRST (RouterSetup.s.sol, owner-signed),
+ * then add the name here. Never the other way round.
+ */
+export const COMPATIBLE_ADAPTERS = ['KyberSwap'] as const
 
 /**
  * Minimal ABI: the entry point, the read-only preflight getters, and every custom error
@@ -104,11 +183,6 @@ export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
         q != null && (COMPATIBLE_ADAPTERS as readonly string[]).includes(q.aggregator),
     )
     .sort((a, b) => b.netReturnUsd - a.netReturnUsd)
-}
-
-/** Pick the compatible quote with the highest net USD return; null if none compatible. */
-export function pickBestRoute(quotes: (QuoteResponse | null)[]): QuoteResponse | null {
-  return rankRoutes(quotes)[0] ?? null
 }
 
 /**

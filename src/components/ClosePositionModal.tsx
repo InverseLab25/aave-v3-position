@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type CSSProperties } from 'react'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
 import { getChainConfig, getDeleveragerAddress } from '../config/chains'
@@ -7,11 +7,81 @@ import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { useAdjustedGas } from '../hooks/useAdjustedGas'
 
+import { clearQuoteCache } from '../adapters/http'
+import type { CloseErrorKind } from '../lib/deleverage'
+import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
 import { ExplorerLink } from './ExplorerLink'
 import { useDeleverageClose, type ClosePreview } from '../hooks/useDeleverageClose'
 
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
+
+/**
+ * Default max slippage.
+ *
+ * 0.5% is KyberSwap's own `DEFAULT_SLIPPAGE` (50 bps), and their `checkRangeSlippage` flags
+ * anything below that as too LOW for a volatile pair — "may cause failed transactions in
+ * volatile markets". We previously defaulted to 0.1%, which is their floor for a *stable* pair
+ * and which measurably cannot be filled at size: a real 200 WETH route books 0.05-0.07% of
+ * cost before execution even starts, leaving almost nothing inside a 0.1% band.
+ */
+const DEFAULT_SLIPPAGE_PERCENT = 0.1
+
+/** Never nudge a user past this in a one-click retry, however wide the failure suggests. */
+const SLIPPAGE_SUGGESTION_CAP = 1
+
+// How often the open modal re-quotes. Aggregator quotes go stale within seconds, and the
+// router enforces the output floor frozen into its calldata, so a preview that is not
+// refreshed stops describing the transaction that would actually be submitted.
+/**
+ * Gap between one quote settling and the next being requested.
+ *
+ * This is a REST period, not a period. Actual cadence is roughly
+ * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts: a cheap pair refreshes
+ * every ~3.5s, a 200 WETH split route every ~10s. Refreshing faster than a quote takes cannot
+ * produce fresher numbers, it only produces more overlapping requests.
+ */
+const QUOTE_REFRESH_MS = 3000
+
+/**
+ * Gas the close costs BESIDES the swap: flash loan, Aave repay, two permits, the aToken pull,
+ * the withdraw and the settlement transfers.
+ *
+ * Measured on a mainnet fork (`forge test --gas-report`): `closePositionWithPermit` peaks at
+ * 514k with the swap mocked out, so this is that figure rounded up. The swap itself is added
+ * on top from the aggregator's own estimate, which is the only party that knows how many
+ * venues the route touches — a large split route can be several million on its own, and a
+ * fixed constant was understating it by an order of magnitude.
+ */
+const CLOSE_OVERHEAD_GAS = 550_000n
+
+/** Fallback swap gas when the aggregator has not quoted one yet. */
+const FALLBACK_SWAP_GAS = 350_000n
+
+/**
+ * Priority multiplier the close transaction actually pays (see useDeleverageClose). The
+ * preview has to use the same one, or it shows a fee that is not the fee being charged.
+ */
+const CLOSE_PRIORITY_MULTIPLIER = 10n
+
+/** Aave's own repayWithATokens on the same-asset path — an ordinary pool call. */
+const SAME_ASSET_REPAY_GAS_LIMIT = 300_000n
+
+/**
+ * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
+ * the two amount fields in this app read as the same control.
+ */
+const pillButtonStyle = (active: boolean): CSSProperties => ({
+  padding: '2px 8px',
+  fontSize: 'var(--text-xs)',
+  fontWeight: 700,
+  lineHeight: 1.5,
+  color: active ? 'var(--color-primary-text)' : 'var(--color-primary)',
+  background: active ? 'var(--color-primary)' : '#eff6ff',
+  border: '1px solid #bfdbfe',
+  borderRadius: 'var(--radius-sm)',
+  cursor: 'pointer',
+})
 
 // Trim a full-precision formatUnits string to something readable in the UI.
 const formatAmount = (s: string): string => {
@@ -24,16 +94,23 @@ const formatAmount = (s: string): string => {
 interface ClosePositionModalProps {
   borrowedAsset: BorrowedAsset
   suppliedAssets: SuppliedAsset[]
+  /** Native token price, for costing the gas estimate. Zero hides the USD figure. */
+  ethPriceUsd: number
   onClose: () => void
 }
 
-export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: ClosePositionModalProps) {
+export function ClosePositionModal({
+  borrowedAsset,
+  suppliedAssets,
+  ethPriceUsd,
+  onClose,
+}: ClosePositionModalProps) {
   const { address } = useConnection()
   const chainId = useChainId()
   const [selectedCollateral, setSelectedCollateral] = useState<SuppliedAsset | null>(suppliedAssets[0] ?? null)
   const [amountStr, setAmountStr] = useState<string>('')
   const [isMax, setIsMax] = useState<boolean>(false)
-  const [slippage, setSlippage] = useState<number>(0.5)
+  const [slippage, setSlippage] = useState<number>(DEFAULT_SLIPPAGE_PERCENT)
 
   const [step, setStep] = useState<number>(0)
   const [logs, setLogs] = useState<string[]>([])
@@ -43,15 +120,55 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
 
   const [preview, setPreview] = useState<ClosePreview | null>(null)
   /** Why the preview could not be produced — paused contract, empty router allowlist, etc. */
-  const [previewError, setPreviewError] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState<{ kind: CloseErrorKind; message: string } | null>(null)
+  /**
+   * How much collateral to swap. Empty means "only what the debt needs" (the automatic
+   * sizing). Setting it higher converts the surplus into the debt asset and sends it to the
+   * wallet, which is the point when the collateral is expected to fall.
+   */
+  const [collateralInStr, setCollateralInStr] = useState<string>('')
+  const [isCollateralMax, setIsCollateralMax] = useState<boolean>(false)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
+  /**
+   * Unix seconds until the held permit expires, or null when none is held. Drives the
+   * two-step flow: the first press captures the approval, the second submits with it.
+   */
+  const [signedUntil, setSignedUntil] = useState<number | null>(null)
+  /** Last close failed because the tolerance was too tight — offer a wider one. */
+  const [slippageTooTight, setSlippageTooTight] = useState<boolean>(false)
+  /** Advanced by the countdown below; `secondsLeft` is derived from it during render. */
+  const [nowSeconds, setNowSeconds] = useState<number>(() => Math.floor(Date.now() / 1000))
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
-  const { preview: quotePreview, close: closePosition, logs: closeLogs, step: closeStep } = useDeleverageClose()
+  const {
+    preview: quotePreview,
+    close: closePosition,
+    logs: closeLogs,
+    step: closeStep,
+    clearSignatures,
+    warmup,
+  } = useDeleverageClose()
   const chainConfig = getChainConfig(chainId)
   const poolAddress = chainConfig?.aave?.poolAddress as `0x${string}`
+
+  // MAX resolves on-chain to the live aToken balance rather than to this formatted number,
+  // so a full swap is exact and cannot be left a wei short by display rounding.
+  const collateralIn: bigint | 'all' | undefined = isCollateralMax
+    ? 'all'
+    : collateralInStr && selectedCollateral
+      ? (() => {
+          try {
+            const parsed = parseUnits(collateralInStr, selectedCollateral.decimals)
+            return parsed > 0n ? parsed : undefined
+          } catch {
+            return undefined
+          }
+        })()
+      : undefined
+
+  const secondsLeft = signedUntil === null ? 0 : Math.max(0, signedUntil - nowSeconds)
 
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
@@ -64,9 +181,16 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     const shouldQuote = !isSameAsset && deleveragerAvailable && !!selectedCollateral
 
     let isMounted = true
+    // Superseded quotes are aborted, not merely ignored. A route at size takes several seconds
+    // to compute, so an abandoned one left running keeps consuming the slowest endpoint in the
+    // app on behalf of a result nobody will read.
+    const controller = new AbortController()
     const run = async () => {
       if (!shouldQuote) {
-        if (isMounted) { setPreview(null); setPreviewError(null) }
+        // Also clears the in-flight flag: a quote aborted by this very effect re-running
+        // cannot clear it (its `isMounted` is already false), so without this the flag stays
+        // true and the self-scheduling refresh — which only arms while idle — never rearms.
+        if (isMounted) { setPreview(null); setPreviewError(null); setIsQuoting(false) }
         return
       }
       setIsQuoting(true)
@@ -75,6 +199,8 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
           collateral: selectedCollateral,
           debtAsset: borrowedAsset,
           slippagePercent: slippage,
+          collateralIn,
+          signal: controller.signal,
         })
         if (isMounted) { setPreview(p.preview); setPreviewError(p.error) }
       } finally {
@@ -87,14 +213,58 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     return () => {
       isMounted = false
       clearTimeout(timeout)
+      controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, isSameAsset, deleveragerAvailable, quotePreview, refreshTick])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, isSameAsset, deleveragerAvailable, quotePreview, refreshTick])
+
+  // Ticks only while an approval is held. Everything it writes happens inside the interval
+  // callback, so the countdown never sets state as a render side effect.
+  useEffect(() => {
+    if (signedUntil === null) return
+    const id = setInterval(() => {
+      const now = Math.floor(Date.now() / 1000)
+      // Once it lapses the held signature is worthless, so stop offering to submit with it.
+      if (now >= signedUntil) {
+        setSignedUntil(null)
+        clearSignatures()
+      } else {
+        setNowSeconds(now)
+      }
+    }, 1000)
+    return () => clearInterval(id)
+  }, [signedUntil, clearSignatures])
+
+  // A signature must never outlive the modal that took it.
+  useEffect(() => () => clearSignatures(), [clearSignatures])
+
+  // Resolve Aave's immutable wiring as soon as the modal opens, so the first preview is one
+  // batch rather than a three-deep waterfall. Runs ahead of the preview's 300ms debounce.
+  useEffect(() => {
+    if (isSameAsset || !deleveragerAvailable || !selectedCollateral) return
+    void warmup({ collateral: selectedCollateral, debtAsset: borrowedAsset })
+  }, [selectedCollateral, borrowedAsset, isSameAsset, deleveragerAvailable, warmup])
 
   // Only estimate once there's something to act on: an entered amount for the
   // same-asset repay, or an available one-click close for the cross-asset path.
-  const { maxFee: uiMaxFee, maxPriority: uiMaxPriority } = useAdjustedGas(
-    300000n /* deleverage close */, 0,
+  // The two paths cost very different amounts and are sent at different priorities, so the
+  // preview has to follow whichever one is actually in play.
+  // The swap dominates a cross-asset close and its cost is route-dependent, so take the
+  // aggregator's estimate when there is one rather than assuming a fixed total.
+  const swapGas = (() => {
+    if (!preview?.swapGasEstimate) return FALLBACK_SWAP_GAS
+    try {
+      const g = BigInt(preview.swapGasEstimate)
+      return g > 0n ? g : FALLBACK_SWAP_GAS
+    } catch {
+      return FALLBACK_SWAP_GAS
+    }
+  })()
+
+  const { maxFee: uiMaxFee, maxPriority: uiMaxPriority, estimatedFeeUsd } = useAdjustedGas(
+    isSameAsset ? SAME_ASSET_REPAY_GAS_LIMIT : CLOSE_OVERHEAD_GAS + swapGas,
+    ethPriceUsd,
     isSameAsset ? parseFloat(amountStr) > 0 : deleveragerAvailable,
+    isSameAsset ? 1n : CLOSE_PRIORITY_MULTIPLIER,
   )
 
   const log = (msg: string) => setLogs((prev) => [...prev, msg])
@@ -108,6 +278,9 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
   const resetForm = () => {
     setAmountStr('')
     setIsMax(false)
+    setCollateralInStr('')
+    setIsCollateralMax(false)
+    setSignedUntil(null)
     setPreview(null)
     setPreviewError(null)
     setIsComplete(true)
@@ -121,6 +294,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
     setIsComplete(false)
     setTxHash(undefined)
     setLogs([])
+    setSlippageTooTight(false)
 
     if (isSameAsset) {
       if (!amountStr) return
@@ -129,7 +303,8 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         const amountParsed = parseUnits(amountStr, borrowedAsset.decimals)
         const finalAmount = isMax ? maxUint256 : amountParsed
         log(`Simulating repayWithATokens for ${isMax ? 'MAX' : amountStr} ${borrowedAsset.symbol}…`)
-        const hash = await simulateAndWrite(config, writeContractAsync, { chainId,
+        const hash = await simulateAndWrite(config, writeContractAsync, {
+          chainId,
           address: poolAddress,
           abi: aavePoolAbi,
           functionName: 'repayWithATokens',
@@ -152,19 +327,57 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
       collateral: selectedCollateral,
       debtAsset: borrowedAsset,
       slippagePercent: slippage,
+      collateralIn,
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
+    if (result.status === 'signed') {
+      // Nothing submitted yet — the approval is banked and the quote stays on screen for
+      // one more look. The next press spends it without another wallet prompt.
+      setSignedUntil(result.signatureExpiresAt ?? null)
+      setStep(0)
+      return
+    }
     if (result.status === 'success') {
+      setSignedUntil(null)
       setStep(2)
       resetForm()
     } else {
+      // Failed before landing. The hook has already dropped the stale quote; pull a fresh one
+      // now rather than leaving the user looking at numbers that have just been disproved.
+      // The held signature survives, so their next press still needs no wallet prompt.
       setStep(0)
+      setSlippageTooTight(result.slippageTooTight === true)
+      setRefreshTick((t) => t + 1)
     }
   }
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.
   const shownLogs = isSameAsset ? logs : closeLogs
   const isProcessing = isSameAsset ? step === 1 : closeStep === 'running'
+
+  // Re-quote on a cadence, because a close plan cannot be carried forward — the router freezes
+  // its output floor into the calldata at build time, so a preview left sitting stops
+  // describing what would actually execute.
+  //
+  // Self-scheduling, NOT a fixed interval. A quote for a large position takes 4-8s (a 200 WETH
+  // route is 27kB of split-route data); a 3s interval fires while the previous one is still in
+  // flight. Those overlapping runs pile up on the slowest endpoint in the app, and — because a
+  // superseded run is barred from clearing `isQuoting` by its own `isMounted` guard — none of
+  // them ever clears it. `canExecute` reads that flag, so on a large position the button was
+  // unclickable except by luck. Waiting for the current quote to settle before timing the next
+  // keeps exactly one in flight and lets the flag fall to false between refreshes.
+  //
+  // Paused while a close is running: a re-quote landing mid-flow would move the figures under
+  // the user and spend rate-limit budget the execution path needs.
+  useEffect(() => {
+    if (isSameAsset || !deleveragerAvailable || !selectedCollateral) return
+    if (isProcessing || isQuoting) return
+    const id = setTimeout(() => {
+      clearQuoteCache()
+      setRefreshTick((t) => t + 1)
+    }, QUOTE_REFRESH_MS)
+    return () => clearTimeout(id)
+  }, [isSameAsset, deleveragerAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
   const canExecute = isSameAsset
     ? !!amountStr && parseFloat(amountStr) > 0
     // `guaranteed` gates execution too: close() refuses a route whose guaranteed
@@ -245,6 +458,54 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
               />
             </div>
           ) : (
+            <>
+            <div style={{ marginBottom: 'var(--space-5)' }}>
+              <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
+                Collateral to Swap ({selectedCollateral?.symbol})
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="number"
+                  step="any"
+                  className="input"
+                  value={collateralInStr}
+                  onChange={(e) => {
+                    setCollateralInStr(e.target.value)
+                    setIsCollateralMax(false)
+                  }}
+                  placeholder={
+                    preview ? `${formatAmount(preview.collateralSwapped)} (only what the debt needs)` : 'Auto'
+                  }
+                  // Room for the pills sitting inside the field; Reset only takes space when shown.
+                  style={{ paddingRight: collateralInStr ? '124px' : '62px' }}
+                />
+                <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', display: 'flex', gap: '6px' }}>
+                  {/* Only meaningful once an override exists — otherwise it resets to what is
+                      already there, which reads as a broken control. */}
+                  {collateralInStr && (
+                    <button
+                      onClick={() => {
+                        setCollateralInStr('')
+                        setIsCollateralMax(false)
+                      }}
+                      style={pillButtonStyle(false)}
+                    >
+                      RESET
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setIsCollateralMax(true)
+                      setCollateralInStr(selectedCollateral ? String(selectedCollateral.amount) : '')
+                    }}
+                    style={pillButtonStyle(isCollateralMax)}
+                  >
+                    MAX
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div style={{ marginBottom: 'var(--space-5)' }}>
               <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
                 Max Slippage
@@ -283,6 +544,7 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                 </div>
               </div>
             </div>
+            </>
           )}
 
           <div className={isSameAsset || deleveragerAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: 'var(--space-5)' }}>
@@ -302,19 +564,11 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                   </span>
                 </div>
                 <p style={{ fontSize: 'var(--text-xs)', marginTop: '8px', marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
-                  Swaps only enough {selectedCollateral?.symbol} to repay {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}. Nothing is requested until you press Execute — then your wallet asks for{' '}
+                  {collateralIn === undefined
+                    ? `Swaps only enough ${selectedCollateral?.symbol ?? ''} to repay ${borrowedAsset.amount.toFixed(4)} ${borrowedAsset.symbol}.`
+                    : `Swaps the ${selectedCollateral?.symbol ?? ''} amount you chose; anything beyond the debt comes back as ${borrowedAsset.symbol}.`}{' '}
+                  Nothing is requested until you press Execute — then your wallet asks for{' '}
                   <strong>two signatures and one transaction</strong>.
-                </p>
-                {/*
-                  The second signature is the one users do not expect, and an unexplained
-                  extra prompt reads as a phishing attempt. Spell out what it does: it is a
-                  permit for zero, consumed in the same transaction, so the approval the
-                  first signature grants cannot outlive the close.
-                */}
-                <p style={{ fontSize: 'var(--text-xs)', marginTop: '6px', marginBottom: 0, opacity: 0.75, lineHeight: 1.4 }}>
-                  The first signature approves your a{selectedCollateral?.symbol}; the second revokes it
-                  again in the same transaction, so no spending allowance is left behind afterwards.
-                  Both are free — only the transaction costs gas.
                 </p>
               </div>
             ) : (
@@ -343,12 +597,61 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
             </div>
           )}
 
+          {slippageTooTight && !isComplete && (() => {
+            const suggestion = suggestWiderSlippage(slippage, SLIPPAGE_PRESETS, SLIPPAGE_SUGGESTION_CAP)
+            return (
+              <div className="alert alert-warning" style={{ marginBottom: 'var(--space-5)' }}>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                  <span>⚠️</span>
+                  <div style={{ fontSize: 'var(--text-sm)' }}>
+                    <strong style={{ display: 'block', marginBottom: '2px' }}>
+                      Max slippage is too tight for this route
+                    </strong>
+                    The swap could not be filled within {slippage}%. Nothing was submitted.
+                    {suggestion !== null && (
+                      <button
+                        onClick={() => {
+                          setSlippage(suggestion)
+                          setSlippageTooTight(false)
+                        }}
+                        style={{ ...pillButtonStyle(false), marginLeft: '8px' }}
+                      >
+                        Use {suggestion}%
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })()}
+
+          {signedUntil !== null && !isComplete && (
+            <div className="alert alert-success" style={{ marginBottom: 'var(--space-5)' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                <span>🔑</span>
+                <span style={{ fontSize: 'var(--text-sm)' }}>
+                  Approval signed — valid for{' '}
+                  <strong>
+                    {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, '0')}
+                  </strong>
+                  . The numbers below keep refreshing; press <strong>Execute Close</strong> when you are
+                  happy and it submits with no further wallet prompt.
+                </span>
+              </div>
+            </div>
+          )}
+
           {!isSameAsset && deleveragerAvailable && !isComplete && (
             <div style={{ marginBottom: 'var(--space-5)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <h4 style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Estimated Output</h4>
                 <button
-                  onClick={() => setRefreshTick((t) => t + 1)}
+                  // Refresh exists to get prices newer than the ones on screen, so it has to
+                  // drop the quote-reuse window as well as re-run the effect.
+                  onClick={() => {
+                    clearQuoteCache()
+                    setRefreshTick((t) => t + 1)
+                  }}
                   disabled={isQuoting}
                   className="btn-ghost"
                   title="Re-fetch the latest quote and prices"
@@ -373,6 +676,16 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                       {formatAmount(preview.minDebtOut)} {preview.debtSymbol}
                     </span>
                   </div>
+                  {Number(preview.debtReturned) > 0 && (
+                    <div className="info-row">
+                      <span className="info-row-label" style={{ fontWeight: 600 }}>
+                        Sent to your wallet (est.)
+                      </span>
+                      <span className="info-row-value" style={{ color: 'var(--color-success)', fontWeight: 600 }}>
+                        {formatAmount(preview.debtReturned)} {preview.debtSymbol}
+                      </span>
+                    </div>
+                  )}
                   <div className="info-row">
                     <span className="info-row-label" style={{ fontWeight: 600 }}>Stays supplied in Aave (est.)</span>
                     <span className="info-row-value" style={{ color: 'var(--color-success)', fontWeight: 600 }}>
@@ -384,13 +697,53 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                     <span className="info-row-label">Route</span>
                     <span className="info-row-value">{preview.aggregator}</span>
                   </div>
+                  {preview.routeCostPercent != null && (
+                    <div className="info-row">
+                      <span className="info-row-label">Price impact &amp; fees</span>
+                      <span
+                        className="info-row-value"
+                        style={{
+                          color:
+                            preview.routeCostPercent > PRICE_IMPACT_HIGH_PERCENT
+                              ? 'var(--color-danger)'
+                              : undefined,
+                        }}
+                      >
+                        {preview.routeCostPercent < 0 ? '+' : '−'}
+                        {Math.abs(preview.routeCostPercent).toFixed(3)}%
+                      </span>
+                    </div>
+                  )}
+                  {preview.rate != null && (
+                    <div className="info-row">
+                      <span className="info-row-label">Rate</span>
+                      <span className="info-row-value">
+                        1 {preview.collateralSymbol} = {formatAmount(preview.rate)}{' '}
+                        {preview.debtSymbol}
+                      </span>
+                    </div>
+                  )}
+                  {preview.guaranteedRate != null && (
+                    <div className="info-row">
+                      <span className="info-row-label">
+                        Worst rate at {slippage}%
+                      </span>
+                      <span className="info-row-value">
+                        1 {preview.collateralSymbol} = {formatAmount(preview.guaranteedRate)}{' '}
+                        {preview.debtSymbol}
+                      </span>
+                    </div>
+                  )}
                   {!preview.guaranteed && (
                     <div style={{ marginTop: '10px', fontSize: 'var(--text-xs)', color: 'var(--color-danger)', lineHeight: 1.4 }}>
-                      ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, below your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt. Closing is blocked so you don't sign for a swap that would revert on-chain — lower the slippage to guarantee it.
+                      ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, short of the {formatAmount(preview.debtRequired)} {preview.debtSymbol} needed to cover your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt plus the interest accruing before this lands. Closing is blocked so you don't sign for a swap that would revert on-chain — lower the slippage to guarantee it.
                     </div>
                   )}
                   <p style={{ fontSize: 'var(--text-xs)', marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
-                    Only enough {preview.collateralSymbol} is swapped for the router's guaranteed output to repay the debt at {slippage}% slippage; the rest stays supplied in Aave. Estimated from your live balances.
+                    {collateralIn === undefined
+                      ? `Only enough ${preview.collateralSymbol} is swapped for the router's guaranteed output to repay the debt at ${slippage}% slippage; the rest stays supplied in Aave.`
+                      : `You chose how much ${preview.collateralSymbol} to swap. The debt is repaid first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
+                    Estimated from your live balances.
                   </p>
                 </div>
               ) : preview && !preview.covered ? (
@@ -398,7 +751,9 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                     <span>⚠️</span>
                     <span style={{ fontSize: 'var(--text-sm)' }}>
-                      Collateral won’t cover the debt — the position is underwater. Try a different collateral.
+                      {collateralIn === undefined
+                        ? 'Collateral won’t cover the debt — the position is underwater. Try a different collateral.'
+                        : 'That much collateral won’t cover the debt. Increase the amount, or clear it to let the swap size itself.'}
                     </span>
                   </div>
                 </div>
@@ -410,10 +765,25 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
                 // A deployment-level problem (paused, empty router allowlist, unsupported
                 // network) is not fixable by picking different collateral, so it must not
                 // render as "no route for this pair" — that sends users round in circles.
+                // The heading says which kind of problem this is; the message says what.
                 <div className="alert alert-warning" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                     <span>⚠️</span>
-                    <span style={{ fontSize: 'var(--text-sm)' }}>{previewError}</span>
+                    <div style={{ fontSize: 'var(--text-sm)' }}>
+                      <strong style={{ display: 'block', marginBottom: '2px' }}>
+                        {previewError.kind === 'deployment'
+                          ? 'One-click close is unavailable right now'
+                          : previewError.kind === 'wallet'
+                            ? 'Wallet not connected'
+                            : 'This pair cannot be closed'}
+                      </strong>
+                      {previewError.message}
+                      {previewError.kind === 'deployment' && (
+                        <span style={{ display: 'block', marginTop: '4px', opacity: 0.8 }}>
+                          Choosing different collateral will not help — this affects the whole deployment.
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -426,6 +796,14 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
 
           {uiMaxFee && uiMaxPriority && (
             <div style={{ padding: '12px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+              {estimatedFeeUsd > 0 && (
+                <div className="info-row">
+                  <span className="info-row-label" style={{ fontWeight: 600 }}>Network Fee (Estimated)</span>
+                  <span className="info-row-value" style={{ fontWeight: 600 }}>
+                    ~${estimatedFeeUsd.toFixed(2)}
+                  </span>
+                </div>
+              )}
               <div className="info-row">
                 <span className="info-row-label">Max Fee (Estimated)</span>
                 <span className="info-row-value">{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</span>
@@ -453,7 +831,14 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
         </div>
 
         <div className="modal-footer">
-          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+          <button
+            onClick={() => {
+              clearSignatures()
+              onClose()
+            }}
+            className="btn-secondary"
+            style={{ flex: 1, padding: '10px' }}
+          >
             {isComplete ? 'Done' : 'Cancel'}
           </button>
           <button
@@ -462,7 +847,11 @@ export function ClosePositionModal({ borrowedAsset, suppliedAssets, onClose }: C
             className="btn-primary"
             style={{ flex: 1, padding: '10px' }}
           >
-            {isProcessing ? 'Processing…' : 'Execute Close'}
+            {isProcessing
+              ? 'Processing…'
+              : isSameAsset || signedUntil !== null
+                ? 'Execute Close'
+                : 'Sign Approval'}
           </button>
         </div>
       </div>
