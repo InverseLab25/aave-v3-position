@@ -10,7 +10,7 @@ export interface StrategiesPermit {
 }
 
 /** Native Strategies revoke permit shape: {deadline, r, s, v}. */
-export interface StrategiesRevoke {
+export interface StrategiesSig {
   deadline: bigint;
   r: Hex;
   s: Hex;
@@ -29,7 +29,7 @@ export const ZERO_STRATEGIES_PERMIT: StrategiesPermit = {
 };
 
 /** Zeroed revoke permit: for positions without credit delegation. */
-export const ZERO_STRATEGIES_REVOKE: StrategiesRevoke = {
+export const ZERO_STRATEGIES_SIG: StrategiesSig = {
   deadline: 0n,
   r: ZERO_B32,
   s: ZERO_B32,
@@ -39,10 +39,10 @@ export const ZERO_STRATEGIES_REVOKE: StrategiesRevoke = {
 /** ABI of AaveV3Strategies (contract/src/AaveV3Strategies.sol). */
 export const aaveV3StrategiesAbi = parseAbi([
   "struct Permit { uint256 amount; uint256 deadline; bytes32 r; bytes32 s; uint8 v; }",
-  "struct RevokePermit { uint256 deadline; bytes32 r; bytes32 s; uint8 v; }",
-  "function openWithDebtMargin(address collateral, address debtAsset, uint256 supplyAmount, uint256 borrowAmount, uint256 marginAmount, uint256 minOut, address router, bytes swapData, Permit delegation)",
-  "function openWithCollateralMargin(address collateral, address debtAsset, uint256 flashAmount, uint256 borrowAmount, uint256 marginAmount, uint256 minOut, address router, bytes swapData, Permit delegation)",
-  "function closePositionWithPermit(address collateral, address debtAsset, uint256 collateralToWithdraw, uint256 debtRepay, uint256 minOut, address router, Permit permit, RevokePermit revokePermit, bytes swapData)",
+  "struct Sig { uint256 deadline; bytes32 r; bytes32 s; uint8 v; }",
+  "function openWithDebtMargin(address collateral, address debtAsset, uint256 supplyAmount, uint256 borrowAmount, uint256 marginAmount, uint256 minOut, address router, bytes swapData, Sig delegation)",
+  "function openWithCollateralMargin(address collateral, address debtAsset, uint256 flashAmount, uint256 borrowAmount, uint256 marginAmount, uint256 minOut, address router, bytes swapData, Sig delegation)",
+  "function closePositionWithPermit(address collateral, address debtAsset, uint256 collateralToWithdraw, uint256 debtRepay, uint256 minOut, address router, Permit permit, Sig revokePermit, bytes swapData)",
   "function allowedRouters(address router) view returns (bool)",
   "function getAllowedRouters() view returns (address[])",
   "function paused() view returns (uint256)",
@@ -73,7 +73,8 @@ export interface PlanOpenInput {
   minOut: bigint;
   router: Address;
   swapData: Hex;
-  delegation: StrategiesPermit;
+  /** Signed over exactly `borrowAmount`; deadline 0n = rely on an existing delegation. */
+  delegation: StrategiesSig;
 }
 
 export interface OpenPlan {
@@ -82,7 +83,7 @@ export interface OpenPlan {
   debtAsset: Address;
   /** What the wallet must have approved (and holds): tells the FE which allowance to check. */
   marginAsset: Address;
-  args: readonly [Address, Address, bigint, bigint, bigint, bigint, Address, Hex, StrategiesPermit];
+  args: readonly [Address, Address, bigint, bigint, bigint, bigint, Address, Hex, StrategiesSig];
 }
 
 /** AaveV3Strategies' pause is all-or-nothing: any nonzero `paused` halts BOTH legs. */

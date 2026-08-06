@@ -63,7 +63,11 @@ contract AaveV3Strategies is Ownable {
         uint8 v;
     }
 
-    struct RevokePermit {
+    /// @dev A bare {deadline, r, s, v} signature. deadline == 0 marks "skip — rely on
+    /// existing on-chain state" (a standing allowance for the close revoke, a standing
+    /// credit delegation for opens). The signed value is always implied by the call site,
+    /// never carried here: 0 for the revoke, `borrowAmount` for a delegation.
+    struct Sig {
         uint256 deadline;
         bytes32 r;
         bytes32 s;
@@ -92,7 +96,7 @@ contract AaveV3Strategies is Ownable {
         address router;
         uint256 collateralToWithdraw;
         uint256 minOut;
-        RevokePermit revokePermit;
+        Sig revokePermit;
         bytes swapData;
     }
 
@@ -172,7 +176,7 @@ contract AaveV3Strategies is Ownable {
     /// the flash loan. Margin is in the DEBT asset, so a stable-holding user opens a long with
     /// no pre-swap. Leftovers fold back into the position: surplus collateral is supplied,
     /// leftover debt asset repays the fresh debt. The swap output must cover both `minOut` and
-    /// `supplyAmount`; `delegation.amount` must cover `borrowAmount`.
+    /// `supplyAmount`; `delegation` must be signed over exactly `borrowAmount`.
     function openWithDebtMargin(
         address collateral,
         address debtAsset,
@@ -182,7 +186,7 @@ contract AaveV3Strategies is Ownable {
         uint256 minOut,
         address router,
         bytes calldata swapData,
-        Permit calldata delegation
+        Sig calldata delegation
     ) external {
         _preflight(collateral, debtAsset, router);
         if (supplyAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
@@ -190,18 +194,21 @@ contract AaveV3Strategies is Ownable {
         // Margin arrives in the debt asset and joins the borrowed funds in the callback's swap.
         debtAsset.safeTransferFrom(msg.sender, address(this), marginAmount);
 
-        if (delegation.amount != 0) {
+        // The delegation is signed over exactly `borrowAmount`, so the borrow consumes it in
+        // full — no residual borrowing power can be left on this contract. A signature over
+        // any other value fails recovery. deadline == 0 relies on an existing delegation.
+        if (delegation.deadline != 0) {
             ICreditDelegationToken(_reserveToken(GET_RESERVE_VDEBT_SEL, debtAsset)).delegationWithSig(
                 msg.sender,
                 address(this),
-                delegation.amount,
+                borrowAmount,
                 delegation.deadline,
                 delegation.v,
                 delegation.r,
                 delegation.s
             );
         }
-
+        
         _flash(
             collateral,
             supplyAmount,
@@ -225,7 +232,7 @@ contract AaveV3Strategies is Ownable {
     /// it joins the flash-borrowed collateral in one supply. Total supplied for the caller is
     /// `flashAmount + marginAmount` (plus any swap surplus). The borrow is swapped back into
     /// collateral to repay the flash; output must cover both `minOut` and `flashAmount`.
-    /// `delegation.amount` must cover `borrowAmount`.
+    /// `delegation` must be signed over exactly `borrowAmount`.
     function openWithCollateralMargin(
         address collateral,
         address debtAsset,
@@ -235,7 +242,7 @@ contract AaveV3Strategies is Ownable {
         uint256 minOut,
         address router,
         bytes calldata swapData,
-        Permit calldata delegation
+        Sig calldata delegation
     ) external {
         _preflight(collateral, debtAsset, router);
         if (flashAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
@@ -243,11 +250,14 @@ contract AaveV3Strategies is Ownable {
         // Margin is already the right asset — pull it here, supply it with the flash in the callback.
         collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
 
-        if (delegation.amount != 0) {
+        // The delegation is signed over exactly `borrowAmount`, so the borrow consumes it in
+        // full — no residual borrowing power can be left on this contract. A signature over
+        // any other value fails recovery. deadline == 0 relies on an existing delegation.
+        if (delegation.deadline != 0) {
             ICreditDelegationToken(_reserveToken(GET_RESERVE_VDEBT_SEL, debtAsset)).delegationWithSig(
                 msg.sender,
                 address(this),
-                delegation.amount,
+                borrowAmount,
                 delegation.deadline,
                 delegation.v,
                 delegation.r,
@@ -287,7 +297,7 @@ contract AaveV3Strategies is Ownable {
         uint256 minOut,
         address router,
         Permit calldata permit,
-        RevokePermit calldata revokePermit,
+        Sig calldata revokePermit,
         bytes calldata swapData
     ) external {
         _preflight(collateral, debtAsset, router);
