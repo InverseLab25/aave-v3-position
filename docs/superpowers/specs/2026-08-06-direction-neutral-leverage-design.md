@@ -26,13 +26,14 @@ This keeps one audit surface for four products (open/close × long/short).
 | API shape | One generic pair: `openPosition` / `closePosition`; direction implicit |
 | Margin asset | Always the collateral asset (stables when shorting, volatile when longing) |
 | Pair policy | No on-chain pair list; only `collateral != debtAsset` enforced |
-| Close scope | Full close only — flash-borrows the entire variable debt |
+| Close scope | Variable: `repayAmount` chooses how much debt to repay; `type(uint256).max` = full close. Flash = `min(repayAmount, currentDebt)` |
 | Partial opens | No special path; opening on top of an existing position is naturally additive |
 | Code base | Generalize the merged `AaveV3Leverage.sol` (approach A: rename + permit hoist) |
 | Code style | Solady style throughout (see below) |
 
-Approach C (partial closes, debt-asset margin) was considered and dropped by the user
-in favour of A.
+Approach C (partial closes, debt-asset margin) was initially dropped in favour of A;
+the variable `repayAmount` close was re-added during spec review. Debt-asset margin
+stays out of scope.
 
 ## External API
 
@@ -53,6 +54,7 @@ function openPosition(
 function closePosition(
     address collateral,
     address debtAsset,
+    uint256 repayAmount,           // debt to repay; max (or >= debt) = full close
     uint256 collateralToWithdraw,  // aTokens pulled; max = drain
     uint256 minOut,                // slippage bound on the swap
     address router,
@@ -110,6 +112,18 @@ Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
 - An unlisted reserve yields `address(0)` from the Pool getters, whose `balanceOf`
   reads 0 and trips `NoDebt` / `ZeroAmount` — no explicit listing check needed.
 
+## Partial close semantics
+
+- Entry point flash-borrows `min(repayAmount, currentDebt)`, so a stale frontend
+  quote can never over-borrow the flash loan.
+- When debt remains after the repay, `POOL.withdraw` runs Aave's health-factor
+  validation and reverts if `collateralToWithdraw` would leave the position
+  liquidatable — the contract adds no ratio math of its own.
+- The frontend is responsible for sizing `collateralToWithdraw` against the
+  remaining debt (worst-case swap rate), not against a full close.
+- Swap output above the flashed amount is returned to the user unchanged (existing
+  sweep logic).
+
 ## Code style — Solady
 
 - Solady deps only: `Ownable`, `SafeTransferLib`, `LibCall`, `EnumerableSetLib`.
@@ -130,10 +144,13 @@ Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
 3. New open-leg fork tests: long open (wstETH/USDC), short open (USDC collateral /
    wstETH debt — proves direction-neutrality on the identical code path), delegation
    consumption, `Expired` deadline, and open→close round trips in both directions.
-4. Fork tests require `RPC_URL` pointing at Ethereum mainnet.
+4. Partial-close fork tests: repay half the debt and withdraw a safe collateral
+   slice (position stays open and healthy); repay half but withdraw too much
+   (Aave HF check reverts); `repayAmount > debt` behaves as a full close.
+5. Fork tests require `RPC_URL` pointing at Ethereum mainnet.
 
 ## Out of scope
 
-Partial closes, margin in the debt asset or third tokens, on-chain pair allowlists,
+Margin in the debt asset or third tokens, on-chain pair allowlists,
 E-Mode, stable-rate debt (Aave V3.1 removed it), non-mainnet deployments, FE
 integration (separate spec).
