@@ -1,5 +1,40 @@
 import { parseAbi, type Address, type Hex } from "viem";
-import type { ContractPermit, ContractRevoke } from "./params";
+
+/** Native Strategies permit shape: {amount, deadline, r, s, v}. */
+export interface StrategiesPermit {
+  amount: bigint;
+  deadline: bigint;
+  r: Hex;
+  s: Hex;
+  v: number;
+}
+
+/** Native Strategies revoke permit shape: {deadline, r, s, v}. */
+export interface StrategiesRevoke {
+  deadline: bigint;
+  r: Hex;
+  s: Hex;
+  v: number;
+}
+
+const ZERO_B32 = `0x${"00".repeat(32)}` as const satisfies Hex;
+
+/** Zeroed delegation: contract skips delegationWithSig when amount == 0 (existing delegation). */
+export const ZERO_STRATEGIES_PERMIT: StrategiesPermit = {
+  amount: 0n,
+  deadline: 0n,
+  r: ZERO_B32,
+  s: ZERO_B32,
+  v: 0,
+};
+
+/** Zeroed revoke permit: for positions without credit delegation. */
+export const ZERO_STRATEGIES_REVOKE: StrategiesRevoke = {
+  deadline: 0n,
+  r: ZERO_B32,
+  s: ZERO_B32,
+  v: 0,
+};
 
 /** ABI of AaveV3Strategies (contract/src/AaveV3Strategies.sol). */
 export const aaveV3StrategiesAbi = parseAbi([
@@ -38,7 +73,7 @@ export interface PlanOpenInput {
   minOut: bigint;
   router: Address;
   swapData: Hex;
-  delegation: ContractPermit;
+  delegation: StrategiesPermit;
 }
 
 export interface OpenPlan {
@@ -47,7 +82,7 @@ export interface OpenPlan {
   debtAsset: Address;
   /** What the wallet must have approved (and holds): tells the FE which allowance to check. */
   marginAsset: Address;
-  args: readonly [Address, Address, bigint, bigint, bigint, bigint, Address, Hex, ContractPermit];
+  args: readonly [Address, Address, bigint, bigint, bigint, bigint, Address, Hex, StrategiesPermit];
 }
 
 /** Maps a UX mode onto the contract call: which entry point, and which asset plays which role. */
@@ -68,5 +103,3 @@ export function planOpen(p: PlanOpenInput): OpenPlan {
     ] as const,
   };
 }
-
-export type { ContractPermit, ContractRevoke };

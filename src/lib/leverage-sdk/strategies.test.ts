@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getAbiItem } from "viem";
-import { ZERO_PERMIT } from "./params";
-import { aaveV3StrategiesAbi, planOpen, type OpenMode } from "./strategies";
+import { encodeFunctionData, getAbiItem } from "viem";
+import { aaveV3StrategiesAbi, planOpen, ZERO_STRATEGIES_PERMIT, type OpenMode } from "./strategies";
 
 const X = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const; // WETH (volatile)
 const S = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const; // USDC (stable)
@@ -9,7 +8,7 @@ const R = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" as const;
 
 const base = {
   volatile: X, stable: S, flashAmount: 1n, borrowAmount: 2n, marginAmount: 3n,
-  minOut: 4n, router: R, swapData: "0x" as const, delegation: ZERO_PERMIT,
+  minOut: 4n, router: R, swapData: "0x" as const, delegation: ZERO_STRATEGIES_PERMIT,
 };
 
 it("both open functions exist with 9 inputs", () => {
@@ -34,7 +33,15 @@ describe("planOpen maps (direction, held asset) onto (function, roles)", () => {
       expect(plan.collateral).toBe(coll);
       expect(plan.debtAsset).toBe(debt);
       expect(plan.marginAsset).toBe(marginAsset);
-      expect(plan.args).toEqual([coll, debt, 1n, 2n, 3n, 4n, R, "0x", ZERO_PERMIT]);
+      expect(plan.args).toEqual([coll, debt, 1n, 2n, 3n, 4n, R, "0x", ZERO_STRATEGIES_PERMIT]);
     });
+  }
+});
+
+it("planOpen args encode against the Strategies ABI for every mode", () => {
+  for (const mode of [1, 2, 3, 4] as const) {
+    const plan = planOpen({ ...base, mode });
+    const data = encodeFunctionData({ abi: aaveV3StrategiesAbi, functionName: plan.functionName, args: plan.args });
+    expect(data.length).toBeGreaterThan(10);
   }
 });
