@@ -406,13 +406,7 @@ contract AaveV3Strategies is Ownable {
 
         // 3. Swap everything we hold in the debt asset — the borrow plus the user's margin —
         //    back into collateral to repay the flash loan.
-        //    Approve exactly what the swap calldata was quoted for — the borrow, plus the
-        //    margin on the debt-margin flow. The router pulls its calldata's own amountIn
-        //    regardless of the approval, so a balance-based approval would only widen on
-        //    stray donations without changing the swap; anything the router leaves behind
-        //    still lands in the leftover branch below.
-        uint256 swapIn = p.borrowAmount;
-        if (p.mode != MODE_OPEN_COLL) swapIn += p.margin;
+        uint256 swapIn = debtAsset.balanceOf(address(this));
         _swap(debtAsset, p.router, swapIn, p.swapData);
 
         uint256 received = collateral.balanceOf(address(this));
