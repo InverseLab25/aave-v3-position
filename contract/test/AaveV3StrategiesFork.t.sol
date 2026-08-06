@@ -1,0 +1,231 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.34;
+
+import {Test} from "forge-std/Test.sol";
+import {AaveV3Strategies} from "../src/AaveV3Strategies.sol";
+
+interface IPoolFullS {
+    function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
+    function borrow(address asset, uint256 amount, uint256 interestRateMode, uint16 referralCode, address onBehalfOf)
+        external;
+}
+
+interface IDataProviderS {
+    function getReserveTokensAddresses(address asset)
+        external
+        view
+        returns (address aToken, address stableDebt, address variableDebt);
+}
+
+interface IERC20LikeS {
+    function balanceOf(address) external view returns (uint256);
+    function approve(address, uint256) external returns (bool);
+    function transfer(address, uint256) external returns (bool);
+    function transferFrom(address, address, uint256) external returns (bool);
+    function allowance(address, address) external view returns (uint256);
+}
+
+interface ITokenSigS {
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+    function nonces(address) external view returns (uint256);
+}
+
+/// @dev Pulls the exact allowance of `tokenIn` and pays out a fixed `amountOut` of `tokenOut`.
+contract MockRouterS {
+    function swap(address tokenIn, address tokenOut, uint256 amountOut) external {
+        uint256 amountIn = IERC20LikeS(tokenIn).allowance(msg.sender, address(this));
+        IERC20LikeS(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20LikeS(tokenOut).transfer(msg.sender, amountOut);
+    }
+}
+
+/// @dev Malicious router that re-enters closePositionWithPermit mid-swap; the transient
+///      `_pendingDataHash` guard must stop it.
+contract MockRouterReenterS {
+    function swap(address strategies, address collateral, address debtAsset) external {
+        AaveV3Strategies.Permit memory p;
+        AaveV3Strategies.RevokePermit memory rp;
+        AaveV3Strategies(strategies).closePositionWithPermit(
+            collateral, debtAsset, 1, 1, 1, address(this), p, rp, hex""
+        );
+    }
+}
+
+contract AaveV3StrategiesForkTest is Test {
+    address constant POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    address constant DATA_PROVIDER = 0x0a16f2FCC0D44FaE41cc54e079281D84A363bECD;
+    address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+
+    bytes32 constant PERMIT_TYPEHASH =
+        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+    bytes32 constant DELEGATION_WITH_SIG_TYPEHASH =
+        keccak256("DelegationWithSig(address delegatee,uint256 value,uint256 nonce,uint256 deadline)");
+
+    AaveV3Strategies strat;
+    MockRouterS router;
+
+    uint256 userPk = 0xA11CE;
+    address user;
+    address aWeth;
+    address vDebtUsdc;
+
+    function setUp() public {
+        vm.createSelectFork(vm.envString("RPC_URL"));
+
+        user = vm.addr(userPk);
+        strat = new AaveV3Strategies(address(this));
+        router = new MockRouterS();
+        strat.setRouters(_one(address(router)), true);
+
+        (aWeth,,) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(WETH);
+        (,, vDebtUsdc) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+
+        // Real Aave position: supply 10 WETH, borrow 1,000 USDC.
+        deal(WETH, user, 10 ether);
+        vm.startPrank(user);
+        IERC20LikeS(WETH).approve(POOL, 10 ether);
+        IPoolFullS(POOL).supply(WETH, 10 ether, user, 0);
+        IPoolFullS(POOL).borrow(USDC, 1_000e6, 2, 0, user);
+        vm.stopPrank();
+    }
+
+    /// @dev Full close with the permit pair: debt cleared, collateral drained, excess returned.
+    function test_Close_FullWithPermit() public {
+        uint256 debt = IERC20LikeS(vDebtUsdc).balanceOf(user);
+        uint256 debtOut = debt + 50e6;
+        deal(USDC, address(router), debtOut);
+
+        uint256 collAmount = IERC20LikeS(aWeth).balanceOf(user);
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory permit =
+            _signPermit(user, address(strat), collAmount + collAmount / 100, deadline);
+        AaveV3Strategies.RevokePermit memory revoke = _signRevoke(user, address(strat), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, debtOut));
+
+        uint256 usdcBefore = IERC20LikeS(USDC).balanceOf(user);
+
+        vm.prank(user);
+        strat.closePositionWithPermit(
+            WETH, USDC, type(uint256).max, type(uint256).max, debt, address(router), permit, revoke, swapData
+        );
+
+        assertEq(IERC20LikeS(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
+        assertLt(IERC20LikeS(aWeth).balanceOf(user), 1e12, "collateral dust remains");
+        assertEq(IERC20LikeS(aWeth).allowance(user, address(strat)), 0, "residual allowance");
+        assertEq(IERC20LikeS(USDC).balanceOf(user) - usdcBefore, debtOut - debt, "excess not returned");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+    }
+
+    /// @dev Partial close: repay half, pull 1 WETH; position stays open and healthy.
+    function test_Close_PartialRepay() public {
+        uint256 debt = IERC20LikeS(vDebtUsdc).balanceOf(user);
+        uint256 repay = debt / 2;
+        uint256 debtOut = repay + 10e6;
+        deal(USDC, address(router), debtOut);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory permit = _signPermit(user, address(strat), 1 ether, deadline);
+        AaveV3Strategies.RevokePermit memory revoke = _signRevoke(user, address(strat), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, debtOut));
+
+        vm.prank(user);
+        strat.closePositionWithPermit(WETH, USDC, 1 ether, repay, repay, address(router), permit, revoke, swapData);
+
+        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(user), debt - repay, 1, "wrong remaining debt");
+        assertGt(IERC20LikeS(aWeth).balanceOf(user), 8 ether, "too much collateral gone");
+    }
+
+    /// @dev Open a long with margin + delegation; aTokens land on the user, debt = flash amount.
+    function test_Open_Long() public {
+        address openUser = vm.addr(0xB0B);
+        uint256 margin = 1 ether;
+        uint256 flashAmount = 2_000e6;
+        uint256 wethOut = 0.6 ether;
+        deal(WETH, openUser, margin);
+        deal(WETH, address(router), wethOut);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory delegation =
+            _signDelegation(0xB0B, openUser, vDebtUsdc, flashAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (USDC, WETH, wethOut));
+
+        vm.prank(openUser);
+        IERC20LikeS(WETH).approve(address(strat), margin);
+        vm.prank(openUser);
+        strat.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), swapData, delegation);
+
+        assertGe(IERC20LikeS(aWeth).balanceOf(openUser), margin + wethOut - 1, "aWETH not supplied");
+        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(openUser), flashAmount, 2, "debt mismatch");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+    }
+
+    /// @dev Margin is mandatory: zero margin trips ZeroAmount at entry.
+    function test_Open_RevertsWhen_ZeroMargin() public {
+        AaveV3Strategies.Permit memory z;
+        vm.prank(user);
+        vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
+        strat.openPosition(WETH, USDC, 0, 1e6, 1, address(router), hex"", z);
+    }
+
+    /// @dev A router cannot re-enter the close entry point mid-swap.
+    function test_Close_RouterCannotReenter() public {
+        MockRouterReenterS evil = new MockRouterReenterS();
+        strat.setRouters(_one(address(evil)), true);
+
+        uint256 debt = IERC20LikeS(vDebtUsdc).balanceOf(user);
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory permit = _signPermit(user, address(strat), 1 ether, deadline);
+        AaveV3Strategies.RevokePermit memory revoke = _signRevoke(user, address(strat), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterReenterS.swap, (address(strat), WETH, USDC));
+
+        vm.prank(user);
+        // The inner call reverts Reentrancy(); the router bubble makes the outer call revert too.
+        vm.expectRevert();
+        strat.closePositionWithPermit(WETH, USDC, 1 ether, debt, 1, address(evil), permit, revoke, swapData);
+    }
+
+    function _one(address r) internal pure returns (address[] memory arr) {
+        arr = new address[](1);
+        arr[0] = r;
+    }
+
+    function _signPermit(address owner, address spender, uint256 value, uint256 deadline)
+        internal
+        view
+        returns (AaveV3Strategies.Permit memory)
+    {
+        uint256 nonce = ITokenSigS(aWeth).nonces(owner);
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, value, nonce, deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", ITokenSigS(aWeth).DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(userPk, digest);
+        return AaveV3Strategies.Permit({amount: value, deadline: deadline, r: r, s: s, v: v});
+    }
+
+    function _signRevoke(address owner, address spender, uint256 deadline)
+        internal
+        view
+        returns (AaveV3Strategies.RevokePermit memory)
+    {
+        uint256 nonce = ITokenSigS(aWeth).nonces(owner) + 1;
+        bytes32 structHash = keccak256(abi.encode(PERMIT_TYPEHASH, owner, spender, uint256(0), nonce, deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", ITokenSigS(aWeth).DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(userPk, digest);
+        return AaveV3Strategies.RevokePermit({deadline: deadline, r: r, s: s, v: v});
+    }
+
+    function _signDelegation(uint256 pk, address owner, address debtToken, uint256 value, uint256 deadline)
+        internal
+        view
+        returns (AaveV3Strategies.Permit memory)
+    {
+        uint256 nonce = ITokenSigS(debtToken).nonces(owner);
+        bytes32 structHash =
+            keccak256(abi.encode(DELEGATION_WITH_SIG_TYPEHASH, address(strat), value, nonce, deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", ITokenSigS(debtToken).DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return AaveV3Strategies.Permit({amount: value, deadline: deadline, r: r, s: s, v: v});
+    }
+}
