@@ -29,15 +29,6 @@ interface IPool {
     function withdraw(address asset, uint256 amount, address to) external returns (uint256);
 }
 
-interface IERC20 {
-    function allowance(address owner, address spender) external view returns (uint256);
-}
-
-interface IATokenPermit {
-    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
-        external;
-}
-
 interface ICreditDelegationToken {
     function delegationWithSig(
         address delegator,
@@ -88,7 +79,8 @@ contract AaveV3Strategies is Ownable {
         address debtAsset;
         address router;
         uint256 margin;
-        uint256 minCollateralOut;
+        uint256 borrowAmount;
+        uint256 minOut;
         bytes swapData;
     }
 
@@ -170,24 +162,30 @@ contract AaveV3Strategies is Ownable {
                             ENTRY POINTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Opens a leveraged position. `marginAmount` of `collateral` (non-zero, pulled via a
-    /// prior approval) plus `flashAmount` of `debtAsset` flash borrowed and swapped are supplied
-    /// for the caller, who ends up owing exactly `flashAmount`. `delegation` must delegate at
-    /// least `flashAmount` of borrowing power on the variable debt token of `debtAsset`.
+    /// @dev Opens a leveraged position with EXACT exposure: flash-borrows `supplyAmount` of
+    /// `collateral` and supplies it straight to the caller's account, borrows `borrowAmount` of
+    /// `debtAsset` on the caller's credit (Aave's LTV validation bounds it), then swaps the
+    /// borrow plus the caller's `marginAmount` of `debtAsset` back into `collateral` to repay
+    /// the flash loan. Margin is in the DEBT asset, so a stable-holding user opens a long with
+    /// no pre-swap. Leftovers fold back into the position: surplus collateral is supplied,
+    /// leftover debt asset repays the fresh debt. The swap output must cover both `minOut` and
+    /// `supplyAmount`; `delegation.amount` must cover `borrowAmount`.
     function openPosition(
         address collateral,
         address debtAsset,
+        uint256 supplyAmount,
+        uint256 borrowAmount,
         uint256 marginAmount,
-        uint256 flashAmount,
-        uint256 minCollateralOut,
+        uint256 minOut,
         address router,
         bytes calldata swapData,
         Permit calldata delegation
     ) external {
         _preflight(collateral, debtAsset, router);
-        if (flashAmount == 0 || minCollateralOut == 0 || marginAmount == 0) revert ZeroAmount();
+        if (supplyAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
 
-        collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
+        // Margin arrives in the debt asset and joins the borrowed funds in the callback's swap.
+        debtAsset.safeTransferFrom(msg.sender, address(this), marginAmount);
 
         if (delegation.amount != 0) {
             ICreditDelegationToken(_reserveToken(GET_RESERVE_VDEBT_SEL, debtAsset)).delegationWithSig(
@@ -202,8 +200,8 @@ contract AaveV3Strategies is Ownable {
         }
 
         _flash(
-            debtAsset,
-            flashAmount,
+            collateral,
+            supplyAmount,
             abi.encode(
                 OpenParam({
                     mode: MODE_OPEN,
@@ -212,7 +210,8 @@ contract AaveV3Strategies is Ownable {
                     debtAsset: debtAsset,
                     router: router,
                     margin: marginAmount,
-                    minCollateralOut: minCollateralOut,
+                    borrowAmount: borrowAmount,
+                    minOut: minOut,
                     swapData: swapData
                 })
             )
@@ -237,7 +236,6 @@ contract AaveV3Strategies is Ownable {
     ) external {
         _preflight(collateral, debtAsset, router);
 
-        
         if (debtRepay == 0 || collateralToWithdraw == 0 || minOut == 0) revert ZeroAmount();
 
         // An unlisted reserve yields address(0) here, whose `balanceOf` reads as 0 and trips NoDebt.
@@ -251,16 +249,13 @@ contract AaveV3Strategies is Ownable {
 
         if (collateralToWithdraw == type(uint256).max) {
             collateralToWithdraw = aToken.balanceOf(msg.sender);
-            if (collateralToWithdraw == 0) revert ZeroAmount();
         }
 
         // Consume the permit up front: a bad or front-run signature reverts before the flash
         // loan and repay are paid for. `amount` 0 relies on a standing allowance instead, and
         // must ship with `revokePermit.deadline` 0 (nothing granted, nothing to clear).
         if (permit.amount != 0) {
-            IATokenPermit(aToken).permit(
-                msg.sender, address(this), permit.amount, permit.deadline, permit.v, permit.r, permit.s
-            );
+            _permit(aToken, permit.amount, permit.deadline, permit.v, permit.r, permit.s);
         }
 
         _flash(
@@ -269,7 +264,7 @@ contract AaveV3Strategies is Ownable {
             abi.encode(
                 CloseParam({
                     mode: MODE_CLOSE,
-                    user: msg.sender, // bound to the caller — the callback can never act for anyone else
+                    user: msg.sender, 
                     collateral: collateral,
                     debtAsset: debtAsset,
                     router: router,
@@ -328,30 +323,52 @@ contract AaveV3Strategies is Ownable {
         address collateral = p.collateral;
         address debtAsset = p.debtAsset;
 
-        // 1. Swap the flash-borrowed debt asset into collateral.
-        uint256 beforeBalance = collateral.balanceOf(address(this));
-        _swap(debtAsset, p.router, assets, p.swapData);
-        uint256 afterBalance = collateral.balanceOf(address(this));
+        // 1. Supply the flash-borrowed collateral straight to the user's account — the exact
+        //    exposure they asked for.
+        collateral.safeApproveWithRetry(address(POOL), assets);
+        POOL.supply(collateral, assets, user, REFERRAL_NONE);
 
-        uint256 received = afterBalance - beforeBalance;
-        uint256 minOut = p.minCollateralOut;
+        // 2. Borrow on the user's credit against the collateral supplied above. Aave's
+        //    LTV/health-factor validation runs inside borrow(), so an over-levered request
+        //    reverts the whole transaction.
+        POOL.borrow(debtAsset, p.borrowAmount, VARIABLE_RATE, REFERRAL_NONE, user);
+
+        // 3. Swap everything we hold in the debt asset — the borrow plus the user's margin —
+        //    back into collateral to repay the flash loan.
+        uint256 swapIn = debtAsset.balanceOf(address(this));
+        _swap(debtAsset, p.router, swapIn, p.swapData);
+
+        uint256 received = collateral.balanceOf(address(this));
+        uint256 minOut = p.minOut;
         if (received < minOut) revert InsufficientOutput(received, minOut);
+        // The flash repayment is the hard floor under any user-chosen minOut.
+        if (received < assets) revert InsufficientOutput(received, assets);
 
-        // 2. Supply everything we hold — margin plus swap output — straight to the user's account.
-        _approveMax(collateral, address(POOL), afterBalance);
-        POOL.supply(collateral, afterBalance, user, REFERRAL_NONE);
+        // 4. Let Morpho pull the repayment.
+        collateral.safeApproveWithRetry(address(MORPHO), assets);
 
-        // 3. Borrow exactly the flash amount on the user's credit; Aave's health-factor check
-        //    runs inside borrow(), so an over-levered request reverts the whole transaction.
-        POOL.borrow(debtAsset, assets, VARIABLE_RATE, REFERRAL_NONE, user);
+        // 5. Fold leftovers back into the position rather than dusting the wallet: surplus
+        //    collateral is supplied, leftover debt asset repays the fresh debt on the user's
+        //    behalf. Repay caps at the outstanding debt; anything beyond goes to the wallet.
+        uint256 surplus = received - assets;
+        if (surplus != 0) {
+            collateral.safeApproveWithRetry(address(POOL), surplus);
+            POOL.supply(collateral, surplus, user, REFERRAL_NONE);
+        }
 
-        // 4. Let Morpho pull the repayment, then return whatever the router left unspent.
-        _approveMax(debtAsset, address(MORPHO), assets);
+        uint256 debtBorrowed = p.borrowAmount;
+        uint256 leftover = debtAsset.balanceOf(address(this));
+        if (leftover != 0) {
+            debtAsset.safeApproveWithRetry(address(POOL), leftover);
+            uint256 repaid = POOL.repay(debtAsset, leftover, VARIABLE_RATE, user);
+            debtBorrowed -= repaid;
+            if (repaid != leftover) {
+                debtAsset.safeApproveWithRetry(address(POOL), 0);
+                debtAsset.safeTransfer(user, leftover - repaid);
+            }
+        }
 
-        uint256 leftover = debtAsset.balanceOf(address(this)) - assets;
-        if (leftover != 0) debtAsset.safeTransfer(user, leftover);
-
-        emit PositionOpened(user, collateral, debtAsset, p.margin, afterBalance, assets);
+        emit PositionOpened(user, collateral, debtAsset, p.margin, assets + surplus, debtBorrowed);
     }
 
     function _close(uint256 assets, uint256 params) private {
@@ -363,23 +380,26 @@ contract AaveV3Strategies is Ownable {
         address user = p.user;
         address collateral = p.collateral;
         address debtAsset = p.debtAsset;
+
         address aToken = _reserveToken(GET_RESERVE_ATOKEN_SEL, collateral);
 
         // 1. Repay Aave debt to unlock the collateral.
-        _approveMax(debtAsset, address(POOL), assets);
+        debtAsset.safeApproveWithRetry(address(POOL), assets);
         uint256 debtRepaid = POOL.repay(debtAsset, assets, VARIABLE_RATE, user);
+        if (debtRepaid != assets) debtAsset.safeApproveWithRetry(address(POOL), 0);
 
         // 2. Pull the aTokens to swap — the amount was resolved and the permit consumed at
         //    entry. Aave's finalizeTransfer hook enforces the post-repay health factor here.
         aToken.safeTransferFrom(user, address(this), p.collateralToWithdraw);
-
-        // deadline == 0 marks "no permit was granted" (standing allowance), nothing to clear.
+        
+        // Clear the residual allowance from the over-approved grant — but only when a permit
+        // was granted this tx. deadline == 0 marks the standing-allowance path, where a zeroed
+        // signature would fail ecrecover and brick the close with INVALID_SIGNATURE.
         if (p.revokePermit.deadline != 0) {
-            IATokenPermit(aToken).permit(
-                user, address(this), 0, p.revokePermit.deadline, p.revokePermit.v, p.revokePermit.r, p.revokePermit.s
-            );
+            _permitZero(aToken, user, p.revokePermit.deadline, p.revokePermit.v, p.revokePermit.r, p.revokePermit.s);
         }
 
+        // withdraw all collateral tokens (pool has limited atoken balance)
         uint256 collateralAmount = POOL.withdraw(collateral, type(uint256).max, address(this));
 
         // 3. Swap the collateral back into the debt asset.
@@ -395,7 +415,7 @@ contract AaveV3Strategies is Ownable {
 
         // 5. Let Morpho pull the repayment; return the excess and any unswapped collateral,
         //    leaving this contract with zero balances.
-        _approveMax(debtAsset, address(MORPHO), assets);
+        debtAsset.safeApproveWithRetry(address(MORPHO), assets);
 
         uint256 returned = afterBalance - assets;
         if (returned != 0) debtAsset.safeTransfer(user, returned);
@@ -434,14 +454,6 @@ contract AaveV3Strategies is Ownable {
         tokenIn.safeApproveWithRetry(router, 0);
     }
 
-    /// @dev Standing max allowance for the two trusted, hardcoded spenders (Morpho, Pool) —
-    /// never a router. An allowance read is far cheaper than an SSTORE per call.
-    function _approveMax(address token, address spender, uint256 amount) private {
-        if (IERC20(token).allowance(address(this), spender) < amount) {
-            token.safeApproveWithRetry(spender, type(uint256).max);
-        }
-    }
-
     /// @dev Raw staticcall to a Pool reserve-token getter; `sel` is the 4-byte selector,
     /// right-aligned. Uses scratch space only. A revert bubbles up; a short or dirty
     /// (non-address) return reverts empty.
@@ -457,6 +469,49 @@ contract AaveV3Strategies is Ownable {
             result := mload(0x00)
             if or(lt(returndatasize(), 0x20), shr(160, result)) { revert(0x00, 0x00) }
         }
+    }
+
+    function _permit(address target, uint256 amount, uint256 deadline, uint8 v,bytes32 r, bytes32 s) internal {
+            assembly("memory-safe") {
+                let m := mload(0x40)
+
+                mstore(m, 0xd505accf)
+                mstore(add(m, 0x20), caller())
+                mstore(add(m, 0x40), address())
+                mstore(add(m, 0x60), amount)
+                mstore(add(m, 0x80), deadline)
+                mstore(add(m, 0xa0), v)
+                mstore(add(m, 0xc0), r)
+                mstore(add(m, 0xe0), s)
+
+                if iszero(call(gas(), target, 0, add(m,0x1c), 0xe4, codesize(), 0x00)) {
+                    // Bubble up the revert if the call reverts.
+                    returndatacopy(0x00, 0x00, returndatasize())
+                    revert(0x00, returndatasize())
+                }
+            }
+
+    }
+
+      function _permitZero(address target, address user, uint256 deadline, uint8 v,bytes32 r, bytes32 s) internal {
+            assembly("memory-safe") {
+                let m := mload(0x40)
+
+                mstore(m, 0xd505accf)
+                mstore(add(m, 0x20), user)
+                mstore(add(m, 0x40), address())
+                mstore(add(m, 0x60), 0)
+                mstore(add(m, 0x80), deadline)
+                mstore(add(m, 0xa0), v)
+                mstore(add(m, 0xc0), r)
+                mstore(add(m, 0xe0), s)
+
+                if iszero(call(gas(), target, 0, add(m,0x1c), 0xe4, codesize(), 0x00)) {
+                    // Bubble up the revert if the call reverts.
+                    returndatacopy(0x00, 0x00, returndatasize())
+                    revert(0x00, returndatasize())
+                }
+            }
     }
 
     /*//////////////////////////////////////////////////////////////

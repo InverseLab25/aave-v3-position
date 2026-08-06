@@ -39,6 +39,15 @@ contract MockRouterS {
     }
 }
 
+/// @dev Pulls a FIXED amountIn (less than approved) and pays a fixed amountOut — mirrors an
+///      aggregator that consumes only requiredIn and leaves the cushion behind.
+contract MockRouterFixedPullS {
+    function swap(address tokenIn, uint256 amountIn, address tokenOut, uint256 amountOut) external {
+        IERC20LikeS(tokenIn).transferFrom(msg.sender, address(this), amountIn);
+        IERC20LikeS(tokenOut).transfer(msg.sender, amountOut);
+    }
+}
+
 /// @dev Malicious router that re-enters closePositionWithPermit mid-swap; the transient
 ///      `_pendingDataHash` guard must stop it.
 contract MockRouterReenterS {
@@ -137,29 +146,67 @@ contract AaveV3StrategiesForkTest is Test {
         assertGt(IERC20LikeS(aWeth).balanceOf(user), 8 ether, "too much collateral gone");
     }
 
-    /// @dev Open a long with margin + delegation; aTokens land on the user, debt = flash amount.
-    function test_Open_Long() public {
+    /// @dev Open with EXACT exposure: flash-supplied collateral, debt-asset margin, one swap.
+    ///      Surplus WETH above the flash repayment is supplied for the user too.
+    function test_Open_ExactSupply_UsdcMargin() public {
         address openUser = vm.addr(0xB0B);
-        uint256 margin = 1 ether;
-        uint256 flashAmount = 2_000e6;
-        uint256 wethOut = 0.6 ether;
-        deal(WETH, openUser, margin);
+        uint256 supplyAmount = 1.5 ether;
+        uint256 borrowAmount = 2_000e6;
+        uint256 margin = 1_050e6;      // USDC margin — no WETH in the wallet at all
+        uint256 wethOut = 1.52 ether;  // covers the 1.5 flash + 0.02 surplus
+        deal(USDC, openUser, margin);
         deal(WETH, address(router), wethOut);
 
         uint256 deadline = block.timestamp + 1200;
         AaveV3Strategies.Permit memory delegation =
-            _signDelegation(0xB0B, openUser, vDebtUsdc, flashAmount, deadline);
+            _signDelegation(0xB0B, openUser, vDebtUsdc, borrowAmount, deadline);
         bytes memory swapData = abi.encodeCall(MockRouterS.swap, (USDC, WETH, wethOut));
 
         vm.prank(openUser);
-        IERC20LikeS(WETH).approve(address(strat), margin);
+        IERC20LikeS(USDC).approve(address(strat), margin);
         vm.prank(openUser);
-        strat.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), swapData, delegation);
+        strat.openPosition(
+            WETH, USDC, supplyAmount, borrowAmount, margin, supplyAmount, address(router), swapData, delegation
+        );
 
-        assertGe(IERC20LikeS(aWeth).balanceOf(openUser), margin + wethOut - 1, "aWETH not supplied");
-        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(openUser), flashAmount, 2, "debt mismatch");
+        // Exact exposure + surplus folded in: 1.5 supplied for the flash, 0.02 surplus supplied.
+        // Two supplies (flash amount + surplus) each round a wei down in scaled-balance math.
+        assertGe(IERC20LikeS(aWeth).balanceOf(openUser), wethOut - 2, "aWETH not supplied");
+        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(openUser), borrowAmount, 2, "debt mismatch");
         assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
         assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+    }
+
+    /// @dev Router pulls less USDC than approved; the leftover repays the user's fresh debt
+    ///      on their behalf instead of dusting the wallet.
+    function test_Open_LeftoverUsdcRepaysDebt() public {
+        MockRouterFixedPullS fixedRouter = new MockRouterFixedPullS();
+        strat.setRouters(_one(address(fixedRouter)), true);
+
+        address openUser = vm.addr(0xB0B);
+        uint256 supplyAmount = 1.5 ether;
+        uint256 borrowAmount = 2_000e6;
+        uint256 margin = 1_050e6;
+        uint256 pulled = 3_000e6;      // router consumes 3,000 of the 3,050 approved
+        deal(USDC, openUser, margin);
+        deal(WETH, address(fixedRouter), supplyAmount);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory delegation =
+            _signDelegation(0xB0B, openUser, vDebtUsdc, borrowAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterFixedPullS.swap, (USDC, pulled, WETH, supplyAmount));
+
+        vm.prank(openUser);
+        IERC20LikeS(USDC).approve(address(strat), margin);
+        vm.prank(openUser);
+        strat.openPosition(
+            WETH, USDC, supplyAmount, borrowAmount, margin, supplyAmount, address(fixedRouter), swapData, delegation
+        );
+
+        // 50 USDC leftover repaid the debt: 2,000 borrowed - 50 = 1,950 remaining.
+        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(openUser), borrowAmount - 50e6, 2, "leftover not repaid");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
     }
 
     /// @dev Margin is mandatory: zero margin trips ZeroAmount at entry.
@@ -167,7 +214,30 @@ contract AaveV3StrategiesForkTest is Test {
         AaveV3Strategies.Permit memory z;
         vm.prank(user);
         vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
-        strat.openPosition(WETH, USDC, 0, 1e6, 1, address(router), hex"", z);
+        strat.openPosition(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
+    }
+
+    /// @dev Standing-allowance close: zeroed Permit AND zeroed RevokePermit — the callback must
+    ///      NOT attempt a zero-sig revoke (it would revert INVALID_SIGNATURE and brick the path).
+    function test_Close_StandingAllowance_NoPermit() public {
+        uint256 debt = IERC20LikeS(vDebtUsdc).balanceOf(user);
+        uint256 debtOut = debt + 10e6;
+        deal(USDC, address(router), debtOut);
+
+        vm.prank(user);
+        IERC20LikeS(aWeth).approve(address(strat), 1.1 ether);
+
+        AaveV3Strategies.Permit memory noPermit;
+        AaveV3Strategies.RevokePermit memory noRevoke;
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, debtOut));
+
+        vm.prank(user);
+        strat.closePositionWithPermit(
+            WETH, USDC, 1 ether, debt, debt, address(router), noPermit, noRevoke, swapData
+        );
+
+        assertEq(IERC20LikeS(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
+        assertApproxEqAbs(IERC20LikeS(aWeth).allowance(user, address(strat)), 0.1 ether, 2, "allowance wrong");
     }
 
     /// @dev A router cannot re-enter the close entry point mid-swap.
