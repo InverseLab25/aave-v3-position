@@ -6,7 +6,7 @@ describe("aaveV3LeverageAbi", () => {
   it("exposes openPosition and closePosition with the deployed shapes", () => {
     const open = getAbiItem({ abi: aaveV3LeverageAbi, name: "openPosition" });
     const close = getAbiItem({ abi: aaveV3LeverageAbi, name: "closePosition" });
-    expect(open && "inputs" in open && open.inputs).toHaveLength(10);
+    expect(open && "inputs" in open && open.inputs).toHaveLength(8);
     expect(close && "inputs" in close && close.inputs).toHaveLength(9);
   });
 

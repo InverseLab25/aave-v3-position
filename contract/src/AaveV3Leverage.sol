@@ -113,9 +113,6 @@ contract AaveV3Leverage is Ownable {
     /// @dev The requested direction is paused.
     error Paused();
 
-    /// @dev The transaction was mined after its deadline.
-    error Expired();
-
     /// @dev The router is not on the owner's allowlist.
     error RouterNotAllowed();
 
@@ -252,13 +249,13 @@ contract AaveV3Leverage is Ownable {
     /*                        ENTRY POINTS                        */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev Opens a leveraged position for the caller. `marginAmount` of `collateral` is pulled from
-    /// the caller (may be 0 to lever an existing position), `flashAmount` of `debtAsset` is flash
-    /// borrowed and swapped into collateral, and the caller ends up owing exactly `flashAmount`
-    /// to Aave. `swapData` must swap `flashAmount` of `debtAsset` into `collateral` with this
-    /// contract as the recipient. `delegation` must delegate at least `flashAmount` of borrowing
-    /// power on the variable debt token of `debtAsset` — sign the exact amount per transaction
-    /// rather than leaving a standing max delegation.
+    /// @dev Opens a leveraged position for the caller. `marginAmount` of `collateral` (non-zero,
+    /// pulled via a prior approval — no permit on the open leg) plus `flashAmount` of `debtAsset`
+    /// flash borrowed and swapped into collateral are supplied for the caller, who ends up owing
+    /// exactly `flashAmount` to Aave. `swapData` must swap `flashAmount` of `debtAsset` into
+    /// `collateral` with this contract as the recipient. `delegation` must delegate at least
+    /// `flashAmount` of borrowing power on the variable debt token of `debtAsset` — sign the
+    /// exact amount per transaction rather than leaving a standing max delegation.
     function openPosition(
         address collateral,
         address debtAsset,
@@ -266,30 +263,14 @@ contract AaveV3Leverage is Ownable {
         uint256 flashAmount,
         uint256 minCollateralOut,
         address router,
-        uint256 deadline,
         bytes calldata swapData,
-        Permit calldata marginPermit,
         Permit calldata delegation
     ) external {
         _preflight(PAUSE_OPEN, collateral, debtAsset, router);
-        if (block.timestamp > deadline) revert Expired();
-        if (flashAmount == 0 || minCollateralOut == 0) revert ZeroAmount();
+        if (flashAmount == 0 || minCollateralOut == 0 || marginAmount == 0) revert ZeroAmount();
 
         // 1. Pull the caller's margin up front, so the callback only has to supply.
-        if (marginAmount != 0) {
-            if (marginPermit.value != 0) {
-                IERC2612(collateral).permit(
-                    msg.sender,
-                    address(this),
-                    marginPermit.value,
-                    marginPermit.deadline,
-                    marginPermit.v,
-                    marginPermit.r,
-                    marginPermit.s
-                );
-            }
-            collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
-        }
+        collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
 
         // 2. Take the credit delegation that lets the callback borrow on the caller's behalf.
         if (delegation.value != 0) {

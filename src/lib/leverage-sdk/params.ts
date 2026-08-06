@@ -15,8 +15,9 @@ export const ZERO_REVOKE: ContractRevoke = { deadline: 0n, v: 0, r: ZERO_B32, s:
 
 export interface OpenParams {
   collateral: Address; debtAsset: Address; marginAmount: bigint; flashAmount: bigint;
-  minCollateralOut: bigint; router: Address; deadline: bigint; swapData: Hex;
-  marginPermit: ContractPermit; delegation: ContractPermit;
+  /** Must be non-zero; pulled via a prior approval — the open leg has no permit. */
+  minCollateralOut: bigint; router: Address; swapData: Hex;
+  delegation: ContractPermit;
 }
 
 export interface CloseParams {
@@ -33,7 +34,7 @@ export interface CloseParams {
 export function buildOpenArgs(p: OpenParams) {
   return [
     p.collateral, p.debtAsset, p.marginAmount, p.flashAmount, p.minCollateralOut,
-    p.router, p.deadline, p.swapData, p.marginPermit, p.delegation,
+    p.router, p.swapData, p.delegation,
   ] as const;
 }
 

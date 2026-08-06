@@ -4,7 +4,7 @@ import { parseAbi } from "viem";
 export const aaveV3LeverageAbi = parseAbi([
   "struct Permit { uint256 value; uint256 deadline; uint8 v; bytes32 r; bytes32 s; }",
   "struct RevokePermit { uint256 deadline; uint8 v; bytes32 r; bytes32 s; }",
-  "function openPosition(address collateral, address debtAsset, uint256 marginAmount, uint256 flashAmount, uint256 minCollateralOut, address router, uint256 deadline, bytes swapData, Permit marginPermit, Permit delegation)",
+  "function openPosition(address collateral, address debtAsset, uint256 marginAmount, uint256 flashAmount, uint256 minCollateralOut, address router, bytes swapData, Permit delegation)",
   "function closePosition(address collateral, address debtAsset, uint256 repayAmount, uint256 collateralToWithdraw, uint256 minOut, address router, bytes swapData, Permit permit, RevokePermit revokePermit)",
   "function allowedRouters(address router) view returns (bool)",
   "function getAllowedRouters() view returns (address[])",

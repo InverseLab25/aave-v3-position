@@ -358,7 +358,7 @@ contract AaveV3LeverageForkTest is Test {
         bytes memory swapData = abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut));
 
         vm.prank(openUser);
-        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), deadline, swapData, noPermit, delegation);
+        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), swapData, delegation);
 
         assertGe(IERC20Like(aWeth).balanceOf(openUser), margin + wethOut - 1, "aWETH not supplied");
         // Variable-debt ray-math (mint's rayDiv then balanceOf's rayMul) can overshoot the
@@ -388,36 +388,41 @@ contract AaveV3LeverageForkTest is Test {
         bytes memory swapData = abi.encodeCall(MockRouterL.swap, (WETH, USDC, usdcOut));
 
         vm.prank(openUser);
-        lev.openPosition(USDC, WETH, margin, flashAmount, usdcOut, address(router), deadline, swapData, noPermit, delegation);
+        lev.openPosition(USDC, WETH, margin, flashAmount, usdcOut, address(router), swapData, delegation);
 
         assertGe(IERC20Like(aUsdc).balanceOf(openUser), margin + usdcOut - 1, "aUSDC not supplied");
         // Same variable-debt ray-math rounding as the long test — tolerate a wei of overshoot.
         assertApproxEqAbs(IERC20Like(vDebtWeth).balanceOf(openUser), flashAmount, 2, "WETH debt mismatch");
     }
 
-    function test_OpenPosition_RevertsWhen_Expired() public {
-        AaveV3Leverage.Permit memory z;
-        vm.prank(openUser);
-        vm.expectRevert(AaveV3Leverage.Expired.selector);
-        lev.openPosition(WETH, USDC, 0, 1e6, 1, address(router), block.timestamp - 1, hex"", z, z);
-    }
-
     /// @dev Slippage: router returns less collateral than minCollateralOut ⇒ InsufficientOutput.
     function test_OpenPosition_RevertsWhen_SwapUnderMinOut() public {
+        uint256 margin = 0.1 ether;
         uint256 flashAmount = 2_000e6;
         uint256 wethOut = 0.5 ether;
+        deal(WETH, openUser, margin);
         deal(WETH, address(router), wethOut);
         (,, address vDebt) = IDataProvider(DATA_PROVIDER).getReserveTokensAddresses(USDC);
         uint256 deadline = block.timestamp + 1200;
-        AaveV3Leverage.Permit memory noPermit;
         AaveV3Leverage.Permit memory delegation = _signDelegation(openUserPk, openUser, vDebt, flashAmount, deadline);
         bytes memory swapData = abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut));
+
+        vm.prank(openUser);
+        IERC20Like(WETH).approve(address(lev), margin);
 
         vm.prank(openUser);
         vm.expectRevert(
             abi.encodeWithSelector(AaveV3Leverage.InsufficientOutput.selector, wethOut, wethOut + 1)
         );
-        lev.openPosition(WETH, USDC, 0, flashAmount, wethOut + 1, address(router), deadline, swapData, noPermit, delegation);
+        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut + 1, address(router), swapData, delegation);
+    }
+
+    /// @dev Margin is mandatory on the open leg: zero margin trips ZeroAmount at entry.
+    function test_OpenPosition_RevertsWhen_ZeroMargin() public {
+        AaveV3Leverage.Permit memory z;
+        vm.prank(openUser);
+        vm.expectRevert(AaveV3Leverage.ZeroAmount.selector);
+        lev.openPosition(WETH, USDC, 0, 1e6, 1, address(router), hex"", z);
     }
 
     /// @dev Full lifecycle on one account: open a long, then fully close it.
@@ -434,8 +439,8 @@ contract AaveV3LeverageForkTest is Test {
         vm.prank(openUser);
         IERC20Like(WETH).approve(address(lev), margin);
         vm.prank(openUser);
-        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), deadline,
-            abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut)), noPermit, delegation);
+        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router),
+            abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut)), delegation);
 
         // Close: flash the full debt back, mock router returns it with margin.
         uint256 debt = IERC20Like(vDebtUsdc).balanceOf(openUser);

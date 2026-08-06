@@ -10,9 +10,9 @@ const R = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" as const;
 it("buildOpenArgs emits the tuple in ABI order", () => {
   const args = buildOpenArgs({
     collateral: A, debtAsset: B, marginAmount: 1n, flashAmount: 2n, minCollateralOut: 3n,
-    router: R, deadline: 4n, swapData: "0x", marginPermit: ZERO_PERMIT, delegation: ZERO_PERMIT,
+    router: R, swapData: "0x", delegation: ZERO_PERMIT,
   });
-  expect(args).toEqual([A, B, 1n, 2n, 3n, R, 4n, "0x", ZERO_PERMIT, ZERO_PERMIT]);
+  expect(args).toEqual([A, B, 1n, 2n, 3n, R, "0x", ZERO_PERMIT]);
 });
 
 it("buildCloseArgs defaults to a full close and drain", () => {

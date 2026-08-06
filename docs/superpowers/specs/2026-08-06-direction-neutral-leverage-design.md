@@ -45,7 +45,6 @@ function openPosition(
     uint256 flashAmount,       // debt asset flash-borrowed and swapped; the exact debt incurred
     uint256 minCollateralOut,  // slippage bound on the swap
     address router,            // must be allowlisted
-    uint256 deadline,
     bytes calldata swapData,   // router calldata: flashAmount debtAsset -> collateral, recipient = contract
     Permit calldata marginPermit,  // EIP-2612 on collateral; value 0 = rely on existing allowance
     Permit calldata delegation     // delegationWithSig on variable debt token; value 0 = existing delegation
@@ -103,7 +102,7 @@ The user-facing signatures (what the wallet prompts for) are unchanged.
 ## Error handling
 
 Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
-`UnexpectedCallback`, `NoDebt`, `SameAsset`, `Paused`, `Expired`, `RouterNotAllowed`,
+`UnexpectedCallback`, `NoDebt`, `SameAsset`, `Paused`, `RouterNotAllowed`,
 `ZeroAmount`, `ZeroAddress`, `InsufficientOutput(have, need)`.
 
 - Slippage is enforced from the contract's own balance deltas, never router return data.
@@ -186,3 +185,15 @@ Calldata compression (measured, rejected — see above), margin in the debt asse
 third tokens, on-chain pair allowlists,
 E-Mode, stable-rate debt (Aave V3.1 removed it), non-mainnet deployments, FE
 integration (separate spec).
+
+## Amendment (2026-08-06, post-review)
+
+`openPosition` is slimmed to 8 parameters (user optimization, decisions confirmed 2026-08-06):
+
+- `deadline` and the `Expired` error are dropped. `minCollateralOut` bounds the execution
+  rate; aggregator `swapData` carries its own internal deadline on most routes. Trade-off
+  accepted: no contract-level time bound when the swap calldata lacks one.
+- The margin permit is removed; margin is pulled via a prior approval (approve-then-open,
+  or a standing allowance). The `marginPermit` parameter is deleted rather than left dead.
+- `marginAmount` must now be non-zero — the "lever up with zero margin" path is dropped
+  from scope; `ZeroAmount` covers it.
