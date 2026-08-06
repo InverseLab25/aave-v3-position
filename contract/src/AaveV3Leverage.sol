@@ -323,10 +323,13 @@ contract AaveV3Leverage is Ownable {
     }
 
     /// @dev Closes the caller's position, using an aToken `permit` at nonce N and `revokePermit`
-    /// clearing it at N+1. `collateralToWithdraw` may be max to drain the whole balance.
+    /// clearing it at N+1. `repayAmount` may be max to repay the entire variable debt; anything
+    /// smaller is a partial close, and Aave's health-factor check inside `withdraw` bounds
+    /// `collateralToWithdraw`. `collateralToWithdraw` may be max to drain the whole balance.
     function closePosition(
         address collateral,
         address debtAsset,
+        uint256 repayAmount,
         uint256 collateralToWithdraw,
         uint256 minOut,
         address router,
@@ -335,11 +338,15 @@ contract AaveV3Leverage is Ownable {
         RevokePermit calldata revokePermit
     ) external {
         _preflight(PAUSE_CLOSE, collateral, debtAsset, router);
-        if (collateralToWithdraw == 0 || minOut == 0) revert ZeroAmount();
+        if (repayAmount == 0 || collateralToWithdraw == 0 || minOut == 0) revert ZeroAmount();
 
         // An unlisted reserve yields address(0) here, whose `balanceOf` reads as 0 and trips NoDebt.
         uint256 debt = _POOL.getReserveVariableDebtToken(debtAsset).balanceOf(msg.sender);
         if (debt == 0) revert NoDebt();
+
+        // Partial close: flash only what the caller wants repaid, never more than the
+        // live debt — a stale frontend quote can't over-borrow the flash loan.
+        if (repayAmount < debt) debt = repayAmount;
 
         // Consume the aToken permit up front: a bad or front-run signature reverts before
         // the flash loan and repay are paid for. Only the revoke stays in the callback —
