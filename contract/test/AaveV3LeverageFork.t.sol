@@ -276,6 +276,62 @@ contract AaveV3LeverageForkTest is Test {
         assertEq(IERC20Like(USDC).balanceOf(address(lev)), 0, "USDC stuck in contract");
     }
 
+    /// @dev Repay half the debt, withdraw 1 WETH: position stays open and healthy.
+    function test_ClosePosition_PartialRepay_LeavesPositionOpen() public {
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
+        uint256 repayAmount = debt / 2;
+        uint256 debtOut = repayAmount + 10e6;
+        deal(USDC, address(router), debtOut);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Leverage.Permit memory permit = _signPermit(userPk, user, address(lev), 1 ether, deadline);
+        AaveV3Leverage.RevokePermit memory revoke = _signRevoke(userPk, user, address(lev), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (WETH, USDC, debtOut));
+
+        vm.prank(user);
+        lev.closePosition(WETH, USDC, repayAmount, 1 ether, repayAmount, address(router), swapData, permit, revoke);
+
+        // Remaining debt ≈ debt - repayAmount (1 wei tolerance for the same-block index).
+        assertApproxEqAbs(IERC20Like(vDebtUsdc).balanceOf(user), debt - repayAmount, 1, "wrong remaining debt");
+        assertGt(IERC20Like(aWeth).balanceOf(user), 8 ether, "too much collateral gone");
+        assertEq(IERC20Like(USDC).balanceOf(address(lev)), 0, "USDC stuck");
+    }
+
+    /// @dev Repay half but try to drain ALL collateral: Aave's HF validation in withdraw reverts.
+    function test_ClosePosition_PartialRepay_RevertsWhen_WithdrawTooGreedy() public {
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
+        uint256 repayAmount = debt / 2;
+        deal(USDC, address(router), debt); // router output irrelevant; withdraw reverts first
+
+        uint256 deadline = block.timestamp + 1200;
+        uint256 collAll = IERC20Like(aWeth).balanceOf(user);
+        AaveV3Leverage.Permit memory permit = _signPermit(userPk, user, address(lev), collAll + collAll / 100, deadline);
+        AaveV3Leverage.RevokePermit memory revoke = _signRevoke(userPk, user, address(lev), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (WETH, USDC, debt));
+
+        vm.prank(user);
+        vm.expectRevert(); // Aave: HEALTH_FACTOR_LOWER_THAN_LIQUIDATION_THRESHOLD
+        lev.closePosition(WETH, USDC, repayAmount, type(uint256).max, 1, address(router), swapData, permit, revoke);
+    }
+
+    /// @dev repayAmount above the live debt behaves exactly as a full close (flash is capped).
+    function test_ClosePosition_RepayAboveDebt_IsFullClose() public {
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
+        uint256 debtOut = debt + 50e6;
+        deal(USDC, address(router), debtOut);
+
+        uint256 deadline = block.timestamp + 1200;
+        uint256 collAll = IERC20Like(aWeth).balanceOf(user);
+        AaveV3Leverage.Permit memory permit = _signPermit(userPk, user, address(lev), collAll + collAll / 100, deadline);
+        AaveV3Leverage.RevokePermit memory revoke = _signRevoke(userPk, user, address(lev), deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (WETH, USDC, debtOut));
+
+        vm.prank(user);
+        lev.closePosition(WETH, USDC, debt * 2, type(uint256).max, debt, address(router), swapData, permit, revoke);
+
+        assertEq(IERC20Like(vDebtUsdc).balanceOf(user), 0, "debt not cleared");
+    }
+
     /*//////////////////////////////////////////////////////////////
                             OPEN POSITION
     //////////////////////////////////////////////////////////////*/
@@ -361,6 +417,38 @@ contract AaveV3LeverageForkTest is Test {
             abi.encodeWithSelector(AaveV3Leverage.InsufficientOutput.selector, wethOut, wethOut + 1)
         );
         lev.openPosition(WETH, USDC, 0, flashAmount, wethOut + 1, address(router), deadline, swapData, noPermit, delegation);
+    }
+
+    /// @dev Full lifecycle on one account: open a long, then fully close it.
+    function test_RoundTrip_OpenThenClose() public {
+        // Open: margin 1 WETH + flash 2,000 USDC → ~1.6 WETH supplied.
+        uint256 margin = 1 ether;
+        uint256 flashAmount = 2_000e6;
+        uint256 wethOut = 0.6 ether;
+        deal(WETH, openUser, margin);
+        deal(WETH, address(router), wethOut);
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Leverage.Permit memory noPermit;
+        AaveV3Leverage.Permit memory delegation = _signDelegation(openUserPk, openUser, vDebtUsdc, flashAmount, deadline);
+        vm.prank(openUser);
+        IERC20Like(WETH).approve(address(lev), margin);
+        vm.prank(openUser);
+        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), deadline,
+            abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut)), noPermit, delegation);
+
+        // Close: flash the full debt back, mock router returns it with margin.
+        uint256 debt = IERC20Like(vDebtUsdc).balanceOf(openUser);
+        uint256 debtOut = debt + 25e6;
+        deal(USDC, address(router), debtOut);
+        uint256 collAll = IERC20Like(aWeth).balanceOf(openUser);
+        AaveV3Leverage.Permit memory permit = _signPermit(openUserPk, openUser, address(lev), collAll + collAll / 100, deadline);
+        AaveV3Leverage.RevokePermit memory revoke = _signRevoke(openUserPk, openUser, address(lev), deadline);
+        vm.prank(openUser);
+        lev.closePosition(WETH, USDC, type(uint256).max, type(uint256).max, debt, address(router),
+            abi.encodeCall(MockRouterL.swap, (WETH, USDC, debtOut)), permit, revoke);
+
+        assertEq(IERC20Like(vDebtUsdc).balanceOf(openUser), 0, "debt survived round trip");
+        assertLt(IERC20Like(aWeth).balanceOf(openUser), 1e12, "collateral survived round trip");
     }
 
     /*//////////////////////////////////////////////////////////////
