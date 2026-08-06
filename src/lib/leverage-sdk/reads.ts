@@ -23,7 +23,10 @@ export async function getAllowedRouters(client: ReadClient, contract: Address): 
   })) as readonly Address[];
 }
 
-/** Decodes the pause bitmask into per-leg flags. */
+/**
+ * Decodes the pause bitmask into per-leg flags.
+ * AaveV3Leverage only — its `paused` is a per-leg bitmask. For AaveV3Strategies use `getStrategiesPauseState`.
+ */
 export async function getPauseState(client: ReadClient, contract: Address) {
   const bits = (await client.readContract({
     address: contract, abi: aaveV3LeverageAbi, functionName: "paused",

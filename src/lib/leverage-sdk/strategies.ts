@@ -85,8 +85,22 @@ export interface OpenPlan {
   args: readonly [Address, Address, bigint, bigint, bigint, bigint, Address, Hex, StrategiesPermit];
 }
 
+/** AaveV3Strategies' pause is all-or-nothing: any nonzero `paused` halts BOTH legs. */
+export async function getStrategiesPauseState(
+  client: { readContract(params: { address: Address; abi: readonly unknown[]; functionName: string; args?: readonly unknown[] }): Promise<unknown> },
+  contract: Address,
+): Promise<{ paused: boolean }> {
+  const bits = (await client.readContract({
+    address: contract, abi: aaveV3StrategiesAbi, functionName: "paused",
+  })) as bigint;
+  return { paused: bits !== 0n };
+}
+
 /** Maps a UX mode onto the contract call: which entry point, and which asset plays which role. */
 export function planOpen(p: PlanOpenInput): OpenPlan {
+  if (p.mode !== 1 && p.mode !== 2 && p.mode !== 3 && p.mode !== 4) {
+    throw new Error(`invalid open mode: ${p.mode}`);
+  }
   const long = p.mode === 1 || p.mode === 2;
   const collateral = long ? p.volatile : p.stable;
   const debtAsset = long ? p.stable : p.volatile;

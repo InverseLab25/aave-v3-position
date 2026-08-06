@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeFunctionData, getAbiItem } from "viem";
-import { aaveV3StrategiesAbi, planOpen, ZERO_STRATEGIES_PERMIT, type OpenMode } from "./strategies";
+import { aaveV3StrategiesAbi, getStrategiesPauseState, planOpen, ZERO_STRATEGIES_PERMIT, type OpenMode } from "./strategies";
 
 const X = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const; // WETH (volatile)
 const S = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const; // USDC (stable)
@@ -10,6 +10,30 @@ const base = {
   volatile: X, stable: S, flashAmount: 1n, borrowAmount: 2n, marginAmount: 3n,
   minOut: 4n, router: R, swapData: "0x" as const, delegation: ZERO_STRATEGIES_PERMIT,
 };
+
+function stubClient(responses: Record<string, unknown>) {
+  return {
+    calls: [] as Array<{ functionName: string; args?: readonly unknown[] }>,
+    async readContract(p: { functionName: string; args?: readonly unknown[] }) {
+      this.calls.push(p);
+      return responses[p.functionName];
+    },
+  };
+}
+
+it("getStrategiesPauseState reports paused when bits is nonzero", async () => {
+  const client = stubClient({ paused: 1n });
+  expect(await getStrategiesPauseState(client, R)).toEqual({ paused: true });
+});
+
+it("getStrategiesPauseState reports unpaused when bits is zero", async () => {
+  const client = stubClient({ paused: 0n });
+  expect(await getStrategiesPauseState(client, R)).toEqual({ paused: false });
+});
+
+it("planOpen throws on an out-of-range mode", () => {
+  expect(() => planOpen({ ...base, mode: 5 as never })).toThrow("invalid open mode");
+});
 
 it("both open functions exist with 9 inputs", () => {
   for (const name of ["openWithCollateralMargin", "openWithDebtMargin"] as const) {
