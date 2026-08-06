@@ -133,6 +133,8 @@ contract AaveV3Strategies is Ownable {
 
     uint256 private constant MODE_OPEN = 0;
     uint256 private constant MODE_CLOSE = 1;
+    /// @dev Flow A: margin arrives in the collateral asset and joins the flash in one supply.
+    uint256 private constant MODE_OPEN_COLL = 2;
 
     // Hardcoded to Ethereum mainnet: Morpho Blue, Aave V3 Pool.
     IMorpho private constant MORPHO = IMorpho(0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb);
@@ -162,7 +164,8 @@ contract AaveV3Strategies is Ownable {
                             ENTRY POINTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Opens a leveraged position with EXACT exposure: flash-borrows `supplyAmount` of
+    /// @dev Flow B (modes 2 & 3): margin arrives in the DEBT asset and joins the borrow in the swap.
+    /// Opens a leveraged position with EXACT exposure: flash-borrows `supplyAmount` of
     /// `collateral` and supplies it straight to the caller's account, borrows `borrowAmount` of
     /// `debtAsset` on the caller's credit (Aave's LTV validation bounds it), then swaps the
     /// borrow plus the caller's `marginAmount` of `debtAsset` back into `collateral` to repay
@@ -170,7 +173,7 @@ contract AaveV3Strategies is Ownable {
     /// no pre-swap. Leftovers fold back into the position: surplus collateral is supplied,
     /// leftover debt asset repays the fresh debt. The swap output must cover both `minOut` and
     /// `supplyAmount`; `delegation.amount` must cover `borrowAmount`.
-    function openPosition(
+    function openWithDebtMargin(
         address collateral,
         address debtAsset,
         uint256 supplyAmount,
@@ -205,6 +208,59 @@ contract AaveV3Strategies is Ownable {
             abi.encode(
                 OpenParam({
                     mode: MODE_OPEN,
+                    user: msg.sender, // bound to the caller — the callback can never act for anyone else
+                    collateral: collateral,
+                    debtAsset: debtAsset,
+                    router: router,
+                    margin: marginAmount,
+                    borrowAmount: borrowAmount,
+                    minOut: minOut,
+                    swapData: swapData
+                })
+            )
+        );
+    }
+
+    /// @dev Flow A (modes 1 & 4): margin arrives in the COLLATERAL asset, so it needs no swap —
+    /// it joins the flash-borrowed collateral in one supply. Total supplied for the caller is
+    /// `flashAmount + marginAmount` (plus any swap surplus). The borrow is swapped back into
+    /// collateral to repay the flash; output must cover both `minOut` and `flashAmount`.
+    /// `delegation.amount` must cover `borrowAmount`.
+    function openWithCollateralMargin(
+        address collateral,
+        address debtAsset,
+        uint256 flashAmount,
+        uint256 borrowAmount,
+        uint256 marginAmount,
+        uint256 minOut,
+        address router,
+        bytes calldata swapData,
+        Permit calldata delegation
+    ) external {
+        _preflight(collateral, debtAsset, router);
+        if (flashAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
+
+        // Margin is already the right asset — pull it here, supply it with the flash in the callback.
+        collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
+
+        if (delegation.amount != 0) {
+            ICreditDelegationToken(_reserveToken(GET_RESERVE_VDEBT_SEL, debtAsset)).delegationWithSig(
+                msg.sender,
+                address(this),
+                delegation.amount,
+                delegation.deadline,
+                delegation.v,
+                delegation.r,
+                delegation.s
+            );
+        }
+
+        _flash(
+            collateral,
+            flashAmount,
+            abi.encode(
+                OpenParam({
+                    mode: MODE_OPEN_COLL,
                     user: msg.sender, // bound to the caller — the callback can never act for anyone else
                     collateral: collateral,
                     debtAsset: debtAsset,
@@ -303,8 +359,8 @@ contract AaveV3Strategies is Ownable {
             mode := calldataload(params)
         }
 
-        if (mode == MODE_OPEN) _open(assets, params);
-        else _close(assets, params);
+        if (mode == MODE_CLOSE) _close(assets, params);
+        else _open(assets, params);
 
         _pendingDataHash = bytes32(0);
     }
@@ -324,9 +380,14 @@ contract AaveV3Strategies is Ownable {
         address debtAsset = p.debtAsset;
 
         // 1. Supply the flash-borrowed collateral straight to the user's account — the exact
-        //    exposure they asked for.
-        collateral.safeApproveWithRetry(address(POOL), assets);
-        POOL.supply(collateral, assets, user, REFERRAL_NONE);
+        //    exposure they asked for. Flow A margin is already the collateral asset: it joins
+        //    this supply and never touches the swap (Flow B margin is debt-asset and flows
+        //    into the swap input below via balanceOf).
+        uint256 supplyTotal = assets;
+        if (p.mode == MODE_OPEN_COLL) supplyTotal += p.margin;
+
+        collateral.safeApproveWithRetry(address(POOL), supplyTotal);
+        POOL.supply(collateral, supplyTotal, user, REFERRAL_NONE);
 
         // 2. Borrow on the user's credit against the collateral supplied above. Aave's
         //    LTV/health-factor validation runs inside borrow(), so an over-levered request
@@ -368,7 +429,7 @@ contract AaveV3Strategies is Ownable {
             }
         }
 
-        emit PositionOpened(user, collateral, debtAsset, p.margin, assets + surplus, debtBorrowed);
+        emit PositionOpened(user, collateral, debtAsset, p.margin, supplyTotal + surplus, debtBorrowed);
     }
 
     function _close(uint256 assets, uint256 params) private {
