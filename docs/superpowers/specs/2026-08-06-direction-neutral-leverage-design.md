@@ -124,6 +124,34 @@ Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
 - Swap output above the flashed amount is returned to the user unchanged (existing
   sweep logic).
 
+## Calldata encoding decision
+
+Standard ABI encoding is kept. Alternatives measured and rejected (2026-08-06):
+
+- LibZip `cdCompress`/`cdFallback`: 1,316 → 1,314 bytes on a realistic close (dense
+  aggregator swapData has no long zero runs), saving ~248 gas of calldata against
+  ~104k gas of on-chain decompression. Strictly a loss on mainnet; user also vetoed.
+- Packed structs / compact custom `bytes` encoding: ~590 gas total saving, traded
+  against a hand-rolled decoder (new audit surface) and loss of Etherscan-decodable
+  parameters.
+
+## Frontend SDK (in-repo module)
+
+`src/lib/leverage-sdk/` — a typed, viem-based module owning everything between the
+UI hooks and the contract. No wagmi/React inside the SDK; hooks consume it.
+
+| Unit | Responsibility |
+| --- | --- |
+| `abi.ts` | Contract ABI + address per chain, typed with viem's const assertions |
+| `signatures.ts` | EIP-712 builders: aToken permit (nonce N) + revoke permit (nonce N+1) pair, credit delegation (`delegationWithSig`), margin permit — including deadline headroom rules already established in `close-position-flow.md` |
+| `params.ts` | Assembles `openPosition` / `closePosition` args from quotes; partial-close sizing helper (bounds `collateralToWithdraw` by remaining-debt health factor at the worst-case swap rate) |
+| `reads.ts` | Router allowlist (`getAllowedRouters`), variable debt, aToken balance/nonce reads |
+
+Testing: vitest unit tests for signature digests (against known-good fixtures from the
+fork tests) and partial-close sizing edge cases. Refactoring the existing
+`useDeleverageClose` hook onto the SDK is a follow-up plan task, not a blocker for the
+contract work.
+
 ## Code style — Solady
 
 - Solady deps only: `Ownable`, `SafeTransferLib`, `LibCall`, `EnumerableSetLib`.
@@ -151,6 +179,7 @@ Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
 
 ## Out of scope
 
-Margin in the debt asset or third tokens, on-chain pair allowlists,
+Calldata compression (measured, rejected — see above), margin in the debt asset or
+third tokens, on-chain pair allowlists,
 E-Mode, stable-rate debt (Aave V3.1 removed it), non-mainnet deployments, FE
 integration (separate spec).
