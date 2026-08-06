@@ -217,7 +217,6 @@ contract AaveV3Leverage is Ownable {
         uint256 collateralToWithdraw;
         uint256 minOut;
         address router;
-        Permit permit;
         RevokePermit revokePermit;
         bytes swapData;
     }
@@ -342,6 +341,15 @@ contract AaveV3Leverage is Ownable {
         uint256 debt = _POOL.getReserveVariableDebtToken(debtAsset).balanceOf(msg.sender);
         if (debt == 0) revert NoDebt();
 
+        // Consume the aToken permit up front: a bad or front-run signature reverts before
+        // the flash loan and repay are paid for. Only the revoke stays in the callback —
+        // it must run after the transferFrom.
+        if (permit.value != 0) {
+            IERC2612(_POOL.getReserveAToken(collateral)).permit(
+                msg.sender, address(this), permit.value, permit.deadline, permit.v, permit.r, permit.s
+            );
+        }
+
         _flash(
             debtAsset,
             debt,
@@ -354,7 +362,6 @@ contract AaveV3Leverage is Ownable {
                     collateralToWithdraw: collateralToWithdraw,
                     minOut: minOut,
                     router: router,
-                    permit: permit,
                     revokePermit: revokePermit,
                     swapData: swapData
                 })
@@ -452,21 +459,16 @@ contract AaveV3Leverage is Ownable {
         _approveMax(debtAsset, address(_POOL), assets);
         uint256 debtRepaid = _POOL.repay(debtAsset, assets, _VARIABLE_RATE, user);
 
-        // 2. Consume the permit and pull the aTokens we intend to swap.
+        // 2. Pull the aTokens we intend to swap; the permit was already consumed at entry.
         uint256 pull = p.collateralToWithdraw;
         if (pull == type(uint256).max) pull = aToken.balanceOf(user);
         if (pull == 0) revert ZeroAmount();
 
-        uint256 permitValue = p.permit.value;
-        if (permitValue != 0) {
-            IERC2612(aToken).permit(
-                user, address(this), permitValue, p.permit.deadline, p.permit.v, p.permit.r, p.permit.s
-            );
-        }
-
         aToken.safeTransferFrom(user, address(this), pull);
 
-        if (permitValue != 0) {
+        // deadline == 0 marks "no permit was granted" (caller relied on a standing
+        // allowance), so there is nothing to clear.
+        if (p.revokePermit.deadline != 0) {
             IERC2612(aToken).permit(
                 user, address(this), 0, p.revokePermit.deadline, p.revokePermit.v, p.revokePermit.r, p.revokePermit.s
             );

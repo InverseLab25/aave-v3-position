@@ -88,7 +88,6 @@ contract AaveV3LeveragePayloadTest is Test {
         uint256 collateralToWithdraw,
         uint256 minOut,
         address router,
-        AaveV3Leverage.Permit memory permit,
         AaveV3Leverage.RevokePermit memory revokePermit,
         bytes calldata swapData
     ) public view {
@@ -99,7 +98,6 @@ contract AaveV3LeveragePayloadTest is Test {
             collateralToWithdraw: collateralToWithdraw,
             minOut: minOut,
             router: router,
-            permit: permit,
             revokePermit: revokePermit,
             swapData: swapData
         });
@@ -113,11 +111,6 @@ contract AaveV3LeveragePayloadTest is Test {
         assertEq(d.collateralToWithdraw, collateralToWithdraw, "collateralToWithdraw");
         assertEq(d.minOut, minOut, "minOut");
         assertEq(d.router, router, "router");
-        assertEq(d.permit.value, permit.value, "permit.value");
-        assertEq(d.permit.deadline, permit.deadline, "permit.deadline");
-        assertEq(d.permit.v, permit.v, "permit.v");
-        assertEq(d.permit.r, permit.r, "permit.r");
-        assertEq(d.permit.s, permit.s, "permit.s");
         assertEq(d.revokePermit.deadline, revokePermit.deadline, "revokePermit.deadline");
         assertEq(d.revokePermit.v, revokePermit.v, "revokePermit.v");
         assertEq(d.revokePermit.r, revokePermit.r, "revokePermit.r");
