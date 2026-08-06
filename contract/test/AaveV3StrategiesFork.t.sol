@@ -148,7 +148,7 @@ contract AaveV3StrategiesForkTest is Test {
 
     /// @dev Open with EXACT exposure: flash-supplied collateral, debt-asset margin, one swap.
     ///      Surplus WETH above the flash repayment is supplied for the user too.
-    function test_Open_ExactSupply_UsdcMargin() public {
+    function test_Mode2_LongX_HoldingStable() public {
         address openUser = vm.addr(0xB0B);
         uint256 supplyAmount = 1.5 ether;
         uint256 borrowAmount = 2_000e6;
@@ -165,7 +165,7 @@ contract AaveV3StrategiesForkTest is Test {
         vm.prank(openUser);
         IERC20LikeS(USDC).approve(address(strat), margin);
         vm.prank(openUser);
-        strat.openPosition(
+        strat.openWithDebtMargin(
             WETH, USDC, supplyAmount, borrowAmount, margin, supplyAmount, address(router), swapData, delegation
         );
 
@@ -199,7 +199,7 @@ contract AaveV3StrategiesForkTest is Test {
         vm.prank(openUser);
         IERC20LikeS(USDC).approve(address(strat), margin);
         vm.prank(openUser);
-        strat.openPosition(
+        strat.openWithDebtMargin(
             WETH, USDC, supplyAmount, borrowAmount, margin, supplyAmount, address(fixedRouter), swapData, delegation
         );
 
@@ -214,7 +214,107 @@ contract AaveV3StrategiesForkTest is Test {
         AaveV3Strategies.Permit memory z;
         vm.prank(user);
         vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
-        strat.openPosition(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
+        strat.openWithDebtMargin(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
+    }
+
+    /// @dev Mode 1 — long WETH holding WETH: collateral margin joins the flash in one supply.
+    function test_Mode1_LongX_HoldingX() public {
+        address openUser = vm.addr(0xB0B);
+        uint256 marginWeth = 1 ether;
+        uint256 flashWeth = 1 ether;
+        uint256 borrowUsdc = 2_000e6;
+        uint256 wethOut = 1.005 ether; // swap of the borrow must cover the 1 WETH flash
+        deal(WETH, openUser, marginWeth);
+        deal(WETH, address(router), wethOut);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory delegation =
+            _signDelegation(0xB0B, openUser, vDebtUsdc, borrowUsdc, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (USDC, WETH, wethOut));
+
+        vm.prank(openUser);
+        IERC20LikeS(WETH).approve(address(strat), marginWeth);
+        vm.prank(openUser);
+        strat.openWithCollateralMargin(
+            WETH, USDC, flashWeth, borrowUsdc, marginWeth, flashWeth, address(router), swapData, delegation
+        );
+
+        // Supplied = margin + flash + surplus (0.005), each supply rounding ≤1 wei down.
+        assertGe(IERC20LikeS(aWeth).balanceOf(openUser), marginWeth + wethOut - 2, "aWETH short");
+        assertApproxEqAbs(IERC20LikeS(vDebtUsdc).balanceOf(openUser), borrowUsdc, 2, "debt mismatch");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+    }
+
+    /// @dev Mode 3 — short WETH holding WETH: same openWithDebtMargin code path, roles swapped
+    ///      (USDC is the collateral, WETH is the debt AND the margin asset).
+    function test_Mode3_ShortX_HoldingX() public {
+        address openUser = vm.addr(0xB0B);
+        uint256 flashUsdc = 4_000e6;   // exact USDC exposure supplied
+        uint256 borrowWeth = 0.5 ether;
+        uint256 marginWeth = 0.5 ether;
+        uint256 usdcOut = 4_005e6;     // swap of borrow+margin WETH must cover the flash
+        deal(WETH, openUser, marginWeth);
+        deal(USDC, address(router), usdcOut);
+
+        (address aUsdc,,) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+        (,, address vDebtWeth) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(WETH);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory delegation =
+            _signDelegation(0xB0B, openUser, vDebtWeth, borrowWeth, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, usdcOut));
+
+        vm.prank(openUser);
+        IERC20LikeS(WETH).approve(address(strat), marginWeth);
+        vm.prank(openUser);
+        strat.openWithDebtMargin(
+            USDC, WETH, flashUsdc, borrowWeth, marginWeth, flashUsdc, address(router), swapData, delegation
+        );
+
+        assertGe(IERC20LikeS(aUsdc).balanceOf(openUser), usdcOut - 2, "aUSDC short");
+        assertApproxEqAbs(IERC20LikeS(vDebtWeth).balanceOf(openUser), borrowWeth, 2, "WETH debt mismatch");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+    }
+
+    /// @dev Mode 4 — short WETH holding USDC: collateral-margin flow with stable roles.
+    function test_Mode4_ShortX_HoldingStable() public {
+        address openUser = vm.addr(0xB0B);
+        uint256 marginUsdc = 2_000e6;
+        uint256 flashUsdc = 2_000e6;
+        uint256 borrowWeth = 0.5 ether;
+        uint256 usdcOut = 2_005e6;     // swap of the borrowed WETH must cover the USDC flash
+        deal(USDC, openUser, marginUsdc);
+        deal(USDC, address(router), usdcOut);
+
+        (address aUsdc,,) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+        (,, address vDebtWeth) = IDataProviderS(DATA_PROVIDER).getReserveTokensAddresses(WETH);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Permit memory delegation =
+            _signDelegation(0xB0B, openUser, vDebtWeth, borrowWeth, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, usdcOut));
+
+        vm.prank(openUser);
+        IERC20LikeS(USDC).approve(address(strat), marginUsdc);
+        vm.prank(openUser);
+        strat.openWithCollateralMargin(
+            USDC, WETH, flashUsdc, borrowWeth, marginUsdc, flashUsdc, address(router), swapData, delegation
+        );
+
+        assertGe(IERC20LikeS(aUsdc).balanceOf(openUser), marginUsdc + usdcOut - 2, "aUSDC short");
+        assertApproxEqAbs(IERC20LikeS(vDebtWeth).balanceOf(openUser), borrowWeth, 2, "WETH debt mismatch");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+    }
+
+    /// @dev The collateral-margin entry also requires non-zero margin.
+    function test_OpenCollateralMargin_RevertsWhen_ZeroMargin() public {
+        AaveV3Strategies.Permit memory z;
+        vm.prank(user);
+        vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
+        strat.openWithCollateralMargin(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
     }
 
     /// @dev Standing-allowance close: zeroed Permit AND zeroed RevokePermit — the callback must
