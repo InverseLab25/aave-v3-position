@@ -89,6 +89,9 @@ contract AaveV3LeverageForkTest is Test {
     bytes32 constant PERMIT_TYPEHASH =
         keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
+    bytes32 constant DELEGATION_WITH_SIG_TYPEHASH =
+        keccak256("DelegationWithSig(address delegatee,uint256 value,uint256 nonce,uint256 deadline)");
+
     AaveV3Leverage lev;
     MockRouterL router;
 
@@ -97,10 +100,14 @@ contract AaveV3LeverageForkTest is Test {
     address aWeth;
     address vDebtUsdc;
 
+    address openUser;
+    uint256 openUserPk = 0xB0B;
+
     function setUp() public {
         vm.createSelectFork(vm.envString("RPC_URL"));
 
         user = vm.addr(userPk);
+        openUser = vm.addr(openUserPk);
         lev = new AaveV3Leverage(address(this));
         router = new MockRouterL();
         // The leverager only calls allowlisted routers; this test contract is the owner.
@@ -267,6 +274,93 @@ contract AaveV3LeverageForkTest is Test {
         // Nothing stuck in the leverager.
         assertEq(IERC20Like(WETH).balanceOf(address(lev)), 0, "WETH stuck in contract");
         assertEq(IERC20Like(USDC).balanceOf(address(lev)), 0, "USDC stuck in contract");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            OPEN POSITION
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Long: margin 1 WETH + flash 2,000 USDC swapped to ~0.6 WETH ⇒ ~1.6 aWETH supplied,
+    ///      2,000 USDC variable debt on the user, contract empty.
+    function test_OpenPosition_Long_SuppliesAndBorrows() public {
+        uint256 margin = 1 ether;
+        uint256 flashAmount = 2_000e6;
+        uint256 wethOut = 0.6 ether;
+        deal(WETH, openUser, margin);
+        deal(WETH, address(router), wethOut);
+
+        (,, address vDebt) = IDataProvider(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+        uint256 deadline = block.timestamp + 1200;
+
+        vm.startPrank(openUser);
+        IERC20Like(WETH).approve(address(lev), margin); // margin via plain approve; permit variant below
+        vm.stopPrank();
+
+        AaveV3Leverage.Permit memory noPermit; // value 0 = use the allowance above
+        AaveV3Leverage.Permit memory delegation = _signDelegation(openUserPk, openUser, vDebt, flashAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut));
+
+        vm.prank(openUser);
+        lev.openPosition(WETH, USDC, margin, flashAmount, wethOut, address(router), deadline, swapData, noPermit, delegation);
+
+        assertGe(IERC20Like(aWeth).balanceOf(openUser), margin + wethOut - 1, "aWETH not supplied");
+        // Variable-debt ray-math (mint's rayDiv then balanceOf's rayMul) can overshoot the
+        // nominal borrowed amount by a wei; tolerate that rounding rather than the aToken itself.
+        assertApproxEqAbs(IERC20Like(vDebt).balanceOf(openUser), flashAmount, 2, "debt mismatch");
+        assertEq(IERC20Like(WETH).balanceOf(address(lev)), 0, "WETH stuck");
+        assertEq(IERC20Like(USDC).balanceOf(address(lev)), 0, "USDC stuck");
+    }
+
+    /// @dev Short: USDC collateral, WETH debt — the SAME code path with roles swapped.
+    function test_OpenPosition_Short_IsSameCodePath() public {
+        uint256 margin = 5_000e6;          // USDC margin
+        uint256 flashAmount = 1 ether;     // flash WETH, swap to USDC
+        uint256 usdcOut = 3_000e6;
+        deal(USDC, openUser, margin);
+        deal(USDC, address(router), usdcOut);
+
+        (address aUsdc,,) = IDataProvider(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+        (,, address vDebtWeth) = IDataProvider(DATA_PROVIDER).getReserveTokensAddresses(WETH);
+        uint256 deadline = block.timestamp + 1200;
+
+        vm.prank(openUser);
+        IERC20Like(USDC).approve(address(lev), margin);
+
+        AaveV3Leverage.Permit memory noPermit;
+        AaveV3Leverage.Permit memory delegation = _signDelegation(openUserPk, openUser, vDebtWeth, flashAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (WETH, USDC, usdcOut));
+
+        vm.prank(openUser);
+        lev.openPosition(USDC, WETH, margin, flashAmount, usdcOut, address(router), deadline, swapData, noPermit, delegation);
+
+        assertGe(IERC20Like(aUsdc).balanceOf(openUser), margin + usdcOut - 1, "aUSDC not supplied");
+        // Same variable-debt ray-math rounding as the long test — tolerate a wei of overshoot.
+        assertApproxEqAbs(IERC20Like(vDebtWeth).balanceOf(openUser), flashAmount, 2, "WETH debt mismatch");
+    }
+
+    function test_OpenPosition_RevertsWhen_Expired() public {
+        AaveV3Leverage.Permit memory z;
+        vm.prank(openUser);
+        vm.expectRevert(AaveV3Leverage.Expired.selector);
+        lev.openPosition(WETH, USDC, 0, 1e6, 1, address(router), block.timestamp - 1, hex"", z, z);
+    }
+
+    /// @dev Slippage: router returns less collateral than minCollateralOut ⇒ InsufficientOutput.
+    function test_OpenPosition_RevertsWhen_SwapUnderMinOut() public {
+        uint256 flashAmount = 2_000e6;
+        uint256 wethOut = 0.5 ether;
+        deal(WETH, address(router), wethOut);
+        (,, address vDebt) = IDataProvider(DATA_PROVIDER).getReserveTokensAddresses(USDC);
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Leverage.Permit memory noPermit;
+        AaveV3Leverage.Permit memory delegation = _signDelegation(openUserPk, openUser, vDebt, flashAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterL.swap, (USDC, WETH, wethOut));
+
+        vm.prank(openUser);
+        vm.expectRevert(
+            abi.encodeWithSelector(AaveV3Leverage.InsufficientOutput.selector, wethOut, wethOut + 1)
+        );
+        lev.openPosition(WETH, USDC, 0, flashAmount, wethOut + 1, address(router), deadline, swapData, noPermit, delegation);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -609,5 +703,20 @@ contract AaveV3LeverageForkTest is Test {
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IAToken(aWeth).DOMAIN_SEPARATOR(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
         return AaveV3Leverage.RevokePermit({deadline: deadline, v: v, r: r, s: s});
+    }
+
+    /// @dev Signs credit delegation on `debtToken` (a variable debt token): delegator = owner,
+    ///      delegatee = the leverage contract.
+    function _signDelegation(uint256 pk, address owner, address debtToken, uint256 value, uint256 deadline)
+        internal
+        view
+        returns (AaveV3Leverage.Permit memory)
+    {
+        uint256 nonce = IAToken(debtToken).nonces(owner);
+        bytes32 structHash =
+            keccak256(abi.encode(DELEGATION_WITH_SIG_TYPEHASH, address(lev), value, nonce, deadline));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", IAToken(debtToken).DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+        return AaveV3Leverage.Permit({value: value, deadline: deadline, v: v, r: r, s: s});
     }
 }
