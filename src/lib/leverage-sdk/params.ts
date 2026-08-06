@@ -6,9 +6,11 @@ export interface ContractPermit { value: bigint; deadline: bigint; v: number; r:
 export interface ContractRevoke { deadline: bigint; v: number; r: Hex; s: Hex }
 
 const ZERO_B32 = `0x${"00".repeat(32)}` as Hex;
-/** Existing-allowance path: the contract skips a permit whose value is 0. */
+/** Existing-allowance path: the contract skips a permit whose value is 0. Always pair with
+ *  ZERO_REVOKE — a non-zero permit must ship with a non-zero revoke deadline. */
 export const ZERO_PERMIT: ContractPermit = { value: 0n, deadline: 0n, v: 0, r: ZERO_B32, s: ZERO_B32 };
-/** No-permit path: the contract skips a revoke whose deadline is 0. */
+/** No-permit path: the contract skips a revoke whose deadline is 0. Always pair with
+ *  ZERO_PERMIT — a non-zero revoke deadline must ship with a non-zero permit. */
 export const ZERO_REVOKE: ContractRevoke = { deadline: 0n, v: 0, r: ZERO_B32, s: ZERO_B32 };
 
 export interface OpenParams {

@@ -324,8 +324,10 @@ contract AaveV3Leverage is Ownable {
 
     /// @dev Closes the caller's position, using an aToken `permit` at nonce N and `revokePermit`
     /// clearing it at N+1. `repayAmount` may be max to repay the entire variable debt; anything
-    /// smaller is a partial close, and Aave's health-factor check inside `withdraw` bounds
-    /// `collateralToWithdraw`. `collateralToWithdraw` may be max to drain the whole balance.
+    /// smaller is a partial close, and `collateralToWithdraw` is bounded by Aave's health-factor
+    /// validation in the aToken's `finalizeTransfer` hook, which fires post-repay when the
+    /// collateral is pulled from the user. `collateralToWithdraw` may be max to drain the whole
+    /// balance.
     function closePosition(
         address collateral,
         address debtAsset,

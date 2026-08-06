@@ -116,9 +116,12 @@ Existing taxonomy kept: `Reentrancy`, `ExpectedState`, `NotMorpho`,
 
 - Entry point flash-borrows `min(repayAmount, currentDebt)`, so a stale frontend
   quote can never over-borrow the flash loan.
-- When debt remains after the repay, `POOL.withdraw` runs Aave's health-factor
-  validation and reverts if `collateralToWithdraw` would leave the position
-  liquidatable — the contract adds no ratio math of its own.
+- When debt remains after the repay, the bound on `collateralToWithdraw` is Aave's
+  health-factor validation in the aToken's `finalizeTransfer` hook, which fires when
+  the collateral is pulled from the user (`aToken.safeTransferFrom(user, address(this),
+  pull)`) — not `POOL.withdraw`, which runs on the contract's own debt-free account.
+  It reverts if `collateralToWithdraw` would leave the position liquidatable — the
+  contract adds no ratio math of its own.
 - The frontend is responsible for sizing `collateralToWithdraw` against the
   remaining debt (worst-case swap rate), not against a full close.
 - Swap output above the flashed amount is returned to the user unchanged (existing

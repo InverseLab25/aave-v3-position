@@ -297,7 +297,8 @@ contract AaveV3LeverageForkTest is Test {
         assertEq(IERC20Like(USDC).balanceOf(address(lev)), 0, "USDC stuck");
     }
 
-    /// @dev Repay half but try to drain ALL collateral: Aave's HF validation in withdraw reverts.
+    /// @dev Repay half but try to drain ALL collateral: Aave's HF validation in the aToken's
+    /// `finalizeTransfer` hook (fired by the post-repay `safeTransferFrom` pull) reverts.
     function test_ClosePosition_PartialRepay_RevertsWhen_WithdrawTooGreedy() public {
         uint256 debt = IERC20Like(vDebtUsdc).balanceOf(user);
         uint256 repayAmount = debt / 2;
