@@ -60,7 +60,9 @@ interface ICreditDelegationToken {
 /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
 /// @dev Opens and closes leveraged Aave V3 positions in one transaction each, financed by a
-/// zero-fee Morpho Blue flash loan. Both directions share one owner, one pause word, one router
+/// zero-fee Morpho Blue flash loan. Direction-neutral: a long supplies the volatile asset and
+/// borrows the stable; a short supplies the stable and borrows the volatile asset — the same
+/// code path with the roles swapped. Both directions share one owner, one pause word, one router
 /// allowlist, and one flash-loan callback — so a user grants approvals to a single address.
 ///
 /// Open: flash borrow the debt asset, swap it to collateral, supply the user's margin plus the
@@ -130,7 +132,7 @@ contract AaveV3Leverage is Ownable {
     /*                          EVENTS                            */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    event LongOpened(
+    event PositionOpened(
         address indexed user,
         address indexed collateral,
         address indexed debtAsset,
@@ -158,10 +160,10 @@ contract AaveV3Leverage is Ownable {
     /*                         CONSTANTS                          */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev Set in `paused` to block `openLong`.
+    /// @dev Set in `paused` to block `openPosition`.
     uint256 public constant PAUSE_OPEN = 1 << 0;
 
-    /// @dev Set in `paused` to block `closePositionWithPermit`.
+    /// @dev Set in `paused` to block `closePosition`.
     uint256 public constant PAUSE_CLOSE = 1 << 1;
 
     // Hardcoded to Ethereum mainnet: Morpho Blue, Aave V3 Pool.
@@ -251,14 +253,14 @@ contract AaveV3Leverage is Ownable {
     /*                        ENTRY POINTS                        */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev Opens a leveraged long for the caller. `marginAmount` of `collateral` is pulled from
+    /// @dev Opens a leveraged position for the caller. `marginAmount` of `collateral` is pulled from
     /// the caller (may be 0 to lever an existing position), `flashAmount` of `debtAsset` is flash
     /// borrowed and swapped into collateral, and the caller ends up owing exactly `flashAmount`
     /// to Aave. `swapData` must swap `flashAmount` of `debtAsset` into `collateral` with this
     /// contract as the recipient. `delegation` must delegate at least `flashAmount` of borrowing
     /// power on the variable debt token of `debtAsset` — sign the exact amount per transaction
     /// rather than leaving a standing max delegation.
-    function openLong(
+    function openPosition(
         address collateral,
         address debtAsset,
         uint256 marginAmount,
@@ -323,7 +325,7 @@ contract AaveV3Leverage is Ownable {
 
     /// @dev Closes the caller's position, using an aToken `permit` at nonce N and `revokePermit`
     /// clearing it at N+1. `collateralToWithdraw` may be max to drain the whole balance.
-    function closePositionWithPermit(
+    function closePosition(
         address collateral,
         address debtAsset,
         uint256 collateralToWithdraw,
@@ -432,7 +434,7 @@ contract AaveV3Leverage is Ownable {
         uint256 leftover = debtAsset.balanceOf(address(this)) - assets;
         if (leftover != 0) debtAsset.safeTransfer(user, leftover);
 
-        emit LongOpened(user, collateral, debtAsset, p.margin, afterBalance, assets);
+        emit PositionOpened(user, collateral, debtAsset, p.margin, afterBalance, assets);
     }
 
     function _close(uint256 assets, uint256 params) private {
@@ -553,7 +555,7 @@ contract AaveV3Leverage is Ownable {
         }
     }
 
-    /// @dev Returns whether `router` may be passed to `openLong` or `closePositionWithPermit`.
+    /// @dev Returns whether `router` may be passed to `openPosition` or `closePosition`.
     function allowedRouters(address router) external view returns (bool) {
         return _allowedRouters.contains(router);
     }
