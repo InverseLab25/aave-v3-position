@@ -177,6 +177,8 @@ contract AaveV3Strategies is Ownable {
     /// no pre-swap. Leftovers fold back into the position: surplus collateral is supplied,
     /// leftover debt asset repays the fresh debt. The swap output must cover both `minOut` and
     /// `supplyAmount`; `delegation` must be signed over exactly `borrowAmount`.
+    /// `marginAmount` 0 is a leverage ratchet on an existing position — the new exposure is
+    /// funded entirely by the borrow, bounded by Aave's health-factor check inside `borrow()`.
     function openWithDebtMargin(
         address collateral,
         address debtAsset,
@@ -189,10 +191,12 @@ contract AaveV3Strategies is Ownable {
         Sig calldata delegation
     ) external {
         _preflight(collateral, debtAsset, router);
-        if (supplyAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
+        if (supplyAmount == 0 || borrowAmount == 0 || minOut == 0) revert ZeroAmount();
 
         // Margin arrives in the debt asset and joins the borrowed funds in the callback's swap.
-        debtAsset.safeTransferFrom(msg.sender, address(this), marginAmount);
+        // Zero margin is the ratchet path — skip the pull rather than poke tokens that revert on
+        // a zero-value transfer.
+        if (marginAmount != 0) debtAsset.safeTransferFrom(msg.sender, address(this), marginAmount);
 
         // The delegation is signed over exactly `borrowAmount`, so the borrow consumes it in
         // full — no residual borrowing power can be left on this contract. A signature over
@@ -232,7 +236,8 @@ contract AaveV3Strategies is Ownable {
     /// it joins the flash-borrowed collateral in one supply. Total supplied for the caller is
     /// `flashAmount + marginAmount` (plus any swap surplus). The borrow is swapped back into
     /// collateral to repay the flash; output must cover both `minOut` and `flashAmount`.
-    /// `delegation` must be signed over exactly `borrowAmount`.
+    /// `delegation` must be signed over exactly `borrowAmount`. `marginAmount` 0 is a leverage
+    /// ratchet on an existing position: the flash alone is the supply, funded by the borrow.
     function openWithCollateralMargin(
         address collateral,
         address debtAsset,
@@ -245,10 +250,11 @@ contract AaveV3Strategies is Ownable {
         Sig calldata delegation
     ) external {
         _preflight(collateral, debtAsset, router);
-        if (flashAmount == 0 || borrowAmount == 0 || marginAmount == 0 || minOut == 0) revert ZeroAmount();
+        if (flashAmount == 0 || borrowAmount == 0 || minOut == 0) revert ZeroAmount();
 
-        // Margin is already the right asset — pull it here, supply it with the flash in the callback.
-        collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
+        // Margin is already the right asset — pull it here, supply it with the flash in the
+        // callback. Zero margin is the ratchet path: the flash alone becomes the supply.
+        if (marginAmount != 0) collateral.safeTransferFrom(msg.sender, address(this), marginAmount);
 
         // The delegation is signed over exactly `borrowAmount`, so the borrow consumes it in
         // full — no residual borrowing power can be left on this contract. A signature over

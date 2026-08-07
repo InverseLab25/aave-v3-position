@@ -213,12 +213,41 @@ contract AaveV3StrategiesForkTest is Test {
         assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
     }
 
-    /// @dev Margin is mandatory: zero margin trips ZeroAmount at entry.
-    function test_Open_RevertsWhen_ZeroMargin() public {
+    /// @dev The borrow is mandatory: nothing would fund the swap that repays the flash.
+    function test_Open_RevertsWhen_ZeroBorrow() public {
         AaveV3Strategies.Sig memory z;
         vm.prank(user);
         vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
-        strat.openWithDebtMargin(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
+        strat.openWithDebtMargin(WETH, USDC, 1 ether, 0, 1e6, 1, address(router), hex"", z);
+    }
+
+    /// @dev Zero margin is a legitimate leverage ratchet: `user` already has 10 WETH supplied and
+    ///      spare borrowing power, so the new exposure is funded entirely by the fresh borrow.
+    function test_Mode2_ZeroMargin_LeverageRatchet() public {
+        uint256 supplyAmount = 1 ether;
+        uint256 borrowAmount = 2_000e6;
+        uint256 wethOut = 1.01 ether;  // the borrow alone covers the flash + surplus
+        deal(WETH, address(router), wethOut);
+
+        uint256 aWethBefore = IERC20LikeS(aWeth).balanceOf(user);
+        uint256 debtBefore = IERC20LikeS(vDebtUsdc).balanceOf(user);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Sig memory delegation =
+            _signDelegation(userPk, user, vDebtUsdc, borrowAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (USDC, WETH, wethOut));
+
+        vm.prank(user);
+        strat.openWithDebtMargin(
+            WETH, USDC, supplyAmount, borrowAmount, 0, supplyAmount, address(router), swapData, delegation
+        );
+
+        assertGe(IERC20LikeS(aWeth).balanceOf(user) - aWethBefore, wethOut - 2, "aWETH not supplied");
+        assertApproxEqAbs(
+            IERC20LikeS(vDebtUsdc).balanceOf(user) - debtBefore, borrowAmount, 2, "debt mismatch"
+        );
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
     }
 
     /// @dev Mode 1 — long WETH holding WETH: collateral margin joins the flash in one supply.
@@ -313,12 +342,41 @@ contract AaveV3StrategiesForkTest is Test {
         assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
     }
 
-    /// @dev The collateral-margin entry also requires non-zero margin.
-    function test_OpenCollateralMargin_RevertsWhen_ZeroMargin() public {
+    /// @dev The collateral-margin entry also requires a non-zero borrow.
+    function test_OpenCollateralMargin_RevertsWhen_ZeroBorrow() public {
         AaveV3Strategies.Sig memory z;
         vm.prank(user);
         vm.expectRevert(AaveV3Strategies.ZeroAmount.selector);
-        strat.openWithCollateralMargin(WETH, USDC, 1 ether, 1e6, 0, 1, address(router), hex"", z);
+        strat.openWithCollateralMargin(WETH, USDC, 1 ether, 0, 1e6, 1, address(router), hex"", z);
+    }
+
+    /// @dev Zero-margin ratchet through the collateral-margin entry: with no margin to join it,
+    ///      the supply is the flash alone and the borrow's swap still has to repay it.
+    function test_Mode1_ZeroMargin_LeverageRatchet() public {
+        uint256 flashAmount = 1 ether;
+        uint256 borrowAmount = 2_000e6;
+        uint256 wethOut = 1.01 ether;
+        deal(WETH, address(router), wethOut);
+
+        uint256 aWethBefore = IERC20LikeS(aWeth).balanceOf(user);
+        uint256 debtBefore = IERC20LikeS(vDebtUsdc).balanceOf(user);
+
+        uint256 deadline = block.timestamp + 1200;
+        AaveV3Strategies.Sig memory delegation =
+            _signDelegation(userPk, user, vDebtUsdc, borrowAmount, deadline);
+        bytes memory swapData = abi.encodeCall(MockRouterS.swap, (USDC, WETH, wethOut));
+
+        vm.prank(user);
+        strat.openWithCollateralMargin(
+            WETH, USDC, flashAmount, borrowAmount, 0, flashAmount, address(router), swapData, delegation
+        );
+
+        assertGe(IERC20LikeS(aWeth).balanceOf(user) - aWethBefore, wethOut - 2, "aWETH short");
+        assertApproxEqAbs(
+            IERC20LikeS(vDebtUsdc).balanceOf(user) - debtBefore, borrowAmount, 2, "debt mismatch"
+        );
+        assertEq(IERC20LikeS(USDC).balanceOf(address(strat)), 0, "USDC stuck");
+        assertEq(IERC20LikeS(WETH).balanceOf(address(strat)), 0, "WETH stuck");
     }
 
     /// @dev Standing-allowance close: zeroed Permit AND zeroed RevokePermit — the callback must
