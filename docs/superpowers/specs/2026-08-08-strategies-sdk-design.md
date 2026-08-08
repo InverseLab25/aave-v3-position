@@ -112,7 +112,11 @@ At LTV 75% / LT 80%: the hard wall is 4.0x, and holding HF 1.5 means 2.14x.
 
 `sizeOpen` rejects, as a typed error union rather than a thrown exception:
 
-- `L ≤ 1` (yields a zero flash or a non-positive borrow — the contract reverts `ZeroAmount`)
+- `L ≤ 1` (yields a zero flash — the contract reverts `ZeroAmount`)
+- a non-positive `borrowAmount` in Flow B. This fires when the quoted rate beats the
+  oracle-implied one by enough that the margin alone covers the swap input — a stale oracle
+  against a favorable market, not merely low leverage. At the oracle rate the borrow works out
+  to `(L − 1) · M`, which stays positive for any `L > 1`.
 - `L ≥ LTV_CEILING_FACTOR · maxLeverageForLtv(ltv)`, where `LTV_CEILING_FACTOR` is an exported
   constant defaulting to `0.98`. The margin exists because the LTV wall is exact and the borrow
   reverts *at* it; sizing must land strictly below.
@@ -128,10 +132,13 @@ into the position, so the realized position is at or above target.
 {
   flashAmount, borrowAmount, minOut,
   expectedSwapOut, expectedCollateral, expectedDebt,
-  expectedLeverage,       // ≥ requested; buffer surplus lands here
-  expectedHealthFactor,
+  expectedLeverageBps,        // ≥ requested; buffer surplus lands here
+  expectedHealthFactorBps,
 }
 ```
+
+Ratios carry a `Bps` suffix and stay `bigint`, matching the module's bigint-only rule — no
+floating point crosses the SDK boundary.
 
 ## Plans (`plan.ts`)
 
