@@ -1715,10 +1715,15 @@ Expected: no output. **If anything prints, stop and report it.**
 
 - [ ] **Step 2: Delete the files**
 
+`AaveV3Leverager.sol` is **untracked** — it was never committed, so `git rm` errors on it and it needs a plain `rm`. The other three are tracked.
+
 ```bash
-git rm contract/src/AaveV3Leverage.sol contract/src/AaveV3Leverager.sol \
+git rm contract/src/AaveV3Leverage.sol \
        contract/test/AaveV3LeverageFork.t.sol contract/test/AaveV3LeveragePayload.t.sol
+rm contract/src/AaveV3Leverager.sol
 ```
+
+Verify: `git status --short contract/` should show three staged `D` entries and no remaining `?? contract/src/AaveV3Leverager.sol`.
 
 - [ ] **Step 3: Verify the contracts still build**
 
@@ -1733,6 +1738,8 @@ Expected: green. Only `AaveV3DeleveragerFork.t.sol` and `AaveV3StrategiesFork.t.
 Note: the fork suites are known to be flaky by a wei or two on unpinned blocks. If a failure is a rounding difference in a fork test rather than a compile or link error, re-run once to confirm, and report it as pre-existing rather than fixing it here.
 
 - [ ] **Step 5: Commit**
+
+The commit records the three tracked deletions; `AaveV3Leverager.sol` simply stops existing on disk, since git never tracked it.
 
 ```bash
 git commit -m "chore(contract): delete AaveV3Leverage and AaveV3Leverager, superseded by AaveV3Strategies"
