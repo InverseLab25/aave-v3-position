@@ -19,8 +19,12 @@ export function ceilDiv(a: bigint, b: bigint): bigint {
  * The hard leverage wall: Aave's `borrow` requires debt <= collateral * LTV, and
  * L = C/(C-D), so L <= 1/(1-LTV). Exceed it and the borrow reverts.
  * LTV 7500 -> 40000 (4.00x).
+ *
+ * Returns null when `ltvBps >= BPS`: an LTV at or above 100% has no finite leverage wall and is
+ * not a valid Aave reserve configuration.
  */
-export function maxLeverageForLtvBps(ltvBps: bigint): bigint {
+export function maxLeverageForLtvBps(ltvBps: bigint): bigint | null {
+  if (ltvBps >= BPS) return null;
   return (BPS * BPS) / (BPS - ltvBps);
 }
 
