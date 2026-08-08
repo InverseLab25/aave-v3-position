@@ -113,7 +113,38 @@ export function sizeOpen(p: SizeOpenInput): SizeOpenResult {
   const effRate = (p.rateWad * (BPS - p.rateBufferBps)) / BPS;
   if (effRate <= 0n) return { ok: false, error: "ZERO_RATE" };
 
-  // Flash the exposure the margin does not itself provide, then borrow enough to buy it back.
+  if (p.marginIn === "debt") {
+    // Margin is spent inside the swap, so the exposure is the margin's USD value levered up,
+    // expressed in collateral units.
+    const supplyAmount =
+      (p.marginAmount * p.leverageBps * p.debtPriceUsd * 10n ** BigInt(p.collateralDecimals)) /
+      (BPS * p.collateralPriceUsd * 10n ** BigInt(p.debtDecimals));
+    if (supplyAmount <= 0n) return { ok: false, error: "LEVERAGE_TOO_LOW" };
+
+    const swapIn = ceilDiv(supplyAmount * WAD, effRate);
+    // When the quoted rate beats the oracle-implied one, the margin can cover the whole swap
+    // input on its own and there is nothing left to borrow. The contract reverts ZeroAmount on
+    // a zero borrow, so reject rather than clamp.
+    if (swapIn <= p.marginAmount) return { ok: false, error: "LEVERAGE_TOO_LOW" };
+    const borrowAmount = swapIn - p.marginAmount;
+
+    const expectedSwapOut = (swapIn * p.rateWad) / WAD;
+
+    return {
+      ok: true,
+      size: finish(p, {
+        flashAmount: supplyAmount,
+        borrowAmount,
+        expectedSwapOut,
+        // The flash is repaid out of the output, so the position is the whole output — the
+        // margin is already inside it and must not be added again.
+        expectedCollateral: expectedSwapOut,
+        minOut: max(supplyAmount, (expectedSwapOut * (BPS - p.slippageBps)) / BPS),
+      }),
+    };
+  }
+
+  // Collateral-margin flow: flash the exposure the margin does not provide, borrow to buy it back.
   const flashAmount = (p.marginAmount * (p.leverageBps - BPS)) / BPS;
   if (flashAmount <= 0n) return { ok: false, error: "LEVERAGE_TOO_LOW" };
 
@@ -121,7 +152,6 @@ export function sizeOpen(p: SizeOpenInput): SizeOpenResult {
   if (borrowAmount <= 0n) return { ok: false, error: "LEVERAGE_TOO_LOW" };
 
   const expectedSwapOut = (borrowAmount * p.rateWad) / WAD;
-  // The flash is repaid out of the swap output, so the position keeps margin plus the whole output.
   const expectedCollateral = p.marginAmount + expectedSwapOut;
 
   return {
@@ -131,8 +161,6 @@ export function sizeOpen(p: SizeOpenInput): SizeOpenResult {
       borrowAmount,
       expectedSwapOut,
       expectedCollateral,
-      // The contract enforces both floors; the slippage floor is the one that protects the user,
-      // and it can never be allowed to drop below the amount the flash needs back.
       minOut: max(flashAmount, (expectedSwapOut * (BPS - p.slippageBps)) / BPS),
     }),
   };

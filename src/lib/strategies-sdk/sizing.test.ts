@@ -139,3 +139,80 @@ it("accepts leverage just under the LTV ceiling", () => {
   const r = sizeOpen({ ...collateralMargin, leverageBps: 39_199n });
   expect(r.ok).toBe(true);
 });
+
+const debtMargin: SizeOpenInput = {
+  marginIn: "debt",
+  marginAmount: 5_000_000_000n, // 5000 USDC
+  leverageBps: 30_000n, // 3.00x
+  ...PRICES,
+};
+
+it("sizes a 3x debt-margin open, spending the margin inside the swap", () => {
+  const s = unwrap(sizeOpen(debtMargin));
+  expect(s.flashAmount).toBe(6_000_000_000_000_000_000n); // 6 WETH == $15000 of exposure
+  expect(s.borrowAmount).toBe(10_075_376_885n); // swapIn minus the 5000 USDC margin
+  expect(s.expectedSwapOut).toBe(6_030_150_754_000_000_000n);
+  expect(s.minOut).toBe(6_000_000_000_230_000_000n);
+  expect(s.expectedCollateral).toBe(6_030_150_754_000_000_000n); // the whole swap output
+  expect(s.expectedDebt).toBe(10_075_376_885n);
+});
+
+it("the debt-margin position lands on the same leverage floor", () => {
+  const s = unwrap(sizeOpen(debtMargin));
+  expect(s.expectedLeverageBps).toBe(30_150n); // 3.015x
+  expect(s.expectedHealthFactorBps).toBe(11_970n);
+});
+
+it("the margin is not double-counted: collateral equals the swap output alone", () => {
+  const s = unwrap(sizeOpen(debtMargin));
+  expect(s.expectedCollateral).toBe(s.expectedSwapOut);
+  expect(s.borrowAmount).toBeLessThan(s.borrowAmount + debtMargin.marginAmount);
+});
+
+it("sizes correctly when the debt asset is the 18-decimal one (short direction)", () => {
+  // Mode 3: USDC collateral (6dp, $1), WETH debt (18dp, $2500), margin held in WETH.
+  // One WETH wei is worth 2.5e-9 USDC wei, so rateWad = 2.5e9.
+  const s = unwrap(
+    sizeOpen({
+      marginIn: "debt",
+      marginAmount: 10n ** 18n, // 1 WETH
+      leverageBps: 20_000n,
+      rateWad: 2_500_000_000n,
+      collateralPriceUsd: 100_000_000n,
+      debtPriceUsd: 250_000_000_000n,
+      collateralDecimals: 6,
+      debtDecimals: 18,
+      ltvBps: 7500n,
+      liquidationThresholdBps: 8000n,
+      rateBufferBps: 50n,
+      slippageBps: 50n,
+    }),
+  );
+  expect(s.flashAmount).toBe(5_000_000_000n); // 2 * $2500 = $5000 of USDC collateral
+  expect(s.borrowAmount).toBe(1_010_050_251_256_281_408n); // swapIn minus the 1 WETH margin
+  expect(s.expectedCollateral).toBe(5_025_125_628n);
+  expect(s.expectedCollateral).toBe(s.expectedSwapOut);
+  expect(s.expectedLeverageBps).toBe(20_100n);
+});
+
+it("rejects when a market rate better than the oracle leaves nothing to borrow", () => {
+  // At low leverage the margin can cover the whole swap input on its own once the quoted rate
+  // beats the oracle-implied one. Borrowing zero reverts ZeroAmount on-chain, so reject here.
+  // Note a plain low leverage does NOT trigger this: at the oracle rate the borrow is
+  // (L-1) * margin, which stays positive for any L above 1.
+  const r = sizeOpen({ ...debtMargin, leverageBps: 10_500n, rateWad: 5n * 10n ** 26n });
+  expect(r.ok).toBe(false);
+  expect(r.ok === false && r.error).toBe("LEVERAGE_TOO_LOW");
+});
+
+it("accepts a barely-levered debt-margin open, borrowing only the sliver above the margin", () => {
+  const s = unwrap(sizeOpen({ ...debtMargin, leverageBps: 10_001n }));
+  expect(s.borrowAmount).toBe(25_628_141n); // ~25.6 USDC on a 5000 USDC margin
+  expect(s.expectedLeverageBps).toBe(10_051n);
+});
+
+it("applies the same guardrails as the collateral-margin flow", () => {
+  expect(sizeOpen({ ...debtMargin, marginAmount: 0n }).ok).toBe(false);
+  expect(sizeOpen({ ...debtMargin, leverageBps: 39_200n }).ok).toBe(false);
+  expect(sizeOpen({ ...debtMargin, debtPriceUsd: 0n }).ok).toBe(false);
+});
