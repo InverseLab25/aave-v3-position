@@ -1,11 +1,9 @@
-import { afterEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { OpenPositionForm } from './OpenPositionForm'
 
-// This file renders more than once, unlike PositionPreview.test.tsx's null-render second case —
-// vitest.config.ts does not set `test.globals`, so @testing-library/react's auto-cleanup (which
-// only self-registers when it finds a global `afterEach`) never kicks in. Clean up explicitly.
-afterEach(cleanup)
+// Auto-cleanup between renders comes from vitest.config.ts's `setupFiles` (src/test-setup.ts)
+// repo-wide; no local afterEach(cleanup) needed here.
 
 const BASE = {
   marginStr: '1.0', onMarginChange: vi.fn(), marginBalance: '4.2', marginSymbol: 'WETH',
