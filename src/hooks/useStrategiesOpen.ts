@@ -144,6 +144,13 @@ export function useStrategiesOpen(input: OpenInput | null) {
 
         let quote = null
         let adapter = null
+        // The sizing whose borrowAmount was actually submitted to getQuote for the round that
+        // wins — swapData ends up built against that exact amount, so the preview must report
+        // it verbatim. `sized` keeps moving after that (it drives the next round's amountIn,
+        // or reflects a re-size the loop never re-quoted), so it is NOT safe to read after the
+        // loop: it can be smaller than what was quoted (under-approves the router — reverts)
+        // or larger (a position that was never actually priced).
+        let quotedSize = sized.size
         for (let round = 0; round < MAX_REFINE_ROUNDS; round++) {
           const amountIn = sized.size.borrowAmount.toString()
           const results = await Promise.all(
@@ -165,6 +172,7 @@ export function useStrategiesOpen(input: OpenInput | null) {
 
           quote = best.q
           adapter = best.a
+          quotedSize = sized.size
 
           const resized = sizeOpen({ ...sizeArgs, rateWad: rateFromQuote({
             amountIn: BigInt(quote.amountIn), amountOut: BigInt(quote.amountOut),
@@ -194,17 +202,17 @@ export function useStrategiesOpen(input: OpenInput | null) {
         setPreview({
           collateral, debtAsset,
           marginAsset: marginIn === 'collateral' ? collateral : debtAsset,
-          flashAmount: sized.size.flashAmount,
-          borrowAmount: sized.size.borrowAmount,
+          flashAmount: quotedSize.flashAmount,
+          borrowAmount: quotedSize.borrowAmount,
           minOut: minOutFromBuild({
             buildAmountOut: BigInt(built.amountOut ?? quote.amountOut),
             slippageBps: input.slippageBps,
-            flashAmount: sized.size.flashAmount,
+            flashAmount: quotedSize.flashAmount,
           }),
-          expectedCollateral: sized.size.expectedCollateral,
-          expectedDebt: sized.size.expectedDebt,
-          expectedLeverageBps: sized.size.expectedLeverageBps,
-          expectedHealthFactorBps: sized.size.expectedHealthFactorBps,
+          expectedCollateral: quotedSize.expectedCollateral,
+          expectedDebt: quotedSize.expectedDebt,
+          expectedLeverageBps: quotedSize.expectedLeverageBps,
+          expectedHealthFactorBps: quotedSize.expectedHealthFactorBps,
           router: built.to as Address,
           swapData: built.data as Hex,
           aggregator: adapter.name,

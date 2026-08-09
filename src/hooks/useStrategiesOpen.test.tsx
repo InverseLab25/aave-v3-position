@@ -56,6 +56,37 @@ function stubAdapter(rateNumeratorPerWei: bigint) {
   }
 }
 
+/**
+ * A stub adapter whose achieved rate steps between calls (worse, then better) rather than
+ * staying constant. A constant-rate stub always makes the re-size at the round that produced
+ * the winning quote reproduce that quote's own amountIn exactly, which is why it cannot catch
+ * drift between the reported borrowAmount and what swapData was actually built for.
+ */
+function stepRateAdapter(rateNumeratorPerWeiByCall: readonly bigint[]) {
+  let calls = 0
+  return {
+    name: 'KyberSwap',
+    supportsExecution: true,
+    routerAddress: KYBER,
+    getQuote: vi.fn(async (_f: unknown, _t: unknown, amountIn: string) => {
+      const rate = rateNumeratorPerWeiByCall[Math.min(calls, rateNumeratorPerWeiByCall.length - 1)]
+      calls++
+      return {
+        aggregator: 'KyberSwap',
+        amountIn,
+        amountOut: (BigInt(amountIn) * rate).toString(),
+        amountOutUsd: '0', gasUsd: '0', netReturnUsd: 0,
+        routeDetails: { type: 'kyber' as const, totalAmountIn: BigInt(amountIn), paths: [] },
+        rawQuote: {},
+      }
+    }),
+    buildTransaction: vi.fn(async (q: { amountOut: string }) => ({
+      to: KYBER, data: '0xdeadbeef', value: '0', spender: KYBER,
+      amountOut: q.amountOut,
+    })),
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useChainId.mockReturnValue(1)
@@ -115,6 +146,23 @@ it('reports a sizing rejection rather than throwing', async () => {
   )
   await waitFor(() => expect(result.current.previewError).not.toBeNull())
   expect(result.current.previewError?.kind).toBe('LEVERAGE_ABOVE_LTV')
+})
+
+it('reports the borrow amount that was actually quoted, not a later re-size', async () => {
+  // Round 0 prices worse than the oracle, so the re-size grows and a second round fires.
+  // Round 1 prices back at the oracle rate — better than round 0's — so the re-size against
+  // it shrinks below round 1's own amountIn. swapData is built for round 1's amountIn; the
+  // preview must report THAT borrow amount, not the smaller re-sized one, or the contract
+  // approves less than the router calldata tries to pull.
+  const adapter = stepRateAdapter([399_000_000n, 400_000_000n])
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+
+  const { result } = renderHook(() => useStrategiesOpen(INPUT))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  expect(adapter.getQuote).toHaveBeenCalledTimes(2)
+  const winningAmountIn = BigInt(adapter.getQuote.mock.calls[1][2] as string)
+  expect(result.current.preview?.borrowAmount).toBe(winningAmountIn)
 })
 
 it('reports when no allowlisted router can price the pair', async () => {
