@@ -112,6 +112,19 @@ export interface AvailableReserve {
   variableDebtTokenAddress: `0x${string}`
   aTokenAddress: `0x${string}`
   liquidationThreshold: number
+  /**
+   * Reserve config at native on-chain precision, for the sizing SDK.
+   *
+   * The fields above are lossy Numbers for display; strategies-sdk's sizeOpen needs exact
+   * bigints, and a float round-trip through a price is enough to misplace a wei.
+   */
+  raw: {
+    ltvBps: bigint
+    liquidationThresholdBps: bigint
+    /** USD price on Aave's 8-decimal market-reference scale. */
+    priceUsd: bigint
+    decimals: number
+  }
 }
 
 /**
@@ -293,6 +306,12 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     variableDebtTokenAddress: reserve.variableDebtTokenAddress,
     aTokenAddress: reserve.aTokenAddress,
     liquidationThreshold: Number(reserve.reserveLiquidationThreshold) / 10000,
+    raw: {
+      ltvBps: BigInt(reserve.baseLTVasCollateral),
+      liquidationThresholdBps: BigInt(reserve.reserveLiquidationThreshold),
+      priceUsd: BigInt(reserve.priceInMarketReferenceCurrency),
+      decimals: Number(reserve.decimals),
+    },
   }))
 
 

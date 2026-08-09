@@ -39,6 +39,7 @@ const reserve = {
   variableBorrowRate: RAY / 50n,
   variableDebtTokenAddress: '0x2222222222222222222222222222222222222222',
   aTokenAddress: '0x3333333333333333333333333333333333333333',
+  baseLTVasCollateral: 8000n,
   reserveLiquidationThreshold: 8250n,
   liquidityIndex: RAY,
   variableBorrowIndex: RAY,
@@ -157,5 +158,36 @@ describe('useAavePositions memoisation', () => {
     // The loading branch used to hand back a fresh [] literal every render, which churned
     // identities just as badly as the loaded branch.
     expect(result.current.suppliedAssets).toBe(empty)
+  })
+})
+
+describe('useAavePositions raw reserve config', () => {
+  it('exposes raw reserve config at native precision for the sizing SDK', () => {
+    // Aave returns LTV and liquidation threshold in bps, and price on an 8-decimal USD scale.
+    // The display fields divide these down into lossy Numbers; `raw` must not.
+    mocks.useReadContracts.mockReturnValue({
+      data: makeUiData([
+        {
+          ...reserve,
+          baseLTVasCollateral: 8000n,
+          reserveLiquidationThreshold: 8300n,
+          priceInMarketReferenceCurrency: 250_000_000_000n,
+        },
+      ]),
+      isLoading: false,
+    })
+
+    const { result } = renderHook(() => useAavePositions())
+
+    const weth = result.current.availableReserves.find((r) => r.symbol === 'WETH')
+    expect(weth?.raw).toEqual({
+      ltvBps: 8000n,
+      liquidationThresholdBps: 8300n,
+      priceUsd: 250_000_000_000n,
+      decimals: 18,
+    })
+    // the lossy display fields are unchanged
+    expect(weth?.liquidationThreshold).toBe(0.83)
+    expect(weth?.priceInUsd).toBe('2500')
   })
 })
