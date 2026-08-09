@@ -1073,7 +1073,7 @@ git commit -m "feat(sdk): leverage guardrails for the LTV wall and the health-fa
 - Modify: `src/lib/strategies-sdk/sizing.test.ts` (append)
 
 **Interfaces:**
-- Consumes: `BPS`, `WAD`, `LTV_CEILING_FACTOR_BPS`, `ceilDiv`, `maxLeverageForLtvBps` from Task 5.
+- Consumes: `BPS`, `WAD`, `LTV_CEILING_FACTOR_BPS`, `ceilDiv`, `maxLeverageForLtvBps` from Task 5. Note `maxLeverageForLtvBps` returns `bigint | null` — `null` means the LTV is at or above 100%, which has no finite leverage wall. Narrow it before use; do not assert it away with `!` or `as bigint`.
 - Produces: `type SizeOpenError`, `interface SizeOpenInput`, `interface OpenSize`, `type SizeOpenResult`, `sizeOpen(input: SizeOpenInput): SizeOpenResult`. Task 7 extends `sizeOpen` with the debt-margin branch; do not rename anything here.
 
 Background — the collateral-margin flow (`openWithCollateralMargin`, UX modes 1 and 4). The contract pulls margin `M`, flash-borrows `flashAmount`, supplies `flashAmount + M`, borrows `B`, swaps `B` into collateral, and the output must clear `flashAmount`. Whatever the swap over-delivers folds back into the supply, so:
@@ -1199,6 +1199,7 @@ it.each([
   ["LEVERAGE_TOO_LOW", { leverageBps: 10_000n }],
   ["LEVERAGE_ABOVE_LTV", { leverageBps: 39_200n }], // == 0.98 * the 4.00x wall
   ["ZERO_PRICE", { collateralPriceUsd: 0n }],
+  ["INVALID_LTV", { ltvBps: 10_000n }], // 100% LTV has no finite wall; must not throw
 ])("rejects with %s rather than throwing", (error, override) => {
   const r = sizeOpen({ ...collateralMargin, ...override });
   expect(r.ok).toBe(false);
@@ -1225,6 +1226,7 @@ export type SizeOpenError =
   | "ZERO_MARGIN"
   | "ZERO_RATE"
   | "ZERO_PRICE"
+  | "INVALID_LTV"
   | "LEVERAGE_TOO_LOW"
   | "LEVERAGE_ABOVE_LTV";
 
@@ -1280,7 +1282,12 @@ export function sizeOpen(p: SizeOpenInput): SizeOpenResult {
   if (p.collateralPriceUsd <= 0n || p.debtPriceUsd <= 0n) return { ok: false, error: "ZERO_PRICE" };
   if (p.leverageBps <= BPS) return { ok: false, error: "LEVERAGE_TOO_LOW" };
 
-  const ceiling = (maxLeverageForLtvBps(p.ltvBps) * LTV_CEILING_FACTOR_BPS) / BPS;
+  // `maxLeverageForLtvBps` returns null for an LTV at or above 100%, which has no finite wall
+  // and is not a valid Aave reserve config. Reject rather than let the arithmetic throw.
+  const wall = maxLeverageForLtvBps(p.ltvBps);
+  if (wall === null) return { ok: false, error: "INVALID_LTV" };
+
+  const ceiling = (wall * LTV_CEILING_FACTOR_BPS) / BPS;
   if (p.leverageBps >= ceiling) return { ok: false, error: "LEVERAGE_ABOVE_LTV" };
 
   // The buffer is applied to the rate rather than to the borrow, so a thinner quoted rate and a
