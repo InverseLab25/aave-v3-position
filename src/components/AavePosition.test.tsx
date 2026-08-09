@@ -1,17 +1,20 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { beforeEach, expect, it, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import type { AvailableReserve } from '../hooks/useAavePositions'
 
-// AavePosition composes a lot of hooks; only useAavePositions, wagmi's useChainId (which
-// LeverageActions calls directly), config/chains' getStrategiesAddress (which gates
-// LeverageActions), and useStrategiesOpen (LeverageActions' sizing/quoting hook) are
-// mocked. Everything else — LiquidationPriceBlock, OpenPositionForm, PositionPreview,
-// the lazy modals — renders for real, same approach as LeverageActions.test.tsx.
+// AavePosition composes a lot of hooks; only useAavePositions, wagmi's useChainId/useConnection/
+// useReadContract (LeverageActions calls these directly — the latter for the margin asset's
+// wallet balance), config/chains' getStrategiesAddress (which gates LeverageActions), and
+// useStrategiesOpen (LeverageActions' sizing/quoting hook) are mocked. Everything else —
+// LiquidationPriceBlock, OpenPositionForm, PositionPreview, the lazy modals — renders for real,
+// same approach as LeverageActions.test.tsx.
 const mocks = vi.hoisted(() => ({
   useAavePositions: vi.fn(),
   getStrategiesAddress: vi.fn(),
   useStrategiesOpen: vi.fn(),
   useChainId: vi.fn(),
+  useConnection: vi.fn(),
+  useReadContract: vi.fn(),
 }))
 
 vi.mock('../hooks/useAavePositions', async (orig) => ({
@@ -23,13 +26,16 @@ vi.mock('../config/chains', async (orig) => ({
   getStrategiesAddress: mocks.getStrategiesAddress,
 }))
 vi.mock('../hooks/useStrategiesOpen', () => ({ useStrategiesOpen: mocks.useStrategiesOpen }))
-vi.mock('wagmi', () => ({ useChainId: mocks.useChainId }))
+vi.mock('wagmi', () => ({
+  useChainId: mocks.useChainId,
+  useConnection: mocks.useConnection,
+  useReadContract: mocks.useReadContract,
+}))
 
 import { AavePosition } from './AavePosition'
 
-// vitest.config.ts does not set `test.globals`, so @testing-library/react's auto-cleanup
-// never self-registers — see the same note in OpenPositionForm.test.tsx.
-afterEach(cleanup)
+// Auto-cleanup between renders comes from vitest.config.ts's `setupFiles` (src/test-setup.ts)
+// repo-wide; no local afterEach(cleanup) needed here.
 
 const WETH: AvailableReserve = {
   symbol: 'WETH',
@@ -83,11 +89,13 @@ const EMPTY_PORTFOLIO = {
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useChainId.mockReturnValue(1)
+  mocks.useConnection.mockReturnValue({ address: undefined })
+  mocks.useReadContract.mockReturnValue({ data: undefined })
   mocks.useAavePositions.mockReturnValue(EMPTY_PORTFOLIO)
   mocks.useStrategiesOpen.mockReturnValue({
     preview: null, previewError: null, isQuoting: false,
     refresh: vi.fn(), frozen: { current: false },
-    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null,
+    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
   })
 })
 

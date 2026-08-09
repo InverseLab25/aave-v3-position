@@ -1,4 +1,4 @@
-import { leverageCeilingBps } from '../lib/openPlan'
+import { LEVERAGE_STEP_BPS, leverageCeilingBps, sliderMax } from '../lib/openPlan'
 import { T } from '../styles/theme'
 
 interface OpenPositionFormProps {
@@ -19,24 +19,6 @@ interface OpenPositionFormProps {
 }
 
 const MIN_LEVERAGE_BPS = 10_100n
-/** Slider step, in bps. Also the amount trimmed off the `hard` wall — see `sliderMax` below. */
-const STEP_BPS = 100n
-
-/**
- * The slider's upper bound.
- *
- * `hard` (from `leverageCeilingBps`) is EXCLUSIVE: `sizeOpen` rejects with LEVERAGE_ABOVE_LTV
- * once `leverageBps >= ceiling`, and `ceiling` is exactly `hard`. A slider whose max is `hard`
- * therefore lets a user drag to a value the SDK then rejects. So whenever the computed ceiling
- * (soft, or hard once the danger zone is opened, or hard again when soft is unreachable) lands
- * exactly on `hard`, back it off by one slider step so every reachable value is accepted. `soft`
- * is normally strictly below `hard` and needs no adjustment — except the clamped case where
- * `leverageCeilingBps` itself sets `soft = hard`, which this same check catches.
- */
-function sliderMax(soft: bigint | null, hard: bigint, dangerEnabled: boolean): bigint {
-  const raw = dangerEnabled || soft === null ? hard : soft
-  return raw === hard ? hard - STEP_BPS : raw
-}
 
 /**
  * Margin amount, which asset it is posted in, and how much leverage.
@@ -104,7 +86,7 @@ export function OpenPositionForm(p: OpenPositionFormProps) {
         role="slider"
         min={Number(MIN_LEVERAGE_BPS)}
         max={Number(max)}
-        step={Number(STEP_BPS)}
+        step={Number(LEVERAGE_STEP_BPS)}
         value={Number(p.leverageBps)}
         disabled={!usable}
         onChange={(e) => p.onLeverageChange(BigInt(e.target.value))}

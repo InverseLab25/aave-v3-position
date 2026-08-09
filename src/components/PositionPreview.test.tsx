@@ -16,6 +16,7 @@ const PREVIEW = {
   router: '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5',
   swapData: '0x',
   aggregator: 'KyberSwap',
+  priceImpactPercent: null,
 } as const
 
 it('shows the resulting position, not the inputs', () => {
@@ -31,6 +32,17 @@ it('shows the resulting position, not the inputs', () => {
   expect(screen.getByText(/1\.60/)).toBeTruthy()       // health factor
   expect(screen.getByText(/2\.00x/)).toBeTruthy()      // realized leverage
   expect(screen.getByText(/KyberSwap/)).toBeTruthy()
+})
+
+it('flags price impact past PRICE_IMPACT_HIGH_PERCENT', () => {
+  render(
+    <PositionPreview
+      preview={{ ...PREVIEW, priceImpactPercent: 3.4 }} collateralSymbol="WETH" debtSymbol="USDC"
+      collateralDecimals={18} debtDecimals={6}
+      collateralPriceUsd={2500} debtPriceUsd={1} liquidationThreshold={0.8}
+    />,
+  )
+  expect(screen.getByText(/3\.40%/)).toBeTruthy()
 })
 
 it('renders nothing when there is no preview yet', () => {

@@ -2,6 +2,7 @@ import { formatUnits } from 'viem'
 import type { OpenPreview } from '../hooks/useStrategiesOpen'
 import { evaluateHf } from '../utils/health'
 import { computeLiquidationView } from '../utils/liquidation'
+import { PRICE_IMPACT_HIGH_PERCENT } from '../lib/swapRoute'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { T } from '../styles/theme'
 
@@ -61,6 +62,9 @@ export function PositionPreview({
     ['Route', preview.aggregator],
   ]
 
+  const priceImpact = preview.priceImpactPercent
+  const priceImpactHigh = priceImpact != null && priceImpact > PRICE_IMPACT_HIGH_PERCENT
+
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', gap: T.space[2],
@@ -77,6 +81,14 @@ export function PositionPreview({
           <span style={{ fontWeight: 600 }}>{value}</span>
         </div>
       ))}
+      {priceImpact != null && (
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span style={{ color: T.textMuted }}>Price impact</span>
+          <span style={{ fontWeight: 600, color: priceImpactHigh ? T.danger : T.text }}>
+            {priceImpact < 0 ? '+' : '−'}{Math.abs(priceImpact).toFixed(2)}%
+          </span>
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>
         <span style={{ color: T.textMuted }}>Health factor</span>
         <span style={{ fontWeight: 600, color: hfLevel.level === 'ok' ? T.success : hfLevel.level === 'warn' ? T.warning : T.danger }}>

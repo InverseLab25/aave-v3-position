@@ -1,10 +1,12 @@
-import { afterEach, expect, it, vi, beforeEach } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { expect, it, vi, beforeEach } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import type { AvailableReserve } from '../hooks/useAavePositions'
 
 const mocks = vi.hoisted(() => ({
   getStrategiesAddress: vi.fn(),
   useStrategiesOpen: vi.fn(),
   useChainId: vi.fn(),
+  useReadContract: vi.fn(),
 }))
 
 vi.mock('../config/chains', async (orig) => ({
@@ -12,26 +14,83 @@ vi.mock('../config/chains', async (orig) => ({
   getStrategiesAddress: mocks.getStrategiesAddress,
 }))
 vi.mock('../hooks/useStrategiesOpen', () => ({ useStrategiesOpen: mocks.useStrategiesOpen }))
-vi.mock('wagmi', () => ({ useChainId: mocks.useChainId, useConnection: () => ({ address: undefined }) }))
+vi.mock('wagmi', () => ({
+  useChainId: mocks.useChainId,
+  useConnection: () => ({ address: undefined }),
+  useReadContract: mocks.useReadContract,
+}))
 
 import { LeverageActions } from './LeverageActions'
 
-// This file renders more than once per describe block; vitest.config.ts does not set
-// `test.globals`, so @testing-library/react's auto-cleanup never self-registers. See the
-// same note in OpenPositionForm.test.tsx.
-afterEach(cleanup)
+// Auto-cleanup between renders comes from vitest.config.ts's `setupFiles` (src/test-setup.ts)
+// repo-wide; no local afterEach(cleanup) needed here.
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useChainId.mockReturnValue(1)
+  mocks.useReadContract.mockReturnValue({ data: undefined })
   mocks.useStrategiesOpen.mockReturnValue({
     preview: null, previewError: null, isQuoting: false,
     refresh: vi.fn(), frozen: { current: false },
-    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null,
+    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
   })
 })
 
 const PROPS = { suppliedAssets: [], availableReserves: [], viewAddress: undefined }
+
+const WETH: AvailableReserve = {
+  symbol: 'WETH', underlyingAsset: '0x1111111111111111111111111111111111111111',
+  decimals: 18, priceInUsd: '2500', apy: 0, borrowApy: 0,
+  variableDebtTokenAddress: '0x2222222222222222222222222222222222222222',
+  aTokenAddress: '0x3333333333333333333333333333333333333333',
+  liquidationThreshold: 0.8,
+  raw: { ltvBps: 7500n, liquidationThresholdBps: 8000n, priceUsd: 250_000_000_000n, decimals: 18 },
+}
+
+const USDC: AvailableReserve = {
+  symbol: 'USDC', underlyingAsset: '0x4444444444444444444444444444444444444444',
+  decimals: 6, priceInUsd: '1', apy: 0, borrowApy: 0,
+  variableDebtTokenAddress: '0x5555555555555555555555555555555555555555',
+  aTokenAddress: '0x6666666666666666666666666666666666666666',
+  liquidationThreshold: 0.85,
+  raw: { ltvBps: 8700n, liquidationThresholdBps: 8900n, priceUsd: 100_000_000n, decimals: 6 },
+}
+
+// A tight-LTV reserve whose soft (HF 1.5) ceiling sits BELOW the panel's 2.00x default —
+// exactly the case the default is not universally safe for.
+const TIGHT: AvailableReserve = {
+  symbol: 'TIGHT', underlyingAsset: '0x7777777777777777777777777777777777777777',
+  decimals: 18, priceInUsd: '2000', apy: 0, borrowApy: 0,
+  variableDebtTokenAddress: '0x8888888888888888888888888888888888888888',
+  aTokenAddress: '0x9999999999999999999999999999999999999999',
+  liquidationThreshold: 0.65,
+  raw: { ltvBps: 6000n, liquidationThresholdBps: 6500n, priceUsd: 200_000_000_000n, decimals: 18 },
+}
+
+it('clamps the default leverage down to the soft ceiling on mount, for a reserve where 2.00x is unsafe', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  // TIGHT's soft ceiling (HF 1.5) is maxLeverageForHealthFactorBps(6500, 15000) = 17647bps —
+  // below the 20_000n (2.00x) the panel otherwise starts at.
+  render(<LeverageActions {...PROPS} availableReserves={[TIGHT, USDC]} />)
+  expect(screen.getByText('1.76x')).toBeTruthy()
+  expect(screen.queryByText('2.00x')).toBeNull()
+})
+
+it('clamps leverage back down when the danger-zone toggle turns off', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  render(<LeverageActions {...PROPS} availableReserves={[WETH, USDC]} />)
+
+  // Opt into the danger zone, drag past the soft (2.14x) ceiling, then opt back out.
+  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.change(screen.getByRole('slider'), { target: { value: '30000' } })
+  expect(screen.getByText('3.00x')).toBeTruthy()
+
+  fireEvent.click(screen.getByRole('checkbox'))
+  // Lowering the slider's `max` alone does not lower this state — the DOM clamps the thumb,
+  // but sizeOpen still receives 3.00x unless the state itself is clamped back down.
+  expect(screen.queryByText('3.00x')).toBeNull()
+  expect(screen.getByText('2.14x')).toBeTruthy()
+})
 
 it('renders nothing while the contract is undeployed', () => {
   mocks.getStrategiesAddress.mockReturnValue(null)
