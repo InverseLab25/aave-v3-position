@@ -83,7 +83,7 @@ skipped and the slider runs to the hard wall directly.
 
 | File | Responsibility |
 | --- | --- |
-| `src/lib/swapRoute.ts` | **Moved** out of `closePlan.ts`: `routeCostPercent`, `PRICE_IMPACT_HIGH_PERCENT`, `PRICE_IMPACT_BLOCK_PERCENT`, `MAX_OUTPUT_DEGRADATION_PERCENT`, `isSlippageShapedFailure`, `suggestWiderSlippage`, `canReuseSignature`, `reuseBlocker`, `HeldSignature`, `SignatureNeed` |
+| `src/lib/swapRoute.ts` | **Moved** out of `closePlan.ts`: `routeCostPercent`, `PRICE_IMPACT_HIGH_PERCENT`, `PRICE_IMPACT_BLOCK_PERCENT`, `MAX_OUTPUT_DEGRADATION_PERCENT`, `isSlippageShapedFailure`, `suggestWiderSlippage`. The signature-reuse helpers (`canReuseSignature`, `reuseBlocker`, `HeldSignature`, `SignatureNeed`) stay in `closePlan.ts` — the open flow freezes its plan at signing, so it never re-quotes underneath a held signature and has nothing to reuse. Extract them when phase 3 needs them. |
 | `src/lib/openPlan.ts` | **New**, pure — no React, no fetch: `rateFromOracle`, `rateFromQuote`, the refine-round decision, preview assembly |
 | `src/hooks/useStrategiesOpen.ts` | **New** — orchestration only: preview, and approve → sign → send |
 | `src/components/LeverageActions.tsx` | **New** — panel shell, Open/Boost/Repay tabs, Long/Short sidebar |
@@ -156,11 +156,13 @@ rateFromQuote  = amountOut * WAD / amountIn
 | `writeContract(planOpen(...))` | 3 | never |
 
 **The plan freezes at signature time.** The delegation signature commits to an exact
-`borrowAmount` — the contract borrows precisely the signed value. So the preview timer stops once
-signing begins, and any input change afterwards discards the held signature and restarts the
-preview. `canReuseSignature` covers deadline freshness; an exact-amount match is an additional
-required check. A preview refresh landing between signing and sending would otherwise send a
-transaction whose borrow does not match its signature.
+`borrowAmount` — the contract borrows precisely the signed value. So the preview effect returns
+early while a signature is held, and the flag clears when the flow ends. A preview refresh landing
+between signing and sending would otherwise send a transaction whose borrow does not match its
+signature.
+
+Freezing is why this flow needs no signature-reuse machinery: it never re-quotes underneath a held
+signature, so there is never a stale one to evaluate.
 
 ### Gating
 
