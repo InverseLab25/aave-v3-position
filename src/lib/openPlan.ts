@@ -11,6 +11,7 @@ import {
   WAD,
   maxLeverageForHealthFactorBps,
   maxLeverageForLtvBps,
+  type SizeOpenError,
 } from './strategies-sdk'
 
 export interface OracleRateInput {
@@ -112,4 +113,57 @@ export function leverageCeilingBps(p: {
   if (target === null) return { soft: null, hard }
 
   return { soft: target > hard ? hard : target, hard }
+}
+
+/** Leverage slider step, in bps. Also the amount trimmed off the `hard` wall — see `sliderMax`. */
+export const LEVERAGE_STEP_BPS = 100n
+
+/**
+ * The leverage slider's upper bound.
+ *
+ * `hard` (from `leverageCeilingBps`) is EXCLUSIVE: `sizeOpen` rejects with LEVERAGE_ABOVE_LTV
+ * once `leverageBps >= ceiling`, and `ceiling` is exactly `hard`. A slider whose max is `hard`
+ * therefore lets a user drag to a value the SDK then rejects. So whenever the computed ceiling
+ * (soft, or hard once the danger zone is opened, or hard again when soft is unreachable) lands
+ * exactly on `hard`, back it off by one slider step so every reachable value is accepted. `soft`
+ * is normally strictly below `hard` and needs no adjustment — except the clamped case where
+ * `leverageCeilingBps` itself sets `soft = hard`, which this same check catches.
+ *
+ * Lives here rather than in OpenPositionForm.tsx (which renders the slider) so LeverageActions
+ * can clamp its `leverageBps` state to the same ceiling without either duplicating this math or
+ * importing it from a component file — the latter trips
+ * react-refresh/only-export-components, which wants component files to export components only.
+ */
+export function sliderMax(soft: bigint | null, hard: bigint, dangerEnabled: boolean): bigint {
+  const raw = dangerEnabled || soft === null ? hard : soft
+  return raw === hard ? hard - LEVERAGE_STEP_BPS : raw
+}
+
+/**
+ * User-facing copy for a sizing rejection, per the design spec's "Sizing rejections" table.
+ *
+ * `SizeOpenError`'s members are internal enum names (`LEVERAGE_ABOVE_LTV`) meant for logs, not
+ * a UI — showing them raw is Task "IMPORTANT 7". `LEVERAGE_ABOVE_LTV` additionally needs the
+ * actual ceiling: the slider already clamps to it, so the message is only a backstop
+ * explanation for whatever got the user past the slider (e.g. the danger-zone toggle).
+ */
+export function sizeOpenErrorMessage(
+  error: SizeOpenError,
+  ctx: { collateralSymbol: string; hardCeilingBps: bigint | null },
+): string {
+  switch (error) {
+    case 'ZERO_MARGIN':
+      return 'Enter a margin amount'
+    case 'LEVERAGE_TOO_LOW':
+      return 'Leverage must be above 1x'
+    case 'LEVERAGE_ABOVE_LTV': {
+      const n = ctx.hardCeilingBps !== null ? (Number(ctx.hardCeilingBps) / 10000).toFixed(2) : '?'
+      return `Max leverage for ${ctx.collateralSymbol} is ${n}x`
+    }
+    case 'ZERO_RATE':
+    case 'ZERO_PRICE':
+      return 'Price data unavailable — retry'
+    case 'INVALID_LTV':
+      return 'This asset can\'t be used as collateral'
+  }
 }

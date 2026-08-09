@@ -1,5 +1,6 @@
 import { expect, it, vi, beforeEach } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
+import type { Adapter } from '../adapters/types'
 
 const mocks = vi.hoisted(() => ({
   getAllowedRouters: vi.fn(),
@@ -33,8 +34,8 @@ const DATA_PROVIDER = '0x000000000000000000000000000000000000da7a' as const
 const VDEBT = '0x000000000000000000000000000000000000deb0' as const
 
 const RESERVES = {
-  collateral: { address: WETH, decimals: 18, priceUsd: 250_000_000_000n, ltvBps: 7500n, liquidationThresholdBps: 8000n },
-  debt: { address: USDC, decimals: 6, priceUsd: 100_000_000n, ltvBps: 8700n, liquidationThresholdBps: 8900n },
+  collateral: { address: WETH, symbol: 'WETH', decimals: 18, priceUsd: 250_000_000_000n, ltvBps: 7500n, liquidationThresholdBps: 8000n },
+  debt: { address: USDC, symbol: 'USDC', decimals: 6, priceUsd: 100_000_000n, ltvBps: 8700n, liquidationThresholdBps: 8900n },
 }
 
 const INPUT = {
@@ -44,11 +45,10 @@ const INPUT = {
 }
 
 /** A stub adapter whose quote is a fixed rate, and whose build re-simulates a shade worse. */
-function stubAdapter(rateNumeratorPerWei: bigint) {
+function stubAdapter(rateNumeratorPerWei: bigint): Adapter {
   return {
     name: 'KyberSwap',
     supportsExecution: true,
-    routerAddress: KYBER,
     getQuote: vi.fn(async (_f: unknown, _t: unknown, amountIn: string) => ({
       aggregator: 'KyberSwap',
       amountIn,
@@ -70,12 +70,11 @@ function stubAdapter(rateNumeratorPerWei: bigint) {
  * the winning quote reproduce that quote's own amountIn exactly, which is why it cannot catch
  * drift between the reported borrowAmount and what swapData was actually built for.
  */
-function stepRateAdapter(rateNumeratorPerWeiByCall: readonly bigint[]) {
+function stepRateAdapter(rateNumeratorPerWeiByCall: readonly bigint[]): Adapter {
   let calls = 0
   return {
     name: 'KyberSwap',
     supportsExecution: true,
-    routerAddress: KYBER,
     getQuote: vi.fn(async (_f: unknown, _t: unknown, amountIn: string) => {
       const rate = rateNumeratorPerWeiByCall[Math.min(calls, rateNumeratorPerWeiByCall.length - 1)]
       calls++
@@ -133,6 +132,26 @@ it('previews a 2x open, sizing against the quoted rate rather than the oracle', 
   expect(result.current.previewError).toBeNull()
 })
 
+it('quotes and builds the debt-margin swap for borrowAmount + marginAmount, not borrowAmount alone', async () => {
+  // AaveV3Strategies.sol's _open swaps `borrowAmount + (mode == MODE_OPEN_COLL ? 0 :
+  // marginAmount)` — on the debt-margin path (mode 2 here: long, margin posted in the debt
+  // asset) that is strictly more than borrowAmount alone. Quoting/building for borrowAmount
+  // alone undersizes the trade by exactly marginAmount, so the output falls short of minOut
+  // and the contract reverts InsufficientOutputFromRouter on every attempt.
+  const adapter = stubAdapter(400_000_000n) // exactly the oracle rate for RESERVES — one round.
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+
+  const debtMarginInput = { ...INPUT, mode: 2 as const, marginAmount: 1_000_000_000n } // 1000 USDC
+
+  const { result } = renderHook(() => useStrategiesOpen(debtMarginInput))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  // adapter is typed as the real `Adapter` interface (see stubAdapter's return type), so
+  // `.mock` needs vitest's own escape hatch to reach the underlying mock's call log.
+  const quotedAmountIn = BigInt(vi.mocked(adapter.getQuote).mock.calls[0][2] as string)
+  expect(quotedAmountIn).toBe(result.current.preview!.borrowAmount + debtMarginInput.marginAmount)
+})
+
 it('re-quotes once when the re-sized borrow grew, and stops there', async () => {
   // A rate worse than the oracle's makes the second sizing ask for more than was quoted.
   const adapter = stubAdapter(399_000_000n)
@@ -142,6 +161,15 @@ it('re-quotes once when the re-sized borrow grew, and stops there', async () => 
   await waitFor(() => expect(result.current.preview).not.toBeNull())
 
   expect(adapter.getQuote).toHaveBeenCalledTimes(2)
+})
+
+it('reports no-client rather than hanging when the public client is unavailable', async () => {
+  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+  mocks.usePublicClient.mockReturnValue(undefined)
+
+  const { result } = renderHook(() => useStrategiesOpen(INPUT))
+  await waitFor(() => expect(result.current.previewError).not.toBeNull())
+  expect(result.current.previewError?.kind).toBe('no-client')
 })
 
 it('blocks when the contract is paused', async () => {
@@ -180,7 +208,7 @@ it('reports the borrow amount that was actually quoted, not a later re-size', as
   await waitFor(() => expect(result.current.preview).not.toBeNull())
 
   expect(adapter.getQuote).toHaveBeenCalledTimes(2)
-  const winningAmountIn = BigInt(adapter.getQuote.mock.calls[1][2] as string)
+  const winningAmountIn = BigInt(vi.mocked(adapter.getQuote).mock.calls[1][2] as string)
   expect(result.current.preview?.borrowAmount).toBe(winningAmountIn)
 })
 
@@ -232,4 +260,23 @@ it('freezes the preview while a signature is held', async () => {
   result.current.refresh()
   // A refresh while frozen must not replace the plan the signature commits to.
   await waitFor(() => expect(result.current.preview).toBe(before))
+})
+
+it('invalidates the preview synchronously on an input change, before the debounce elapses', async () => {
+  // A caller gates execution on `!preview` (and/or `isQuoting`). If the old preview survives
+  // the whole DEBOUNCE_MS window after an input change, that gate stays open over amounts that
+  // no longer match the inputs — a mismatch between what the UI shows and what execute() would
+  // actually send, for the entire debounce window.
+  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+  const { result, rerender } = renderHook(
+    (props: typeof INPUT) => useStrategiesOpen(props),
+    { initialProps: INPUT },
+  )
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  rerender({ ...INPUT, marginAmount: INPUT.marginAmount * 2n })
+
+  // Checked synchronously, deliberately not via waitFor: the whole point is that this holds
+  // BEFORE the debounce timer has had any chance to fire.
+  expect(result.current.preview).toBeNull()
 })
