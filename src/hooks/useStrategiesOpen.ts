@@ -6,13 +6,20 @@
  * to size a first quote, not good enough to sign.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useChainId, useConnection, usePublicClient } from 'wagmi'
-import type { Address, Hex } from 'viem'
+import { useChainId, useConnection, usePublicClient, useSignTypedData, useWriteContract } from 'wagmi'
+import { parseAbi, type Address, type Hex } from 'viem'
 import {
   getAllowedRouters,
+  getDelegationAllowance,
   getPauseState,
+  getPermitContext,
   resolveMode,
   sizeOpen,
+  planOpen,
+  buildCreditDelegation,
+  toStrategiesSig,
+  ZERO_STRATEGIES_SIG,
+  aaveV3StrategiesAbi,
   type OpenMode,
   type SizeOpenError,
 } from '../lib/strategies-sdk'
@@ -25,6 +32,9 @@ import {
 } from '../lib/openPlan'
 import { getAdaptersForChain } from '../adapters'
 import { getChainConfig } from '../config/chains'
+import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
+import { decodeStrategiesError } from '../lib/strategiesErrors'
+import { extractRevertMessage } from '../utils/errors'
 
 export interface ReserveInfo {
   address: Address
@@ -71,15 +81,49 @@ export interface OpenPreview {
 
 const DEBOUNCE_MS = 400
 
-export function useStrategiesOpen(input: OpenInput | null) {
+export type OpenStep = 'idle' | 'approving' | 'signing' | 'sending' | 'done' | 'error'
+
+const ERC20_ABI = parseAbi([
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+] as const)
+
+/** How long a delegation signature stays valid. Long enough to survive a build and inclusion. */
+const SIGNATURE_TTL_S = 1800n
+
+export interface OpenDeps {
+  writeContract: (args: {
+    address: Address
+    abi: readonly unknown[]
+    functionName: string
+    args: readonly unknown[]
+  }) => Promise<Hex>
+  signTypedData: (payload: unknown) => Promise<Hex>
+}
+
+/**
+ * `injected` is a PARTIAL override, not an all-or-nothing swap: a test that only wants to stub
+ * `signTypedData` still gets the real `writeContract` wired to wagmi underneath, and vice versa.
+ * That is also why `useWriteContract`/`useSignTypedData` are called unconditionally below rather
+ * than skipped when `injected` is present — rules of hooks, and the merge needs both live.
+ */
+export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<OpenDeps>) {
   const client = usePublicClient()
   const chainId = useChainId()
   const { address: owner } = useConnection()
+
+  // wagmi's hooks must be called unconditionally, so they run even when deps are injected —
+  // the injected object simply wins, field by field (see OpenDeps above).
+  const { writeContractAsync } = useWriteContract()
+  const { signTypedDataAsync } = useSignTypedData()
 
   const [preview, setPreview] = useState<OpenPreview | null>(null)
   const [previewError, setPreviewError] = useState<PreviewError | null>(null)
   const [isQuoting, setIsQuoting] = useState(false)
   const [tick, setTick] = useState(0)
+  const [step, setStep] = useState<OpenStep>('idle')
+  const [txHash, setTxHash] = useState<Hex | undefined>()
+  const [execError, setExecError] = useState<string | null>(null)
 
   /** Set while a signature is held, to stop the preview moving underneath it (Task 7). */
   const frozen = useRef(false)
@@ -232,5 +276,81 @@ export function useStrategiesOpen(input: OpenInput | null) {
     }
   }, [input, client, chainId, owner, tick])
 
-  return { preview, previewError, isQuoting, refresh, frozen }
+  const execute = useCallback(async () => {
+    if (!input || !preview || !client || !owner) return
+
+    // The delegation signs an exact borrowAmount, so the plan must not move once we start.
+    frozen.current = true
+    setExecError(null)
+    try {
+      // A partial override, not an all-or-nothing swap: a caller stubbing only `signTypedData`
+      // still gets the real `writeContract` wired to wagmi underneath, and vice versa.
+      const deps: OpenDeps = {
+        writeContract:
+          injected?.writeContract ??
+          ((args) => writeContractAsync(args as Parameters<typeof writeContractAsync>[0])),
+        signTypedData:
+          injected?.signTypedData ??
+          ((payload) => signTypedDataAsync(payload as Parameters<typeof signTypedDataAsync>[0])),
+      }
+
+      const chainConfig = getChainConfig(chainId)
+      if (!chainConfig) throw new Error('Unsupported chain')
+      const dataProvider = await getPoolDataProvider(client, chainId, chainConfig.aave.poolAddressesProvider)
+      const { vDebt: variableDebtToken } = await getReserveTokens(client, chainId, dataProvider, preview.debtAsset)
+
+      // 1. Approve the margin, unless the allowance already covers it.
+      setStep('approving')
+      const allowance = (await client.readContract({
+        address: preview.marginAsset, abi: ERC20_ABI, functionName: 'allowance',
+        args: [owner, input.contract],
+      })) as bigint
+      if (allowance < input.marginAmount) {
+        await deps.writeContract({
+          address: preview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
+          args: [input.contract, input.marginAmount],
+        })
+      }
+
+      // 2. Delegate credit, unless a standing delegation already covers this borrow.
+      setStep('signing')
+      const standing = await getDelegationAllowance(client, variableDebtToken, owner, input.contract)
+      let delegation = ZERO_STRATEGIES_SIG
+      if (standing < preview.borrowAmount) {
+        const ctx = await getPermitContext(client, variableDebtToken, owner)
+        const deadline = BigInt(Math.floor(Date.now() / 1000)) + SIGNATURE_TTL_S
+        const signature = await deps.signTypedData(
+          buildCreditDelegation({
+            chainId, debtToken: variableDebtToken, debtTokenName: ctx.name,
+            delegatee: input.contract, value: preview.borrowAmount,
+            nonce: ctx.nonce, deadline,
+          }),
+        )
+        delegation = toStrategiesSig(signature, deadline)
+      }
+
+      // 3. Send.
+      setStep('sending')
+      const plan = planOpen({
+        mode: input.mode, volatile: input.volatile, stable: input.stable,
+        flashAmount: preview.flashAmount, borrowAmount: preview.borrowAmount,
+        marginAmount: input.marginAmount, minOut: preview.minOut,
+        router: preview.router, swapData: preview.swapData, delegation,
+      })
+      const hash = await deps.writeContract({
+        address: input.contract, abi: aaveV3StrategiesAbi,
+        functionName: plan.functionName, args: plan.args,
+      })
+      setTxHash(hash)
+      setStep('done')
+    } catch (err) {
+      const decoded = decodeStrategiesError(err)
+      setExecError(decoded?.message ?? extractRevertMessage(err))
+      setStep('error')
+    } finally {
+      frozen.current = false
+    }
+  }, [input, preview, client, owner, chainId, injected, writeContractAsync, signTypedDataAsync])
+
+  return { preview, previewError, isQuoting, refresh, frozen, step, txHash, execError, execute }
 }
