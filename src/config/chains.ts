@@ -10,6 +10,7 @@ export interface ChainConfig {
     poolAddressesProvider: `0x${string}`;
     wethGateway?: `0x${string}`;
     deleverager?: `0x${string}`;
+    strategies?: `0x${string}`;
   };
   adapters: string[];
   defaultTokens: Asset[];
@@ -26,6 +27,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e',
       wethGateway: '0xd01607c3C5eCABa394D8be377a08590149325722',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_1 ?? '') as `0x${string}`,
+      strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_1 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
@@ -179,6 +181,13 @@ const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 /** The configured deleverager for a chain, or null when unset/zero/malformed. */
 export function getDeleveragerAddress(chainId: number | undefined): `0x${string}` | null {
   const addr = getChainConfig(chainId)?.aave.deleverager;
+  if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
+  return addr;
+}
+
+/** The configured Strategies router for a chain, or null when unset/zero/malformed. */
+export function getStrategiesAddress(chainId: number | undefined): `0x${string}` | null {
+  const addr = getChainConfig(chainId)?.aave.strategies;
   if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
   return addr;
 }
