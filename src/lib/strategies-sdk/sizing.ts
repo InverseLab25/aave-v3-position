@@ -40,6 +40,10 @@ export function maxLeverageForHealthFactorBps(ltBps: bigint, targetHfBps: bigint
   return (targetHfBps * BPS) / (targetHfBps - ltBps);
 }
 
+/** Which role the wallet's margin plays — picks the contract entry point and the math.
+ *  Shared with `plan.ts`'s `resolveMode` so the two can never drift apart. */
+export type MarginIn = "collateral" | "debt";
+
 export type SizeOpenError =
   | "ZERO_MARGIN"
   | "ZERO_RATE"
@@ -50,7 +54,7 @@ export type SizeOpenError =
 
 export interface SizeOpenInput {
   /** Which role the wallet's margin plays — picks the contract entry point and the math. */
-  marginIn: "collateral" | "debt";
+  marginIn: MarginIn;
   /** Margin pulled from the wallet, in the asset named by `marginIn`. */
   marginAmount: bigint;
   /** Target leverage in bps: 30000n == 3.00x. */

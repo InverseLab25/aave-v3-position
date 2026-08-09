@@ -86,3 +86,23 @@ it("both converters normalize a yParity-only signature to v", () => {
   expect(toStrategiesSig(yParitySig, 1n).v).toBe(27);
   expect(toStrategiesPermit(yParitySig, 1n, 1n).v).toBe(27);
 });
+
+it("both converters normalize a yParity=1 signature to v=28", () => {
+  // `signatures.ts` parses signatures with viem's `parseSignature`, not `parseCompactSignature` —
+  // confirmed by reading both: `parseSignature` always reads the first 64 bytes as raw r||s (via
+  // noble's `Signature.fromCompact`, which is plain r||s, not EIP-2098) and treats whatever hex
+  // follows as a literal yParity-or-v byte. A true 64-byte EIP-2098 signature (parity packed into
+  // the top bit of the s word, nothing after) has nothing left for that trailing read and throws
+  // "Invalid yParityOrV value" — verified by trying it before writing this fixture. So the
+  // genuinely-yParity=1 input this module actually accepts is the 65-byte form with a trailing
+  // 0x01 byte, exactly the existing yParity-only fixture's shape with 0x00 swapped for 0x01.
+  // Verify that swap really does yield yParity 1 (rather than trusting the assumption) before
+  // asserting on it below.
+  const yParityOneSig = `0x${"11".repeat(32)}${"22".repeat(32)}01` as const;
+  const parsed = parseSignature(yParityOneSig);
+  expect(parsed.yParity).toBe(1);
+  expect(parsed.r).toBe(R);
+  expect(parsed.s).toBe(S);
+  expect(toStrategiesSig(yParityOneSig, 1n).v).toBe(28);
+  expect(toStrategiesPermit(yParityOneSig, 1n, 1n).v).toBe(28);
+});
