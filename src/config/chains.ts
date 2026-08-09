@@ -118,12 +118,15 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       wethGateway: '0x5283BEcEd7ADF6D003225C13896E536f2D4264FF',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_42161 ?? '') as `0x${string}`,
+      strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_42161 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', symbol: 'USDC', decimals: 6 },
-      { underlyingAsset: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', symbol: 'USDT', decimals: 6 },
+      // Bridged USDT migrated to LayerZero's USDT0; the token reports `USD₮0` on-chain. Spelled
+      // ASCII here so it matches on symbol lookups and renders in any font.
+      { underlyingAsset: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', symbol: 'USDT0', decimals: 6 },
     ],
   },
   43114: {

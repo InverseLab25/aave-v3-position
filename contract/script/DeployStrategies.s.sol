@@ -45,9 +45,10 @@ interface ICreateX {
 ///      one entry there — the address stays fixed because CREATE3 ignores init code. An
 ///      unlisted chain reverts rather than deploying something mis-wired.
 ///
-///      Supported today: Ethereum (1) and Base (8453) — the two chains where Morpho Blue and
-///      Aave V3 both exist and this has been tested. Note Morpho shares one address across
-///      those two but differs on nearly every other chain, so do not extrapolate it.
+///      Supported today: Ethereum (1), Base (8453) and Arbitrum (42161) — each verified to have
+///      Morpho Blue, the Aave V3 Pool and CreateX live at the registered addresses. Morpho
+///      shares one address on Ethereum and Base but not on Arbitrum, so never extrapolate it
+///      from a chain that happens to match.
 ///
 /// Usage:
 ///   # compose a valid salt (offline)
@@ -70,14 +71,19 @@ contract DeployStrategies is Script {
     /// @dev CreateX, at the same address on ~100 chains. https://github.com/pcaversaccio/createx
     address internal constant CREATEX = 0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed;
 
-    /// @dev Morpho Blue. Ethereum and Base happen to share this address; almost no other chain
-    ///      does, which is why it is resolved per chain rather than assumed.
+    /// @dev Morpho Blue. Ethereum and Base share this address — and Arbitrum does not, which is
+    ///      the reason this is resolved per chain rather than assumed. A version that hardcoded
+    ///      the Ethereum value would have worked on Base and then deployed a contract trusting
+    ///      a codeless address on Arbitrum.
     address internal constant MORPHO_ETHEREUM = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
     address internal constant MORPHO_BASE = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
+    address internal constant MORPHO_ARBITRUM = 0x6c247b1F6182318877311737BaC0844bAa518F5e;
 
-    /// @dev The Aave V3 Pool, which differs on every chain.
+    /// @dev The Aave V3 Pool. Differs on Ethereum and Base; Arbitrum shares the address most
+    ///      L2 deployments use.
     address internal constant AAVE_POOL_ETHEREUM = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address internal constant AAVE_POOL_BASE = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
+    address internal constant AAVE_POOL_ARBITRUM = 0x794a61358D6845594F94dc1DB02A252b5b4814aD;
 
     function run() external returns (address strategies) {
         (bytes32 salt, address owner) = _config();
@@ -196,6 +202,7 @@ contract DeployStrategies is Script {
     function _chainConfig() internal view returns (address morpho, address pool) {
         if (block.chainid == 1) return (MORPHO_ETHEREUM, AAVE_POOL_ETHEREUM);
         if (block.chainid == 8453) return (MORPHO_BASE, AAVE_POOL_BASE);
+        if (block.chainid == 42161) return (MORPHO_ARBITRUM, AAVE_POOL_ARBITRUM);
         revert(
             "unsupported chain - add its Morpho Blue and Aave V3 Pool to _chainConfig before deploying"
         );
