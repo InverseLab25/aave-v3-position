@@ -324,6 +324,12 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           </div>
         </div>
 
+        <LeverageActions
+          suppliedAssets={suppliedAssets}
+          availableReserves={availableReserves}
+          viewAddress={viewAddress}
+        />
+
         {isAssetsToSupplyModalOpen && (
           <AssetsToSupplyModal
             chainId={chainId}
