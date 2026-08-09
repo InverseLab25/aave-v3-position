@@ -100,6 +100,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D',
       wethGateway: '0xa0d9C1E9E48Ca30c8d8C3B5D69FF5dc1f6DFfC24',
       deleverager: (import.meta.env.VITE_DELEVERAGER_ADDRESS_8453 ?? '') as `0x${string}`,
+      strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_8453 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [

@@ -6,6 +6,8 @@ import { injected } from 'wagmi/connectors'
 /** Per-chain RPC overrides. Chains without an entry fall back to the chain's public RPC. */
 const RPC_URLS: Partial<Record<number, string>> = {
   [mainnet.id]: import.meta.env.VITE_RPC_URL,
+  // Also lets a chain be pointed at a local fork for testing, without touching the others.
+  [base.id]: import.meta.env.VITE_RPC_URL_8453,
 }
 
 export const config = createConfig({
