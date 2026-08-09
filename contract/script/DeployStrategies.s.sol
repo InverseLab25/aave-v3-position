@@ -40,12 +40,14 @@ interface ICreateX {
 ///      `buildSalt` composes a correct salt; `_assertSaltIsCrossChainStable` refuses an
 ///      incorrect one rather than letting a mis-set byte 20 be discovered on chain two.
 ///
-/// @dev STILL OUTSTANDING, and not solvable here: AaveV3Strategies hardcodes Ethereum
-///      mainnet's Morpho Blue and Aave V3 Pool as `constant`s. CREATE3 makes it *possible* to
-///      pass those per chain without moving the address, but the contract has to accept them
-///      as constructor arguments first. Until it does, this script will deploy to the right
-///      address on any chain and `_assertDependenciesLive` will stop you from doing so
-///      anywhere the mainnet addresses hold no code.
+/// @dev Chain support is the registry in `_chainConfig` and nothing else. AaveV3Strategies
+///      takes Morpho Blue and the Aave V3 Pool as constructor arguments, so adding a chain is
+///      one entry there — the address stays fixed because CREATE3 ignores init code. An
+///      unlisted chain reverts rather than deploying something mis-wired.
+///
+///      Supported today: Ethereum (1) and Base (8453) — the two chains where Morpho Blue and
+///      Aave V3 both exist and this has been tested. Note Morpho shares one address across
+///      those two but differs on nearly every other chain, so do not extrapolate it.
 ///
 /// Usage:
 ///   # compose a valid salt (offline)
@@ -68,11 +70,14 @@ contract DeployStrategies is Script {
     /// @dev CreateX, at the same address on ~100 chains. https://github.com/pcaversaccio/createx
     address internal constant CREATEX = 0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed;
 
-    /// @dev Mirrors the `constant`s inside AaveV3Strategies, so the dependency guard can check
-    ///      them. If either changes in the contract, it must change here too or the guard
-    ///      silently checks the wrong addresses.
-    address internal constant EXPECTED_MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
-    address internal constant EXPECTED_AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    /// @dev Morpho Blue. Ethereum and Base happen to share this address; almost no other chain
+    ///      does, which is why it is resolved per chain rather than assumed.
+    address internal constant MORPHO_ETHEREUM = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
+    address internal constant MORPHO_BASE = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
+
+    /// @dev The Aave V3 Pool, which differs on every chain.
+    address internal constant AAVE_POOL_ETHEREUM = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
+    address internal constant AAVE_POOL_BASE = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
 
     function run() external returns (address strategies) {
         (bytes32 salt, address owner) = _config();
@@ -87,15 +92,23 @@ contract DeployStrategies is Script {
         console2.log("Predicted:", predicted);
 
         require(CREATEX.code.length != 0, "CreateX not deployed on this chain");
-        _assertDependenciesLive();
+
+        (address morpho, address pool) = _chainConfig();
+        _assertDependenciesLive(morpho, pool);
+        console2.log("Morpho:   ", morpho);
+        console2.log("AavePool: ", pool);
 
         if (predicted.code.length != 0) {
             console2.log("Already deployed at this address on this chain. Nothing to do.");
             return predicted;
         }
 
-        bytes memory initCode =
-            abi.encodePacked(type(AaveV3Strategies).creationCode, abi.encode(owner));
+        // The init code deliberately differs per chain — the constructor arguments carry the
+        // chain's addresses. Under CREATE2 that would move the address; under CREATE3 it does
+        // not, which is the entire reason this script uses CreateX.
+        bytes memory initCode = abi.encodePacked(
+            type(AaveV3Strategies).creationCode, abi.encode(owner, morpho, pool)
+        );
 
         vm.startBroadcast();
         strategies = ICreateX(CREATEX).deployCreate3(salt, initCode);
@@ -171,17 +184,29 @@ contract DeployStrategies is Script {
         );
     }
 
-    /// @dev AaveV3Strategies hardcodes mainnet's Morpho Blue and Aave V3 Pool. On another chain
-    ///      those addresses hold no code, so every open and close would revert. Failing here
-    ///      costs a simulation; failing in production costs a user's gas.
-    function _assertDependenciesLive() internal view {
-        require(
-            EXPECTED_MORPHO.code.length != 0,
-            "Morpho Blue absent at the hardcoded address here - AaveV3Strategies cannot work on this chain"
+    /// @dev The chain's Morpho Blue and Aave V3 Pool.
+    ///
+    ///      A hardcoded registry rather than env vars on purpose. These two addresses are
+    ///      security-critical — `morpho` becomes the sole permitted caller of the flash-loan
+    ///      callback — and a typo in an env var would deploy a contract that either bricks or
+    ///      trusts the wrong party, at an address the front-end already believes in. An
+    ///      unlisted chain fails loudly instead of guessing.
+    ///
+    ///      Adding a chain means adding its pair here, and nothing else.
+    function _chainConfig() internal view returns (address morpho, address pool) {
+        if (block.chainid == 1) return (MORPHO_ETHEREUM, AAVE_POOL_ETHEREUM);
+        if (block.chainid == 8453) return (MORPHO_BASE, AAVE_POOL_BASE);
+        revert(
+            "unsupported chain - add its Morpho Blue and Aave V3 Pool to _chainConfig before deploying"
         );
-        require(
-            EXPECTED_AAVE_POOL.code.length != 0,
-            "Aave V3 Pool absent at the hardcoded address here - AaveV3Strategies cannot work on this chain"
-        );
+    }
+
+    /// @dev Both addresses must actually hold code on this chain. Catches a stale registry
+    ///      entry, a fork pointed at the wrong network, or a chain where Aave has since
+    ///      migrated — a simulation failure here costs nothing, the same mistake in production
+    ///      costs a user's gas and lands broken code at a known address.
+    function _assertDependenciesLive(address morpho, address pool) internal view {
+        require(morpho.code.length != 0, "Morpho Blue has no code at the configured address on this chain");
+        require(pool.code.length != 0, "Aave V3 Pool has no code at the configured address on this chain");
     }
 }
