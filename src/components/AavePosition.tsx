@@ -19,6 +19,7 @@ function lazyModal<P extends object>(load: () => Promise<ComponentType<P>>) {
 }
 
 const ClosePositionModal = lazyModal(() => import('./ClosePositionModal').then((m) => m.ClosePositionModal))
+const LeverageActions = lazyModal(() => import('./LeverageActions').then((m) => m.LeverageActions))
 const WithdrawModal = lazyModal(() => import('./WithdrawModal').then((m) => m.WithdrawModal))
 const AssetsToSupplyModal = lazyModal(() => import('./AssetsToSupplyModal').then((m) => m.AssetsToSupplyModal))
 const AssetsToBorrowModal = lazyModal(() => import('./AssetsToBorrowModal').then((m) => m.AssetsToBorrowModal))
@@ -576,6 +577,12 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           )}
         </div>
       </div>
+
+      <LeverageActions
+        suppliedAssets={suppliedAssets}
+        availableReserves={availableReserves}
+        viewAddress={viewAddress}
+      />
 
       {editCtx && (
         <div className="modal-overlay" onClick={cancelDraft}>
