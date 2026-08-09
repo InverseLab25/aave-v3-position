@@ -1,5 +1,13 @@
 import { expect, it } from 'vitest'
-import { rateFromOracle, rateFromQuote } from './openPlan'
+import {
+  MAX_REFINE_ROUNDS,
+  OPEN_TARGET_HF_BPS,
+  leverageCeilingBps,
+  minOutFromBuild,
+  needsRequote,
+  rateFromOracle,
+  rateFromQuote,
+} from './openPlan'
 
 // Aave prices are on an 8-decimal USD scale: WETH $2500, USDC $1.
 const WETH_USD = 250_000_000_000n
@@ -43,4 +51,65 @@ it('derives the real rate from a quote', () => {
 
 it('returns 0 for a zero-input quote rather than throwing', () => {
   expect(rateFromQuote({ amountIn: 0n, amountOut: 1n })).toBe(0n)
+})
+
+it('re-quotes only when the re-sized borrow grew past what was priced', () => {
+  // Bigger trade than the quote measured — its rate is optimistic, so re-price it.
+  expect(needsRequote(2_512_562_815n, 2_514_875_291n)).toBe(true)
+  // Smaller trade prices at least as well; the existing quote is a safe floor.
+  expect(needsRequote(2_512_562_815n, 2_500_000_000n)).toBe(false)
+  expect(needsRequote(2_512_562_815n, 2_512_562_815n)).toBe(false)
+})
+
+it('caps refinement at two rounds', () => {
+  expect(MAX_REFINE_ROUNDS).toBe(2)
+})
+
+it('floors minOut at the flash amount when slippage would drop below it', () => {
+  // 1.004 WETH out at 0.5% slippage is 0.99908 WETH — short of the 1.0 WETH flash repayment.
+  expect(
+    minOutFromBuild({
+      buildAmountOut: 1_004_102_773_000_000_000n,
+      slippageBps: 50n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    }),
+  ).toBe(1_000_000_000_000_000_000n)
+})
+
+it('uses the slippage floor when it clears the flash amount', () => {
+  expect(
+    minOutFromBuild({
+      buildAmountOut: 1_050_000_000_000_000_000n,
+      slippageBps: 50n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    }),
+  ).toBe(1_044_750_000_000_000_000n)
+})
+
+it('bounds the leverage slider with a soft HF ceiling below the hard LTV wall', () => {
+  // WETH: LTV 75%, LT 80%. Hard wall 4.00x, haircut to 3.92x. HF 1.5 holds at 2.14x.
+  expect(OPEN_TARGET_HF_BPS).toBe(15_000n)
+  expect(leverageCeilingBps({ ltvBps: 7500n, liquidationThresholdBps: 8000n })).toEqual({
+    soft: 21_428n,
+    hard: 39_200n,
+  })
+})
+
+it('drops the soft ceiling when the target HF is unreachable at any leverage', () => {
+  // HF decays toward LT as leverage rises, so a target at or below LT has no finite solution.
+  expect(leverageCeilingBps({ ltvBps: 7500n, liquidationThresholdBps: 15_000n })).toEqual({
+    soft: null,
+    hard: 39_200n,
+  })
+})
+
+it('reports no hard wall for an LTV at or above 100%', () => {
+  expect(leverageCeilingBps({ ltvBps: 10_000n, liquidationThresholdBps: 8000n }).hard).toBeNull()
+})
+
+it('never lets the soft ceiling exceed the hard wall', () => {
+  // A very permissive LT against a restrictive LTV would otherwise put soft above hard.
+  const { soft, hard } = leverageCeilingBps({ ltvBps: 2000n, liquidationThresholdBps: 9500n })
+  expect(hard).toBe(12_250n)
+  expect(soft).toBe(12_250n)
 })

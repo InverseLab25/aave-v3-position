@@ -5,7 +5,13 @@
  * turning prices and quotes into a swap rate, deciding whether a re-quote is warranted, and
  * bounding the leverage slider. No React, no network, no config.
  */
-import { WAD } from './strategies-sdk'
+import {
+  BPS,
+  LTV_CEILING_FACTOR_BPS,
+  WAD,
+  maxLeverageForHealthFactorBps,
+  maxLeverageForLtvBps,
+} from './strategies-sdk'
 
 export interface OracleRateInput {
   /** Aave oracle prices, both on the same fixed-point scale. */
@@ -42,4 +48,68 @@ export function rateFromOracle(p: OracleRateInput): bigint {
 export function rateFromQuote(p: { amountIn: bigint; amountOut: bigint }): bigint {
   if (p.amountIn <= 0n) return 0n
   return (p.amountOut * WAD) / p.amountIn
+}
+
+/** Quote, re-size, and at most one re-quote. Pricing is non-linear; a third round buys nothing. */
+export const MAX_REFINE_ROUNDS = 2
+
+/**
+ * The health factor the leverage slider's safe range is built around.
+ *
+ * Fixed in this phase rather than user-configurable: the danger zone past it is an explicit
+ * opt-in, which is a clearer control than letting the boundary itself be dragged.
+ */
+export const OPEN_TARGET_HF_BPS = 15_000n
+
+/**
+ * Whether the re-sized borrow warrants a fresh quote.
+ *
+ * Only growth does. A larger trade eats more price impact than the quote measured, so its rate
+ * is optimistic and re-pricing is the honest move. A smaller trade prices at least as well —
+ * the quote is a conservative floor for it, and re-quoting would only cost a round-trip.
+ */
+export function needsRequote(quotedAmountIn: bigint, resizedAmountIn: bigint): boolean {
+  return resizedAmountIn > quotedAmountIn
+}
+
+/**
+ * The swap-output floor to send on-chain, derived from the BUILT route.
+ *
+ * Built from `buildTransaction`'s amountOut rather than the quote's, because the build is
+ * re-simulated and therefore authoritative — see TransactionPayload.amountOut.
+ *
+ * Never drops below `flashAmount`: the contract enforces both floors, and an output short of
+ * the flash repayment reverts the whole transaction rather than merely disappointing.
+ */
+export function minOutFromBuild(p: {
+  buildAmountOut: bigint
+  slippageBps: bigint
+  flashAmount: bigint
+}): bigint {
+  const slippageFloor = (p.buildAmountOut * (BPS - p.slippageBps)) / BPS
+  return slippageFloor > p.flashAmount ? slippageFloor : p.flashAmount
+}
+
+/**
+ * The two bounds the leverage slider needs.
+ *
+ * `hard` is Aave's LTV wall with the SDK's haircut applied — past it the borrow itself
+ * reverts. `soft` is the leverage that still holds OPEN_TARGET_HF_BPS, and is the end of the
+ * slider's safe range; the stretch between soft and hard is the opt-in danger zone.
+ *
+ * `soft` is null when the target HF is unreachable at any finite leverage, and `hard` is null
+ * for an LTV at or above 100% — neither is a valid Aave reserve, but neither should throw.
+ */
+export function leverageCeilingBps(p: {
+  ltvBps: bigint
+  liquidationThresholdBps: bigint
+}): { soft: bigint | null; hard: bigint | null } {
+  const wall = maxLeverageForLtvBps(p.ltvBps)
+  if (wall === null) return { soft: null, hard: null }
+
+  const hard = (wall * LTV_CEILING_FACTOR_BPS) / BPS
+  const target = maxLeverageForHealthFactorBps(p.liquidationThresholdBps, OPEN_TARGET_HF_BPS)
+  if (target === null) return { soft: null, hard }
+
+  return { soft: target > hard ? hard : target, hard }
 }
