@@ -39,6 +39,7 @@ beforeEach(() => {
 const PROPS = {
   suppliedAssets: [], availableReserves: [], viewAddress: undefined,
   existingCollateralUsd: 0n, existingDebtUsd: 0n,
+  existingLtvBps: 0n, existingLiquidationThresholdBps: 0n,
 }
 
 const WETH: AvailableReserve = {

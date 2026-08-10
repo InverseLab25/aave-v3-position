@@ -49,6 +49,8 @@ const INPUT = {
   marginBalance: 10n ** 21n,
   existingCollateralUsd: 0n,
   existingDebtUsd: 0n,
+  existingLtvBps: 0n,
+  existingLiquidationThresholdBps: 0n,
   reserves: RESERVES,
 }
 
@@ -70,6 +72,20 @@ function stubAdapter(rateNumeratorPerWei: bigint): Adapter {
       amountOut: (BigInt(q.amountIn) * rateNumeratorPerWei).toString(),
     })),
   }
+}
+
+/**
+ * A stub adapter whose BUILD re-simulates below its own quote — the degradation
+ * `TransactionPayload.amountOut` exists to report. `stubAdapter` builds at exactly the rate it
+ * quotes, so nothing built on it can tell which of the two figures a check actually read.
+ */
+function degradingBuildAdapter(quoteRate: bigint, buildRate: bigint): Adapter {
+  const a = stubAdapter(quoteRate)
+  a.buildTransaction = vi.fn(async (q: { amountIn: string }) => ({
+    to: KYBER, data: '0xdeadbeef', value: '0', spender: KYBER,
+    amountOut: (BigInt(q.amountIn) * buildRate).toString(),
+  })) as unknown as typeof a.buildTransaction
+  return a
 }
 
 /**
@@ -366,6 +382,29 @@ it('validates the route it actually builds, not the top-ranked one it may fall t
   expect(result.current.preview).toBeNull()
 })
 
+it('rejects a manual open whose BUILD re-simulates below the flash, even when its quote cleared it', async () => {
+  // TransactionPayload.amountOut is re-simulated at build time and authoritative over the
+  // quote's, and it is what minOut is derived from. Checking coverage against the quote while
+  // flooring minOut at the built figure lets a degraded route past both gates: minOut floors at
+  // flashAmount, so nothing catches it until the contract reverts
+  // InsufficientOutputForFlashLoanRepayment and the user has paid the gas.
+  // Quote: 3000 USDC -> 1.2 WETH (clears the 1 WETH flash). Build: -> 0.9 WETH (does not).
+  mocks.getAdaptersForChain.mockReturnValue([degradingBuildAdapter(400_000_000n, 300_000_000n)])
+
+  const { result } = renderHook(() => useStrategiesOpen({
+    ...INPUT,
+    sizing: {
+      kind: 'manual' as const,
+      marginAmount: 1_000_000_000_000_000_000n,
+      borrowAmount: 3_000_000_000n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    },
+  }))
+
+  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
+  expect(result.current.preview).toBeNull()
+})
+
 it('reports the collateral as marginAsset on the ratchet modes, matching planOpen', async () => {
   // planOpen routes everything but "debt" — the ratchet's "none" included — through the
   // collateral entry point. preview.marginAsset is the address execute() reads the ERC-20
@@ -384,6 +423,10 @@ it('reports the collateral as marginAsset on the ratchet modes, matching planOpe
     // Ratchet leans on a position that already exists; with none, validateManualOpen rejects
     // RATCHET_NO_POSITION and there is no preview to assert against.
     existingCollateralUsd: 500_000_000_000n, // $5000, 8dp
+    // The account's own weighted parameters. Left at zero, the blended LTV would treat that
+    // $5,000 as carrying no borrowing power at all and reject this as LTV_EXCEEDED.
+    existingLtvBps: 7500n,
+    existingLiquidationThresholdBps: 8000n,
   }))
   await waitFor(() => expect(result.current.preview).not.toBeNull())
 

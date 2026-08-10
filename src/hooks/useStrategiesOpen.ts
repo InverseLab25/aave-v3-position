@@ -77,6 +77,11 @@ export interface OpenInput {
    *  reflects the whole account, which is what Aave liquidates against. */
   existingCollateralUsd: bigint
   existingDebtUsd: bigint
+  /** `getUserAccountData`'s account-wide (and eMode-aware) LTV and liquidation threshold, bps.
+   *  Blended with the new reserve's own so the projection is judged on the same basis Aave
+   *  judges the account — see `blendAccountBps` in manualOpen.ts. */
+  existingLtvBps: bigint
+  existingLiquidationThresholdBps: bigint
 }
 
 export type PreviewErrorKind =
@@ -143,6 +148,7 @@ function inputKey(input: OpenInput): string {
     input.contract, input.mode, input.volatile, input.stable,
     sizingKey(input.sizing), input.slippageBps,
     input.marginBalance, input.existingCollateralUsd, input.existingDebtUsd,
+    input.existingLtvBps, input.existingLiquidationThresholdBps,
     reserveKey(input.reserves.collateral), reserveKey(input.reserves.debt),
   ].join('|')
 }
@@ -283,6 +289,8 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
             ltvBps: coll.ltvBps, liquidationThresholdBps: coll.liquidationThresholdBps,
             existingCollateralUsd: input.existingCollateralUsd,
             existingDebtUsd: input.existingDebtUsd,
+            existingLtvBps: input.existingLtvBps,
+            existingLiquidationThresholdBps: input.existingLiquidationThresholdBps,
             slippageBps: input.slippageBps,
           }
 
@@ -338,14 +346,23 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
             return
           }
 
+          // The BUILT route's output, not the quote's. TransactionPayload.amountOut is
+          // re-simulated at build time and documented as authoritative over the quote's, and it
+          // is what `minOut` below is derived from. Checking coverage against the optimistic
+          // quote while flooring minOut at the built figure lets a route that degraded between
+          // quote and build through both gates, to revert on-chain at
+          // InsufficientOutputForFlashLoanRepayment — the revert this validation exists to
+          // prevent.
+          const builtOut = BigInt(build.built.amountOut ?? build.quote.amountOut)
+
           const checked = validateManualOpen({
             ...manualBase,
-            quote: { amountIn: BigInt(build.quote.amountIn), amountOut: BigInt(build.quote.amountOut) },
+            quote: { amountIn: BigInt(build.quote.amountIn), amountOut: builtOut },
           })
           if (!checked.ok) {
-            // Read off the same quote the rejection came from, so the shortfall shown can never
+            // Read off the same output the rejection came from, so the shortfall shown can never
             // disagree with the check that produced it.
-            const out = (BigInt(build.quote.amountOut) * BigInt(amountIn)) / BigInt(build.quote.amountIn)
+            const out = (builtOut * BigInt(amountIn)) / BigInt(build.quote.amountIn)
             rejectManual(checked.error, checked.suggestedBorrow, out)
             return
           }
@@ -355,7 +372,7 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
             marginAsset: marginIn === 'debt' ? debtAsset : collateral,
             flashAmount, borrowAmount,
             minOut: minOutFromBuild({
-              buildAmountOut: BigInt(build.built.amountOut ?? build.quote.amountOut),
+              buildAmountOut: builtOut,
               slippageBps: input.slippageBps,
               flashAmount,
             }),
@@ -501,6 +518,11 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
           expectedCollateral: quotedSize.expectedCollateral,
           expectedDebt: quotedSize.expectedDebt,
           expectedLeverageBps: quotedSize.expectedLeverageBps,
+          // KNOWN DIVERGENCE (out of scope here, tracked in the ledger): `sizeOpen` does not
+          // fold the existing account, so this health factor is POSITION-ONLY, while the manual
+          // path's is account-wide. On an account that already holds collateral, ticking "Enter
+          // amounts manually" — which changes no amounts — therefore makes the displayed HF
+          // jump. Folding the derived path is the fix; it belongs in its own wave.
           expectedHealthFactorBps: quotedSize.expectedHealthFactorBps,
           router: build.built.to as Address,
           swapData: build.built.data as Hex,

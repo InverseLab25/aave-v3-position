@@ -77,6 +77,8 @@ const EMPTY_PORTFOLIO = {
   // `bigint`, and this mock is untyped, so omitting them silently feeds it `undefined`.
   collateralBase: 0n,
   debtBase: 0n,
+  ltvBps: 0n,
+  liquidationThresholdBps: 0n,
   availableBorrowsUsd: 0,
   ltvPercent: 0,
   liquidationThreshold: 0,

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { expect, it, vi } from 'vitest'
 import { ManualAmounts } from './ManualAmounts'
+import { manualOpenErrorMessage } from '../lib/manualOpen'
 
 const PROPS = {
   borrowStr: '2000',
@@ -28,9 +29,17 @@ it('reports edits as raw strings so the parent owns parsing', () => {
 })
 
 it('shows the shortfall message when there is one, and nothing when there is not', () => {
-  const { rerender } = render(<ManualAmounts {...PROPS} />)
-  expect(screen.queryByText(/short by/i)).toBeNull()
+  // Taken from the function that actually produces these strings, rather than invented: a
+  // hand-written string couples the negative assertion below to copy nothing ever emits, so it
+  // would keep passing however the real message changed.
+  const message = manualOpenErrorMessage('SWAP_SHORTFALL', {
+    marginSymbol: 'WETH', debtSymbol: 'USDC', collateralSymbol: 'WETH',
+    marginBalance: '5.0', shortfall: '0.5', suggestedBorrow: '2,010',
+  })
 
-  rerender(<ManualAmounts {...PROPS} message="Short by 0.5 WETH." />)
-  expect(screen.getByText('Short by 0.5 WETH.')).toBeTruthy()
+  const { rerender } = render(<ManualAmounts {...PROPS} />)
+  expect(screen.queryByText(message)).toBeNull()
+
+  rerender(<ManualAmounts {...PROPS} message={message} />)
+  expect(screen.getByText(message)).toBeTruthy()
 })

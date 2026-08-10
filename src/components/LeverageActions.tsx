@@ -22,6 +22,9 @@ interface LeverageActionsProps {
   /** `getUserAccountData` totals, 8dp USD — the account the new position lands on top of. */
   existingCollateralUsd: bigint
   existingDebtUsd: bigint
+  /** That same account's collateral-weighted LTV and liquidation threshold, bps, eMode included. */
+  existingLtvBps: bigint
+  existingLiquidationThresholdBps: bigint
 }
 
 type Direction = 'long' | 'short'
@@ -35,6 +38,7 @@ const DEFAULT_SLIPPAGE_BPS = 50n
 
 export function LeverageActions({
   availableReserves, viewAddress, existingCollateralUsd, existingDebtUsd,
+  existingLtvBps, existingLiquidationThresholdBps,
 }: LeverageActionsProps) {
   const chainId = useChainId()
   const { address } = useConnection()
@@ -131,6 +135,8 @@ export function LeverageActions({
       marginBalance: (marginWalletBalance as bigint | undefined) ?? 0n,
       existingCollateralUsd,
       existingDebtUsd,
+      existingLtvBps,
+      existingLiquidationThresholdBps,
       reserves: {
         collateral: { address: collateralReserve.underlyingAsset, symbol: collateralReserve.symbol, ...collateralReserve.raw },
         debt: { address: debtReserve.underlyingAsset, symbol: debtReserve.symbol, ...debtReserve.raw },
@@ -139,6 +145,7 @@ export function LeverageActions({
   }, [
     contract, mode, sizing, volatileReserve, stableReserve, collateralReserve, debtReserve,
     marginWalletBalance, existingCollateralUsd, existingDebtUsd,
+    existingLtvBps, existingLiquidationThresholdBps,
   ])
 
   const {
@@ -267,6 +274,9 @@ export function LeverageActions({
             collateralPriceUsd={Number(collateralReserve?.priceInUsd ?? 0)}
             debtPriceUsd={Number(debtReserve?.priceInUsd ?? 0)}
             liquidationThreshold={collateralReserve?.liquidationThreshold ?? 0}
+            existingCollateralUsd={existingCollateralUsd}
+            existingDebtUsd={existingDebtUsd}
+            existingLiquidationThreshold={Number(existingLiquidationThresholdBps) / 10000}
           />
 
           {priceImpactBlocked && (

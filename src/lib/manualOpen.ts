@@ -35,11 +35,20 @@ export interface ManualOpenInput {
   debtPriceUsd: bigint
   collateralDecimals: number
   debtDecimals: number
+  /** The NEW collateral reserve's own base parameters. */
   ltvBps: bigint
   liquidationThresholdBps: bigint
   /** `getUserAccountData` totals, 8dp USD — the same scale the prices above produce. */
   existingCollateralUsd: bigint
   existingDebtUsd: bigint
+  /**
+   * The account's CURRENT collateral-weighted LTV and liquidation threshold, in bps, straight
+   * from `getUserAccountData` — so eMode and every already-supplied reserve are already baked
+   * in. Zero when nothing is supplied, where `blendAccountBps` falls back to the new reserve's
+   * own values.
+   */
+  existingLtvBps: bigint
+  existingLiquidationThresholdBps: bigint
   /** Null until the first quote round lands. */
   quote: ManualQuote | null
   slippageBps: bigint
@@ -53,6 +62,11 @@ export interface ManualProjection {
   expectedLeverageBps: bigint | null
   expectedHealthFactorBps: bigint
   impliedLtvBps: bigint
+  /**
+   * The collateral-weighted average LTV the resulting ACCOUNT would carry — the ceiling
+   * `impliedLtvBps` has to clear, and not generally the new reserve's own `ltvBps`.
+   */
+  avgLtvBps: bigint
 }
 
 export type ManualOpenResult =
@@ -80,6 +94,26 @@ function suggestBorrow(p: ManualOpenInput, q: ManualQuote): bigint | null {
   return borrow > 0n ? borrow : null
 }
 
+/**
+ * Aave judges a borrow, and a liquidation, against the COLLATERAL-WEIGHTED AVERAGE of every
+ * supplied reserve's parameters — not the incoming reserve's own. Applying the new reserve's
+ * `ltvBps` to account-wide totals therefore rejects positions Aave would accept (when existing
+ * collateral is looser, or eMode is on) and — the expensive direction — accepts borrows Aave
+ * reverts (when existing collateral is tighter), leaving the user to pay the gas.
+ *
+ * That is the NORMAL case on the ratchet path rather than an edge one: ratchet requires a
+ * pre-existing position by construction, so existing collateral always dominates the blend.
+ *
+ * `existingBps` arrives already weighted across the existing account, so weighting the two
+ * sides by USD value is the whole calculation. With nothing supplied the denominator collapses
+ * to the new collateral alone and this reduces exactly to `newBps`.
+ */
+function blendAccountBps(existingUsd: bigint, existingBps: bigint, newUsd: bigint, newBps: bigint): bigint {
+  const total = existingUsd + newUsd
+  if (total <= 0n) return newBps
+  return (existingUsd * existingBps + newUsd * newBps) / total
+}
+
 function project(p: ManualOpenInput, expectedSwapOut: bigint): ManualProjection {
   // The collateral path supplies flash + margin and the output repays the flash, leaving the
   // surplus in the position. The debt path supplies the flash alone and the whole output lands
@@ -87,10 +121,18 @@ function project(p: ManualOpenInput, expectedSwapOut: bigint): ManualProjection 
   // matches `sizeOpen`'s expectedCollateral for the same flows.
   const expectedCollateral = p.marginIn === 'debt' ? expectedSwapOut : p.marginAmount + expectedSwapOut
 
-  const collUsd =
-    usd(expectedCollateral, p.collateralPriceUsd, p.collateralDecimals) + p.existingCollateralUsd
+  const newCollUsd = usd(expectedCollateral, p.collateralPriceUsd, p.collateralDecimals)
+  const collUsd = newCollUsd + p.existingCollateralUsd
   const debtUsd = usd(p.borrowAmount, p.debtPriceUsd, p.debtDecimals) + p.existingDebtUsd
   const equityUsd = collUsd - debtUsd
+
+  // Account-wide totals must be judged by account-wide parameters — see `blendAccountBps`.
+  const avgLtvBps = blendAccountBps(
+    p.existingCollateralUsd, p.existingLtvBps, newCollUsd, p.ltvBps,
+  )
+  const avgLiquidationThresholdBps = blendAccountBps(
+    p.existingCollateralUsd, p.existingLiquidationThresholdBps, newCollUsd, p.liquidationThresholdBps,
+  )
 
   return {
     expectedSwapOut,
@@ -98,8 +140,9 @@ function project(p: ManualOpenInput, expectedSwapOut: bigint): ManualProjection 
     expectedDebt: p.borrowAmount,
     expectedLeverageBps:
       p.marginIn === 'none' || equityUsd <= 0n ? null : (collUsd * BPS) / equityUsd,
-    expectedHealthFactorBps: debtUsd > 0n ? (collUsd * p.liquidationThresholdBps) / debtUsd : 0n,
+    expectedHealthFactorBps: debtUsd > 0n ? (collUsd * avgLiquidationThresholdBps) / debtUsd : 0n,
     impliedLtvBps: collUsd > 0n ? (debtUsd * BPS) / collUsd : BPS,
+    avgLtvBps,
   }
 }
 
@@ -132,8 +175,9 @@ export function validateManualOpen(p: ManualOpenInput): ManualOpenResult {
 
   const projection = project(p, expectedSwapOut)
 
-  // Aave's `borrow` reverts at the LTV wall, so land strictly below it.
-  if (projection.impliedLtvBps >= p.ltvBps) return fail('LTV_EXCEEDED')
+  // Aave's `borrow` reverts at the LTV wall, so land strictly below it. The wall is the
+  // account's blended LTV, which is what `validateBorrow` actually compares against.
+  if (projection.impliedLtvBps >= projection.avgLtvBps) return fail('LTV_EXCEEDED')
 
   return { ok: true, projection }
 }

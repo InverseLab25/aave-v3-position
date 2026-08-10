@@ -240,6 +240,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     debtUsd: 0,
     collateralBase: 0n,
     debtBase: 0n,
+    ltvBps: 0n,
+    liquidationThresholdBps: 0n,
     availableBorrowsUsd: 0,
     ltvPercent: 0,
     liquidationThreshold: 0,
@@ -442,6 +444,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
      *  Sizing math consumes these; the numbers above are for display. */
     collateralBase: totalCollateralBase,
     debtBase: totalDebtBase,
+    /** The account's collateral-weighted LTV and liquidation threshold in bps, eMode included —
+     *  Aave's own averages across every supplied reserve. `ltvPercent`/`liquidationThreshold`
+     *  above are the rounded display forms of these two. */
+    ltvBps: ltv,
+    liquidationThresholdBps: currentLiquidationThreshold,
     availableBorrowsUsd,
     ltvPercent,
     liquidationThreshold,
