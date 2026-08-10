@@ -1,6 +1,6 @@
 import { maxUint256, type Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
-import { CloseError, validateSwapTx } from './deleverage'
+import { CloseError, selectBuildableRoute } from './deleverage'
 
 // Moved to swapRoute.ts so the open flow can share them. Re-exported here so every existing
 // consumer of closePlan keeps working against the same import path.
@@ -246,38 +246,28 @@ export async function selectRoute({
   debt: bigint
   slipNum: bigint
 }): Promise<RouteSelection> {
-  const rejected: string[] = []
+  // The walk itself is shared with the open flow, so the allowlist and calldata checks stay
+  // identical between them. What is specific here is the bar each candidate has to clear:
+  // every quote has a different output, so its guarantee is re-derived rather than inherited
+  // from whichever one sizing settled on.
+  const { selected, rejected } = await selectBuildableRoute(candidates, {
+    build: (c) => {
+      const adapter = adapters.find((a) => a.name === c.aggregator)
+      if (!adapter) throw new Error('no adapter for this quote')
+      return adapter.buildTransaction(c, slippagePercent, deleverager, chainId)
+    },
+    isAllowlisted: (router) => allowedRouters.has(router.toLowerCase()),
+    reject: (c) =>
+      (BigInt(c.amountOut) * slipNum) / 10000n < debt ? 'guaranteed output below the debt' : null,
+    label: (c) => c.aggregator,
+  })
 
-  for (const candidate of candidates) {
-    const adapter = adapters.find((a) => a.name === candidate.aggregator)
-    if (!adapter) continue
-
-    // Each candidate is a different quote with a different output, so its guarantee has to be
-    // re-derived rather than inherited from whichever one sizing settled on.
-    if ((BigInt(candidate.amountOut) * slipNum) / 10000n < debt) {
-      rejected.push(`${candidate.aggregator}: guaranteed output below the debt`)
-      continue
-    }
-
-    let tx
-    try {
-      tx = await adapter.buildTransaction(candidate, slippagePercent, deleverager, chainId)
-    } catch (e) {
-      rejected.push(`${candidate.aggregator}: build failed (${(e as Error).message})`)
-      continue
-    }
-
-    const problem = validateSwapTx(tx, allowedRouters.has(tx.to.toLowerCase()))
-    if (problem) {
-      rejected.push(`${candidate.aggregator}: ${problem}`)
-      continue
-    }
-
+  if (selected) {
     return {
-      router: tx.to as Address,
-      swapData: tx.data as `0x${string}`,
-      chosen: candidate,
-      tx,
+      router: selected.tx.to as Address,
+      swapData: selected.tx.data as `0x${string}`,
+      chosen: selected.candidate,
+      tx: selected.tx,
       rejected,
     }
   }

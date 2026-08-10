@@ -2,7 +2,6 @@ import { formatUnits } from 'viem'
 import type { OpenPreview } from '../../hooks/useLeverageOpen'
 import {
   accountStats,
-  debtLiquidationPriceUsd,
   type AccountStats,
   type Direction,
   type OpenProjection,
@@ -153,61 +152,43 @@ export function PositionSummary({
     : null
 
   /**
-   * The subject asset's liquidation price for a given position size. Used for both columns, so
-   * the two are solved the same way and a change between them is a real change.
+   * The subject asset's liquidation price at a given position size, in USD.
+   *
+   * One solve for both directions and both columns, via the same `computeLiquidationView` the
+   * portfolio's own Details card uses — so the panel and the dashboard cannot quote different
+   * numbers for the same position, and a change between "now" and "after" is a real change.
+   *
+   * Which row to read is the only thing direction decides: a long is liquidated by its
+   * COLLATERAL falling, a short by its DEBT rising, and the view prices both sides.
    */
-  const liquidationPrice = (
-    collateralAmount: bigint,
-    debtAmount: bigint,
-    liquidationThresholdBps: bigint,
-    otherCollateralUsd: bigint,
-    otherDebtUsd: bigint,
-  ): number | null => {
-    if (direction === 'short') {
-      const solved = debtLiquidationPriceUsd({
-        collateralAmount, debtAmount,
-        collateralPriceUsd: BigInt(Math.round(collateralPriceUsd * 1e8)),
-        collateralDecimals, debtDecimals,
-        liquidationThresholdBps,
-        existingCollateralUsd: otherCollateralUsd,
-        existingDebtUsd: otherDebtUsd,
-      })
-      return solved === null ? null : Number(formatUnits(solved, 8))
-    }
-    // Long: solved across the merged collateral rows, so an existing holding of the same asset
-    // is priced as the single position it actually is rather than as two that fall separately.
+  const liquidationPrice = (collateralAmount: bigint, debtAmount: bigint): number | null => {
+    // Copied, not mutated: the array belongs to the caller and is re-read every render. The new
+    // leg REPLACES the existing row for the same asset rather than sitting beside it, since the
+    // amounts passed in are already the combined holding.
     const rows: CollateralInput[] = existingCollateral.map((r) => ({ ...r }))
-    const amount = Number(formatUnits(collateralAmount, collateralDecimals))
+    const collAmount = Number(formatUnits(collateralAmount, collateralDecimals))
     const sameAsset = rows.find((r) => r.symbol.toUpperCase() === collateralSymbol.toUpperCase())
-    if (sameAsset) sameAsset.amount = amount
-    else rows.push({ symbol: collateralSymbol, amount, priceUsd: collateralPriceUsd, liquidationThreshold })
-    const debtUsd = Number(formatUnits(debtAmount, debtDecimals)) * debtPriceUsd
-      + Number(formatUnits(otherDebtUsd, 8))
-    return computeLiquidationView(rows, debtUsd).rows
-      .find((r) => r.symbol.toUpperCase() === collateralSymbol.toUpperCase())
-      ?.liquidationPriceUsd ?? null
+    if (sameAsset) sameAsset.amount = collAmount
+    else rows.push({ symbol: collateralSymbol, amount: collAmount, priceUsd: collateralPriceUsd, liquidationThreshold })
+
+    // Debt this leg carries, plus whatever the account owes elsewhere — held at today's value
+    // while the subject's price moves.
+    const debtAmountNum = Number(formatUnits(debtAmount, debtDecimals))
+    const otherDebtUsd = Number(formatUnits(existingDebtUsd, 8))
+      - Number(formatUnits(existingDebtAmount, debtDecimals)) * debtPriceUsd
+    const totalDebtUsd = debtAmountNum * debtPriceUsd + Math.max(0, otherDebtUsd)
+
+    const subject = direction === 'long' ? collateralSymbol : debtSymbol
+    return computeLiquidationView(rows, totalDebtUsd, [
+      { symbol: debtSymbol, amount: debtAmountNum, priceUsd: debtPriceUsd },
+    ]).rows.find((r) => r.symbol.toUpperCase() === subject.toUpperCase())?.liquidationPriceUsd ?? null
   }
 
-  // "Other" is whatever is NOT the pair leg being priced — the rest of the account, which the
-  // solve holds at today's value while the subject's price moves.
-  const otherCollateralUsd = existingCollateralUsd
-    - BigInt(Math.round(Number(formatUnits(existingCollateralAmount, collateralDecimals)) * collateralPriceUsd * 1e8))
-  const otherDebtUsd = existingDebtUsd
-    - BigInt(Math.round(Number(formatUnits(existingDebtAmount, debtDecimals)) * debtPriceUsd * 1e8))
-
-  const liqBefore = liquidationPrice(
-    existingCollateralAmount, existingDebtAmount,
-    existingLiquidationThresholdBps,
-    otherCollateralUsd > 0n ? otherCollateralUsd : 0n,
-    otherDebtUsd > 0n ? otherDebtUsd : 0n,
-  )
+  const liqBefore = liquidationPrice(existingCollateralAmount, existingDebtAmount)
   const liqAfter = projection
     ? liquidationPrice(
         existingCollateralAmount + projection.expectedCollateral,
         existingDebtAmount + projection.expectedDebt,
-        projection.avgLiquidationThresholdBps,
-        otherCollateralUsd > 0n ? otherCollateralUsd : 0n,
-        otherDebtUsd > 0n ? otherDebtUsd : 0n,
       )
     : null
 

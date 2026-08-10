@@ -34,10 +34,10 @@ import {
 import { solveBorrow } from '../lib/solveBorrow'
 import { routeCostPercent } from '../lib/swapRoute'
 import { getAdaptersForChain } from '../adapters'
-import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
+import type { Adapter, QuoteResponse } from '../adapters/types'
 import { getChainConfig } from '../config/chains'
 import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
-import { validateSwapTx } from '../lib/deleverage'
+import { selectBuildableRoute } from '../lib/deleverage'
 import { decodeStrategiesError } from '../lib/strategiesErrors'
 import type { StrategiesRemedy } from '../lib/strategiesErrors'
 import { extractRevertMessage } from '../utils/errors'
@@ -316,31 +316,22 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         }
 
         // Build FIRST, then validate what was actually built. The list is best-output-first, so
-        // a fallback prices strictly worse than the route the borrow was solved against.
-        let build: { quote: QuoteResponse; adapter: Adapter; built: TransactionPayload } | null = null
-        for (const cand of candidates) {
-          let candBuilt: TransactionPayload
-          try {
-            candBuilt = await cand.a.buildTransaction(cand.q, slippagePercent, input.contract, chainId)
-          } catch {
-            continue
-          }
-          if (cancelled) return
-          const problem = validateSwapTx(
-            { to: candBuilt.to, data: candBuilt.data, value: candBuilt.value, spender: candBuilt.spender },
-            allowed.has(candBuilt.to.toLowerCase()),
-          )
-          if (problem) continue
-          build = { quote: cand.q, adapter: cand.a, built: candBuilt }
-          break
-        }
+        // a fallback prices strictly worse than the route the borrow was solved against. The
+        // walk is shared with the close flow so the allowlist and calldata checks cannot drift.
+        const { selected } = await selectBuildableRoute(candidates, {
+          build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
+          isAllowlisted: (router) => allowed.has(router.toLowerCase()),
+          label: (c) => c.a.name,
+          cancelled: () => cancelled,
+        })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
         // superseded attempt writes a no-route error that a reverted input would make current.
         if (cancelled) return
-        if (!build) {
+        if (!selected) {
           setPreviewError('NO_ROUTE')
           return
         }
+        const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
 
         // The BUILT route's output, not the quote's: `buildTransaction`'s amountOut is
         // re-simulated and documented as authoritative, and it is what `minOut` derives from.

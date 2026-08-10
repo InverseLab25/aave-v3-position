@@ -1,10 +1,5 @@
 import type { QuoteResponse } from '../adapters/types'
-
-/** Smallest n such that n * b >= a. */
-const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b
-
-/** Basis-point scale: 10000n == 1.0. */
-const BPS = 10_000n
+import { BPS, ceilDiv } from './strategies-sdk/sizing'
 
 /**
  * Extra headroom on the oracle seed (0.3%).

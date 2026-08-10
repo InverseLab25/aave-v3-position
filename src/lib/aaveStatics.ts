@@ -115,10 +115,3 @@ export function getATokenName(client: Reader, chainId: number, aToken: Address):
     client.readContract({ address: aToken, abi: NAME_ABI, functionName: 'name' }),
   )
 }
-
-/** Test support, and a way out if a market is ever re-deployed under a live session. */
-export function clearAaveStaticsCache(): void {
-  dataProviders.clear()
-  reserveTokens.clear()
-  aTokenNames.clear()
-}

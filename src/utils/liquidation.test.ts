@@ -227,6 +227,25 @@ describe('computeLiquidationView — debt-side rows', () => {
     expect(view.rows[1].bufferPct).toBeGreaterThan(0)
   })
 
+  it('more debt against the same collateral liquidates sooner', () => {
+    // 780 of weighted collateral over 0.012 WETH instead of 0.01: 65,000 rather than 78,000.
+    const view = computeLiquidationView(collateral, 24, [{ symbol: 'WETH', amount: 0.012, priceUsd: 2000 }])
+    expect(view.rows.find(r => r.symbol === 'WETH')?.liquidationPriceUsd).toBeCloseTo(65_000, 6)
+  })
+
+  it('debt held in OTHER assets eats into the headroom', () => {
+    // $580 of DAI debt leaves 780 - 580 = 200 for the WETH leg: 200 / 0.01 = 20,000.
+    const view = computeLiquidationView(
+      collateral, 600, [{ symbol: 'WETH', amount: 0.01, priceUsd: 2000 }, { symbol: 'DAI', amount: 580, priceUsd: 1 }],
+    )
+    expect(view.rows.find(r => r.symbol === 'WETH')?.liquidationPriceUsd).toBeCloseTo(20_000, 6)
+  })
+
+  it('prices no row for a leg with nothing borrowed', () => {
+    const view = computeLiquidationView(collateral, 20, [{ symbol: 'WETH', amount: 0, priceUsd: 2000 }])
+    expect(view.rows.find(r => r.symbol === 'WETH')).toBeUndefined()
+  })
+
   it('excludes debt already past the weighted collateral', () => {
     // $900 of other debt against $780 of weighted collateral: this leg cannot be what tips it.
     const view = computeLiquidationView(

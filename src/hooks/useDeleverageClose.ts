@@ -186,11 +186,6 @@ export interface PreviewResult {
   error: { kind: CloseErrorKind; message: string } | null
 }
 
-/** Percent the UI may offer as a one-click retry when a failure is slippage-shaped. */
-export interface SlippageHint {
-  currentPercent: number
-}
-
 export interface CloseResult {
   hash: string | null
   /**

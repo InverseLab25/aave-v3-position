@@ -1,8 +1,7 @@
 import type { QuoteResponse } from '../adapters/types'
 import { CloseError } from './deleverage'
+import { ceilDiv } from './strategies-sdk/sizing'
 
-/** Ceiling division for bigints: smallest n such that n * b >= a. */
-const ceilDiv = (a: bigint, b: bigint) => (a + b - 1n) / b
 
 /**
  * Extra headroom on the oracle seed (0.3%).

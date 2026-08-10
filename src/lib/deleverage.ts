@@ -1,5 +1,5 @@
 import { formatUnits, type Address } from 'viem'
-import type { QuoteResponse } from '../adapters/types'
+import type { QuoteResponse, TransactionPayload } from '../adapters/types'
 
 /**
  * Why a close could not be planned. The three cases need different responses, and prose
@@ -209,6 +209,66 @@ export function validateSwapTx(
   if (value !== 0n) return `route requires ${value} wei of ETH; the deleverager sends none`
   if (!isRouterAllowlisted) return `router ${tx.to} is not allowlisted on the deleverager`
   return null
+}
+
+/**
+ * Walk ranked candidates and return the first that BUILDS and passes {@link validateSwapTx}.
+ *
+ * Both flows do this and must keep doing it identically: a candidate that fails to build, or
+ * builds into calldata the contract cannot execute, has to be fallen through rather than
+ * erroring out on the first pick — otherwise one flaky aggregator takes the whole quote down
+ * while a perfectly good route sits behind it. Sharing the walk is what keeps the allowlist and
+ * calldata checks from drifting apart between the open path and the close path, which is the
+ * part that is security-relevant rather than merely tidy.
+ *
+ * Candidates must arrive best-first: the first acceptable one wins, so any fallback prices
+ * strictly worse than the route the caller sized against.
+ *
+ * `reject` is an optional extra bar for the caller's own invariant — the close flow needs each
+ * candidate's guaranteed output to clear the debt, which is not something this can know.
+ */
+export async function selectBuildableRoute<C>(
+  candidates: C[],
+  opts: {
+    build: (candidate: C) => Promise<TransactionPayload>
+    isAllowlisted: (router: string) => boolean
+    reject?: (candidate: C) => string | null
+    label?: (candidate: C) => string
+    /** Aborts the walk between candidates when the caller's request is superseded. */
+    cancelled?: () => boolean
+  },
+): Promise<{ selected: { candidate: C; tx: TransactionPayload } | null; rejected: string[] }> {
+  const rejected: string[] = []
+  const name = (c: C) => (opts.label ? opts.label(c) : 'route')
+
+  for (const candidate of candidates) {
+    if (opts.cancelled?.()) return { selected: null, rejected }
+
+    const bar = opts.reject?.(candidate)
+    if (bar) {
+      rejected.push(`${name(candidate)}: ${bar}`)
+      continue
+    }
+
+    let tx: TransactionPayload
+    try {
+      tx = await opts.build(candidate)
+    } catch (e) {
+      rejected.push(`${name(candidate)}: build failed (${(e as Error).message})`)
+      continue
+    }
+    if (opts.cancelled?.()) return { selected: null, rejected }
+
+    const problem = validateSwapTx(tx, opts.isAllowlisted(tx.to))
+    if (problem) {
+      rejected.push(`${name(candidate)}: ${problem}`)
+      continue
+    }
+
+    return { selected: { candidate, tx }, rejected }
+  }
+
+  return { selected: null, rejected }
 }
 
 /** EIP-2612 typed data for an Aave V3 aToken permit (spender = deleverager). */

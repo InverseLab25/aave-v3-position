@@ -41,13 +41,6 @@ export function useViewMode(): ViewMode {
   return state
 }
 
-/** Navigate to a view URL without a page reload. */
-export function navigateToView(chainSlug: string, address: string) {
-  const url = `/${chainSlug}/address/${address}`
-  window.history.pushState({}, '', url)
-  window.dispatchEvent(new PopStateEvent('popstate'))
-}
-
 /** Return to the connected-wallet view (root URL). */
 export function exitViewMode() {
   window.history.pushState({}, '', '/')

@@ -363,52 +363,6 @@ export function accountStats(p: {
   };
 }
 
-export interface DebtLiquidationPriceInput {
-  /** Expected collateral and debt once this opens, in their own native wei. */
-  collateralAmount: bigint;
-  debtAmount: bigint;
-  collateralPriceUsd: bigint;
-  collateralDecimals: number;
-  debtDecimals: number;
-  /** The account's blended liquidation threshold — take it from {@link OpenProjection}. */
-  liquidationThresholdBps: bigint;
-  /** `getUserAccountData` totals, 8dp USD. */
-  existingCollateralUsd: bigint;
-  existingDebtUsd: bigint;
-}
-
-/**
- * The DEBT asset's price at which the position is liquidated, in 8dp USD.
- *
- * `computeLiquidationView` solves the collateral side — the price a collateral asset FALLS to.
- * That answers a long, where the asset the user took a view on is the collateral. It cannot
- * answer a short: there the subject asset is the debt, and what liquidates the position is that
- * price RISING. This is that other half.
- *
- * Aave liquidates at `weightedCollateralUsd == debtUsd`, so holding the collateral fixed and
- * solving for the debt asset's price:
- *
- *     P = (totalCollateralUsd × LT − existingDebtUsd) / debtAmount
- *
- * Returns null when there is no debt to price, or when existing debt alone already exceeds the
- * weighted collateral — the position is at or past liquidation already, and no price for this
- * leg would change that.
- *
- * Existing debt is treated as a fixed USD sum. Where it is denominated in this same asset it
- * would in fact rise alongside, making the true liquidation price somewhat higher than quoted —
- * conservative, and exact for the empty account this panel usually opens against.
- */
-export function debtLiquidationPriceUsd(p: DebtLiquidationPriceInput): bigint | null {
-  if (p.debtAmount <= 0n || p.liquidationThresholdBps <= 0n) return null;
-
-  const totalCollateralUsd =
-    usdValue(p.collateralAmount, p.collateralPriceUsd, p.collateralDecimals) + p.existingCollateralUsd;
-  const liquidatingDebtUsd = (totalCollateralUsd * p.liquidationThresholdBps) / BPS - p.existingDebtUsd;
-  if (liquidatingDebtUsd <= 0n) return null;
-
-  return (liquidatingDebtUsd * pow10(p.debtDecimals)) / p.debtAmount;
-}
-
 /**
  * Every way this panel can refuse, in the order they are checked.
  *

@@ -82,14 +82,6 @@ export const T = {
 // ── Pre-built style objects ────────────────────────────────────────────────
 // Ready-to-spread React style objects for the most common patterns.
 
-/** Full-screen modal backdrop */
-export const overlayStyle: React.CSSProperties = {
-  position: 'fixed', inset: 0,
-  background: T.overlay,
-  display: 'flex', alignItems: 'center', justifyContent: 'center',
-  zIndex: 1000, padding: T.space[4],
-}
-
 /** White modal panel */
 export const modalStyle: React.CSSProperties = {
   background: T.surface,
@@ -120,11 +112,6 @@ export const closeButtonStyle: React.CSSProperties = {
   fontSize: '20px', lineHeight: 1,
   color: T.textMuted, cursor: 'pointer',
   padding: '0 4px', borderRadius: T.radius.sm,
-}
-
-/** Scrollable modal body */
-export const modalBodyStyle: React.CSSProperties = {
-  flex: 1, overflowY: 'auto', padding: T.space[5],
 }
 
 /** Standard section label (uppercase, small) */
@@ -158,12 +145,6 @@ export const primaryBtnStyle = (disabled = false): React.CSSProperties => ({
   transition: T.transition,
 })
 
-/** Inline key-value gas / info row */
-export const infoRowStyle: React.CSSProperties = {
-  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-  fontSize: T.fontSize.sm, padding: '2px 0',
-}
-
 /** Compact info card (gas, summary) */
 export const infoCardStyle: React.CSSProperties = {
   background: T.surfaceAlt,
@@ -188,13 +169,4 @@ export const alertStyle = (variant: 'success' | 'danger' | 'warning' | 'info'): 
     fontSize: T.fontSize.sm, lineHeight: 1.5,
     marginBottom: T.space[4],
   }
-}
-
-/** Table column header */
-export const thStyle: React.CSSProperties = {
-  fontSize: T.fontSize.xs, fontWeight: 500,
-  textTransform: 'uppercase', letterSpacing: '0.06em',
-  color: T.textMuted,
-  padding: `${T.space[2]} ${T.space[2]}`,
-  borderBottom: `1px solid ${T.border}`,
 }

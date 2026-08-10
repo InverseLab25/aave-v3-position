@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { formatUnits, parseUnits } from 'viem'
 import {
   deriveOpen,
-  debtLiquidationPriceUsd,
   leverageReadoutBps,
   ltvWallBps,
   maxBorrowAmount,
@@ -286,51 +285,6 @@ describe('validateSizing on the boost path', () => {
 
   it('still needs a supply', () => {
     expect(validateSizing({ ...boost, supplyAmount: 0n })).toBe('NO_SUPPLY')
-  })
-})
-
-describe('debtLiquidationPriceUsd — the short side, where a RISE liquidates', () => {
-  // Short ETH: 300k USDC collateral (LT 85%), 100 WETH of debt at $2,000.
-  const shortEth = {
-    collateralAmount: usdc('300000'),
-    debtAmount: weth('100'),
-    collateralPriceUsd: USDC.priceUsd,
-    collateralDecimals: 6,
-    debtDecimals: 18,
-    liquidationThresholdBps: 8500n,
-    existingCollateralUsd: 0n,
-    existingDebtUsd: 0n,
-  }
-
-  it('liquidates when WETH rises to $2,550', () => {
-    // 300,000 × 0.85 = 255,000 of weighted collateral, against 100 WETH of debt.
-    const price = debtLiquidationPriceUsd(shortEth)
-    expect(price).not.toBeNull()
-    expect(Number(formatUnits(price!, 8))).toBeCloseTo(2550, 6)
-  })
-
-  it('is a RISE from here — the buffer is positive, unlike a long', () => {
-    const price = Number(formatUnits(debtLiquidationPriceUsd(shortEth)!, 8))
-    expect(price / 2000 - 1).toBeGreaterThan(0)
-  })
-
-  it('more debt for the same collateral liquidates sooner', () => {
-    const tighter = debtLiquidationPriceUsd({ ...shortEth, debtAmount: weth('120') })
-    expect(Number(formatUnits(tighter!, 8))).toBeCloseTo(2125, 6) // 255,000 / 120
-  })
-
-  it('existing debt eats into the headroom', () => {
-    // $55,000 of debt already on the account leaves 200,000 for this leg.
-    const price = debtLiquidationPriceUsd({ ...shortEth, existingDebtUsd: 55_000_00000000n })
-    expect(Number(formatUnits(price!, 8))).toBeCloseTo(2000, 6)
-  })
-
-  it('returns null when there is no debt to price', () => {
-    expect(debtLiquidationPriceUsd({ ...shortEth, debtAmount: 0n })).toBeNull()
-  })
-
-  it('returns null when existing debt already exceeds the weighted collateral', () => {
-    expect(debtLiquidationPriceUsd({ ...shortEth, existingDebtUsd: 300_000_00000000n })).toBeNull()
   })
 })
 
