@@ -48,7 +48,10 @@ export function LeverageActions({
   const [direction, setDirection] = useState<Direction>('long')
   const [marginIn, setMarginIn] = useState<MarginLocation>('collateral')
   const [marginStr, setMarginStr] = useState('')
-  const [manualEnabled, setManualEnabled] = useState(false)
+  // Shown by default. Supply and margin are the amounts that describe the position; the slider
+  // is the shortcut, not the other way round. Hiding them behind a checkbox made the feature
+  // look like it was not there.
+  const [manualEnabled, setManualEnabled] = useState(true)
   const [supplyStr, setSupplyStr] = useState('')
   // What the user last dragged to (or the panel's default) — NOT necessarily what is actually
   // used below. `leverageBps` derives the clamped, in-force value from this every render.

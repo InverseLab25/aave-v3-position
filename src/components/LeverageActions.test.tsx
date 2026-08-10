@@ -251,6 +251,8 @@ it('keeps the derived card position-only, matching the health factor sizeOpen pr
   })
 
   render(<LeverageActions {...WITH_POSITION} />)
+  // Manual is the default now, so reaching the derived path means switching it off.
+  fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
 
   expect(screen.getByText('$1250.00')).toBeTruthy()
   expectOneBasis(2500)
@@ -266,22 +268,28 @@ it('folds the existing account into the manual card, matching the health factor 
     execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
   })
 
+  // Manual is the default — no toggle needed to reach it.
   render(<LeverageActions {...WITH_POSITION} />)
-  fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
 
   expect(screen.getByText('$1666.67')).toBeTruthy()
   expectOneBasis(2500)
 })
 
-it('keeps the slider and hides the manual fields until they are unlocked', () => {
+it('shows the supply field by default, alongside the slider', () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
   render(<LeverageActions {...PROPS} />)
 
+  // Both are present from the first render: the amounts describe the position, the slider is
+  // the shortcut for arriving at them.
+  expect(screen.getByLabelText('Supply amount')).toBeTruthy()
   expect(screen.getByRole('slider')).toBeTruthy()
-  expect(screen.queryByLabelText('Supply amount')).toBeNull()
+})
+
+it('falls back to the slider alone when manual entry is switched off', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  render(<LeverageActions {...PROPS} />)
 
   fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
-  expect(screen.getByLabelText('Supply amount')).toBeTruthy()
-  // The slider stays: it is what seeded the amounts now showing.
+  expect(screen.queryByLabelText('Supply amount')).toBeNull()
   expect(screen.getByRole('slider')).toBeTruthy()
 })
