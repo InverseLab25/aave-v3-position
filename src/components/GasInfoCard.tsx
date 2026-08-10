@@ -1,5 +1,6 @@
 import { formatGwei } from 'viem'
 import type { LiquidationView } from '../utils/liquidation'
+import { hasLiquidationRowsToShow } from '../utils/liquidation'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { T, infoCardStyle, labelStyle } from '../styles/theme'
 
@@ -28,14 +29,14 @@ export function GasInfoCard({ maxFee, maxPriority, estimatedFeeUsd = 0, currentH
   return (
     <div style={infoCardStyle}>
       {showHealth && (
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: liquidationView?.rows.length ? T.space[2] : T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: liquidationView && hasLiquidationRowsToShow(liquidationView) ? T.space[2] : T.space[4], fontSize: T.fontSize.base, fontWeight: 500, color: T.text }}>
           <span>Health Factor</span>
           <span style={{ color: hfColor(newHealthFactor!), fontFamily: T.font.mono, fontWeight: 700, fontSize: T.fontSize.xl }}>
             {currentHealthFactor} → {newHealthFactor}
           </span>
         </div>
       )}
-      {liquidationView && liquidationView.rows.length > 0 && (
+      {liquidationView && hasLiquidationRowsToShow(liquidationView) && (
         <div style={{ marginBottom: T.space[4] }}>
           <LiquidationPriceBlock view={liquidationView} isModal />
         </div>

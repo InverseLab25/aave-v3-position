@@ -27,7 +27,7 @@ const BorrowRepayModal = lazyModal(() => import('./BorrowRepayModal').then((m) =
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
-import { computeLiquidationView, toCollateralInputs } from '../utils/liquidation'
+import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs } from '../utils/liquidation'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
@@ -407,7 +407,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
 
           <div style={{ display: 'flex', flexDirection: 'column', flex: 1, justifyContent: 'space-between', marginTop: T.space[2] }}>
             <LiquidationPriceBlock view={liquidationView} />
-            {liquidationView.rows.length > 0 && (
+            {hasLiquidationRowsToShow(liquidationView) && (
               <div style={{ borderTop: `1px dashed ${T.border}`, margin: `${T.space[2]} 0` }} />
             )}
             <DetailRow

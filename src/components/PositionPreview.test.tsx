@@ -155,14 +155,14 @@ it('prices each existing collateral asset on its own terms, not as one blended a
   expect(screen.getByText('Liquidation price (USDC)')).toBeTruthy()
 })
 
-it('says nothing at all when no asset can be blamed for a liquidation', () => {
+it('names each asset "None" rather than dropping the row, when neither can be blamed alone', () => {
   // $10,000 of USDC already supplied at an 85% LT against a 2 WETH / 2,000 USDC leg and no
   // existing debt: every asset's weighted collateral already covers the whole debt on its own,
   // so neither has a liquidation price. HF = ($8,500 + $4,000) / $2,000 = 6.25.
   //
-  // The row is labelled by the position, not by the asset, so printing "None" against it reads
-  // as "this position cannot be liquidated" — a claim about the whole position, and one the
-  // absent rows do not support.
+  // Two rows means each label is symbol-qualified, so "None" here is an attributed claim about
+  // THAT asset ("WETH alone cannot liquidate you") — not the unattributed, position-level claim
+  // a single bare row would make. Dropping both would make the assets vanish silently instead.
   render(
     <PositionPreview
       preview={{ ...PREVIEW, expectedCollateral: 2_000_000_000_000_000_000n, expectedDebt: 2_000_000_000n, expectedHealthFactorBps: 62_500n }}
@@ -173,9 +173,9 @@ it('says nothing at all when no asset can be blamed for a liquidation', () => {
       existingDebtUsd={0n}
     />,
   )
-  expect(screen.queryByText('None')).toBeNull()
-  expect(screen.queryByText(/Liquidation price/)).toBeNull()
-  // The rest of the card still renders — this is one absent row, not a broken preview.
+  expect(screen.getByText('Liquidation price (WETH)').nextElementSibling?.textContent).toBe('None')
+  expect(screen.getByText('Liquidation price (USDC)').nextElementSibling?.textContent).toBe('None')
+  // The rest of the card still renders alongside the None rows.
   expect(screen.getByText('6.25')).toBeTruthy()
 })
 

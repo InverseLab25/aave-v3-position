@@ -76,6 +76,19 @@ export interface LiquidationView {
   marketWideDropPct: number | null
 }
 
+/**
+ * Whether `LiquidationPriceBlock` has anything to render for this view — the single source of
+ * truth for that decision, so surrounding chrome (dividers, spacing, wrapper margins) can key off
+ * the same test the block itself uses instead of a stale copy of it.
+ *
+ * With more than one row the labels are symbol-qualified, so even an all-null view still has
+ * something attributed to say ("USDC alone: None"). With one row or none, a null row is unnamed
+ * and dropped, so there is something to show only if that lone row is priced.
+ */
+export function hasLiquidationRowsToShow(view: LiquidationView): boolean {
+  return view.rows.length > 1 || view.rows.some(row => row.liquidationPriceUsd !== null)
+}
+
 /** Half-width of the band around $1.00 within which an asset counts as a stablecoin. */
 export const STABLE_BAND = 0.02
 
