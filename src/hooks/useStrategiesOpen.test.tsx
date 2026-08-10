@@ -339,3 +339,67 @@ it('surfaces a manual shortfall as a preview error rather than a preview', async
   await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
   expect(result.current.preview).toBeNull()
 })
+
+it('validates the route it actually builds, not the top-ranked one it may fall through', async () => {
+  // Ranking is best-output-first, so a fallback taken because the top failed to build prices
+  // STRICTLY WORSE than the candidate that was checked. Validating the top and signing the
+  // fallback lets a route through whose output cannot repay the flash — and minOut floors at
+  // flashAmount, so the contract reverts on exactly the guard this validation exists to enforce.
+  const top = stubAdapter(400_000_000n) // 3000 USDC -> 1.2 WETH, clears the 1 WETH flash
+  top.buildTransaction = vi.fn(async () => {
+    throw new Error('router build failed')
+  }) as unknown as typeof top.buildTransaction
+  const fallback = stubAdapter(300_000_000n) // 3000 USDC -> 0.9 WETH, short of the flash
+  mocks.getAdaptersForChain.mockReturnValue([top, fallback])
+
+  const { result } = renderHook(() => useStrategiesOpen({
+    ...INPUT,
+    sizing: {
+      kind: 'manual' as const,
+      marginAmount: 1_000_000_000_000_000_000n,
+      borrowAmount: 3_000_000_000n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    },
+  }))
+
+  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
+  expect(result.current.preview).toBeNull()
+})
+
+it('reports the collateral as marginAsset on the ratchet modes, matching planOpen', async () => {
+  // planOpen routes everything but "debt" — the ratchet's "none" included — through the
+  // collateral entry point. preview.marginAsset is the address execute() reads the ERC-20
+  // allowance from and approves against, so a disagreement approves the wrong token entirely.
+  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+
+  const { result } = renderHook(() => useStrategiesOpen({
+    ...INPUT,
+    mode: 5 as const, // ratchet, long: collateral is the volatile asset
+    sizing: {
+      kind: 'manual' as const,
+      marginAmount: 0n, // ratchet adds no equity
+      borrowAmount: 3_000_000_000n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    },
+    // Ratchet leans on a position that already exists; with none, validateManualOpen rejects
+    // RATCHET_NO_POSITION and there is no preview to assert against.
+    existingCollateralUsd: 500_000_000_000n, // $5000, 8dp
+  }))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  expect(result.current.preview?.marginAsset).toBe(WETH)
+  // Ratchet adds ~no equity, so the leverage ratio says nothing and must not be reported.
+  expect(result.current.preview?.expectedLeverageBps).toBeNull()
+})
+
+it('reports the collateral as marginAsset on a derived ratchet preview too', async () => {
+  // The defect this pins lived on the DERIVED path's setPreview, which resolved "none" to
+  // debtAsset while planOpen resolved it to collateral. Only a ratchet mode reaches that
+  // branch, so it needs its own case — the manual test above cannot cover it.
+  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+
+  const { result } = renderHook(() => useStrategiesOpen({ ...INPUT, mode: 5 as const }))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  expect(result.current.preview?.marginAsset).toBe(WETH)
+})

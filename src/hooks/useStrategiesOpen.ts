@@ -324,20 +324,29 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
             return
           }
 
-          const top = ranked[0]
-          const checked = validateManualOpen({
-            ...manualBase,
-            quote: { amountIn: BigInt(top.q.amountIn), amountOut: BigInt(top.q.amountOut) },
-          })
-          if (!checked.ok) {
-            const out = (BigInt(top.q.amountOut) * BigInt(amountIn)) / BigInt(top.q.amountIn)
-            rejectManual(checked.error, checked.suggestedBorrow, out)
+          // Build FIRST, then validate what was actually built. selectBuildableRoute falls
+          // through candidates that fail to build, and `ranked` is best-output-first, so a
+          // fallback prices strictly worse than the top — validating the top and signing a
+          // fallback can pass a coverage check the signed route fails, and minOut floors at
+          // flashAmount, so that reverts on-chain. Rejecting is the right outcome here rather
+          // than falling through further: if the built route cannot repay the flash, neither
+          // can anything ranked below it.
+          const build = await selectBuildableRoute(ranked)
+          if (cancelled) return
+          if (!build) {
+            setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
             return
           }
 
-          const build = await selectBuildableRoute(ranked)
-          if (!build) {
-            setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
+          const checked = validateManualOpen({
+            ...manualBase,
+            quote: { amountIn: BigInt(build.quote.amountIn), amountOut: BigInt(build.quote.amountOut) },
+          })
+          if (!checked.ok) {
+            // Read off the same quote the rejection came from, so the shortfall shown can never
+            // disagree with the check that produced it.
+            const out = (BigInt(build.quote.amountOut) * BigInt(amountIn)) / BigInt(build.quote.amountIn)
+            rejectManual(checked.error, checked.suggestedBorrow, out)
             return
           }
 
@@ -467,6 +476,10 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         // Every candidate in rankedFinal was quoted at the same amountIn (one round, one
         // amount), so quotedSize applies to whichever of them ends up buildable.
         const build = await selectBuildableRoute(rankedFinal)
+        // A null here means "nothing buildable" OR "cancelled mid-build" — check `cancelled`
+        // first, or a superseded attempt writes a no-route error that an input flipping back to
+        // its previous value would make current again.
+        if (cancelled) return
         if (!build) {
           setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
           return
