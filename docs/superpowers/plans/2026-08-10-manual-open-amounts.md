@@ -964,7 +964,9 @@ to a single round. Route selection is shared by both paths."
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks — it is presentational and takes strings.
-- Produces: `<ManualAmounts>` with props `{ borrowStr, onBorrowChange, flashStr, onFlashChange, debtSymbol, collateralSymbol, message, onApplySuggestion }`, where `message: string | null` and `onApplySuggestion: (() => void) | null`.
+- Produces: `<ManualAmounts>` with props `{ borrowStr, onBorrowChange, flashStr, onFlashChange, debtSymbol, collateralSymbol, message }`, where `message: string | null`.
+
+The shortfall message names the borrow that would clear it, and the user retypes it. A one-click apply would need the raw `suggestedBorrow` bigint plumbed through `PreviewError` (currently `{kind, message}`); that is deliberately out of scope.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -983,7 +985,6 @@ const PROPS = {
   debtSymbol: 'USDC',
   collateralSymbol: 'WETH',
   message: null,
-  onApplySuggestion: null,
 }
 
 it('labels the two fields by what they borrow from', () => {
@@ -1001,19 +1002,12 @@ it('reports edits as raw strings so the parent owns parsing', () => {
   expect(onBorrowChange).toHaveBeenCalledWith('2500')
 })
 
-it('shows the shortfall message when there is one', () => {
-  render(<ManualAmounts {...PROPS} message="Short by 0.5 WETH." />)
+it('shows the shortfall message when there is one, and nothing when there is not', () => {
+  const { rerender } = render(<ManualAmounts {...PROPS} />)
+  expect(screen.queryByText(/short by/i)).toBeNull()
+
+  rerender(<ManualAmounts {...PROPS} message="Short by 0.5 WETH." />)
   expect(screen.getByText('Short by 0.5 WETH.')).toBeTruthy()
-})
-
-it('offers a one-click fix only when a suggestion exists', () => {
-  const onApplySuggestion = vi.fn()
-  const { rerender } = render(<ManualAmounts {...PROPS} message="Short." />)
-  expect(screen.queryByRole('button', { name: /use suggested/i })).toBeNull()
-
-  rerender(<ManualAmounts {...PROPS} message="Short." onApplySuggestion={onApplySuggestion} />)
-  fireEvent.click(screen.getByRole('button', { name: /use suggested/i }))
-  expect(onApplySuggestion).toHaveBeenCalled()
 })
 ```
 
@@ -1038,8 +1032,6 @@ interface ManualAmountsProps {
   collateralSymbol: string
   /** Validation copy from `manualOpenErrorMessage`, already formatted. */
   message: string | null
-  /** Set only when the rejection carried a suggested borrow that would clear it. */
-  onApplySuggestion: (() => void) | null
 }
 
 /**
@@ -1085,23 +1077,7 @@ export function ManualAmounts(p: ManualAmountsProps) {
       {field('Flash amount', 'flash from Morpho', p.flashStr, p.onFlashChange, p.collateralSymbol)}
 
       {p.message && (
-        <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>
-          {p.message}
-          {p.onApplySuggestion && (
-            <>
-              {' '}
-              <button
-                onClick={p.onApplySuggestion}
-                style={{
-                  border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-                  color: T.primary, fontWeight: 600, fontSize: T.fontSize.sm,
-                }}
-              >
-                Use suggested
-              </button>
-            </>
-          )}
-        </div>
+        <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>{p.message}</div>
       )}
     </div>
   )
@@ -1420,7 +1396,6 @@ Render `ManualAmounts` directly below `OpenPositionForm`, replacing the bare `si
               debtSymbol={debtReserve?.symbol ?? '—'}
               collateralSymbol={collateralReserve?.symbol ?? '—'}
               message={sizingMessage}
-              onApplySuggestion={null}
             />
           ) : (
             sizingMessage && <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>{sizingMessage}</div>
