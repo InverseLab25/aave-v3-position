@@ -143,6 +143,43 @@ it('hides the leverage slider and forces manual entry in ratchet mode', () => {
   expect(screen.getByLabelText('Flash amount')).toBeTruthy()
 })
 
+// The single highest-consequence expression in the panel: `mode` decides which asset becomes
+// collateral and which becomes debt. Every test here mocks `useStrategiesOpen`, so nothing else
+// in the suite observes `mode` at all — transposing 3<->4 or 5<->6 would leave the suite green
+// while opening the WRONG position. Asserted on the argument, not on rendered output, because
+// the mapping has no visible representation.
+//
+// Long  => collateral is the volatile reserve (WETH), debt is the stable one (USDC).
+// Short => the pair swaps: collateral is USDC, debt is WETH.
+const MODE_CASES = [
+  { direction: 'Long', payWith: 'WETH', role: 'collateral', mode: 1 },
+  { direction: 'Long', payWith: 'USDC', role: 'debt', mode: 2 },
+  { direction: 'Short', payWith: 'WETH', role: 'debt', mode: 3 },
+  { direction: 'Short', payWith: 'USDC', role: 'collateral', mode: 4 },
+  { direction: 'Long', payWith: 'No margin', role: 'none', mode: 5 },
+  { direction: 'Short', payWith: 'No margin', role: 'none', mode: 6 },
+] as const
+
+it.each(MODE_CASES)(
+  'sizes $direction with margin in the $role asset ($payWith) as mode $mode',
+  ({ direction, payWith, mode }) => {
+    mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+    render(<LeverageActions {...PROPS} availableReserves={[WETH, USDC]} />)
+
+    // The sidebar buttons' accessible names carry their blurb too, hence the anchored regex.
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${direction}\\b`) }))
+    fireEvent.click(screen.getByRole('button', { name: payWith }))
+    // Ratchet has no margin field, and needs none: zero amounts still parse, so the sizing —
+    // and therefore `mode` — reaches the hook regardless.
+    if (payWith !== 'No margin') {
+      fireEvent.change(screen.getByLabelText('Margin amount'), { target: { value: '1' } })
+    }
+
+    const input = mocks.useStrategiesOpen.mock.calls.at(-1)?.[0]
+    expect(input?.mode).toBe(mode)
+  },
+)
+
 it('keeps the slider and hides the manual fields until they are unlocked', () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
   render(<LeverageActions {...PROPS} />)

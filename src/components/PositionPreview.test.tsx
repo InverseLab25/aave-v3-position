@@ -45,6 +45,21 @@ it('flags price impact past PRICE_IMPACT_HIGH_PERCENT', () => {
   expect(screen.getByText(/3\.40%/)).toBeTruthy()
 })
 
+it('shows an em-dash, not 0.00x, when leverage is not meaningful', () => {
+  // The ratchet path adds ~no equity, so `expectedLeverageBps` is null there. `Number(null)` is
+  // 0, so a naive read renders a confident "0.00x" and tsc cannot see it — hence a test.
+  render(
+    <PositionPreview
+      preview={{ ...PREVIEW, expectedLeverageBps: null }} collateralSymbol="WETH" debtSymbol="USDC"
+      collateralDecimals={18} debtDecimals={6}
+      collateralPriceUsd={2500} debtPriceUsd={1} liquidationThreshold={0.8}
+    />,
+  )
+  expect(screen.getByText('—')).toBeTruthy()
+  // Both halves matter: asserting only the em-dash would still pass if the row rendered both.
+  expect(screen.queryByText(/0\.00x/)).toBeNull()
+})
+
 it('renders nothing when there is no preview yet', () => {
   const { container } = render(
     <PositionPreview

@@ -15,10 +15,16 @@ interface UseOpenSizingInput {
   manualEnabled: boolean
 }
 
-/** Parses a user-typed decimal, or null when it is not yet a number. */
+/** Parses a user-typed decimal, or null when it is not yet a usable amount. */
 function parse(value: string, decimals: number): bigint | null {
   try {
-    return parseUnits(value || '0', decimals)
+    const parsed = parseUnits(value || '0', decimals)
+    // viem parses "-5" into a negative bigint rather than throwing. A negative amount clears
+    // every downstream guard — it is trivially under the wallet balance, it can pass the LTV
+    // projection against existing collateral, and `allowance < negative` is false so even the
+    // approve step waves it through — and only dies at `encodeFunctionData` with
+    // IntegerOutOfRange, surfaced as an opaque exec error. Reject it at the boundary instead.
+    return parsed < 0n ? null : parsed
   } catch {
     return null
   }

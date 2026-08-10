@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import type { AvailableReserve } from '../hooks/useAavePositions'
 
 // AavePosition composes a lot of hooks; only useAavePositions, wagmi's useChainId/useConnection/
@@ -73,6 +73,10 @@ const EMPTY_PORTFOLIO = {
   isLoading: false,
   collateralUsd: 0,
   debtUsd: 0,
+  // Must mirror useAavePositions' real return shape: LeverageActions declares these two as
+  // `bigint`, and this mock is untyped, so omitting them silently feeds it `undefined`.
+  collateralBase: 0n,
+  debtBase: 0n,
   availableBorrowsUsd: 0,
   ltvPercent: 0,
   liquidationThreshold: 0,
@@ -110,4 +114,56 @@ it('reaches the actions panel from an empty portfolio — opening a leveraged po
   // LeverageActions is lazy-loaded (Suspense), so its content arrives asynchronously.
   expect(await screen.findByText('Long')).toBeTruthy()
   expect(screen.getByText('Short')).toBeTruthy()
+})
+
+it('hands the account totals to the actions panel as raw 8dp bigints', async () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  // Deliberately not round in float terms: routing these through `collateralUsd`/`debtUsd`
+  // (JS numbers) and back would not reproduce them exactly.
+  mocks.useAavePositions.mockReturnValue({
+    ...EMPTY_PORTFOLIO,
+    collateralBase: 123_456_789_012_345_678n,
+    debtBase: 98_765_432_109_876_543n,
+  })
+
+  render(<AavePosition />)
+
+  // A sizing only reaches the hook once there is a margin to size from.
+  fireEvent.change(await screen.findByLabelText('Margin amount'), { target: { value: '1' } })
+
+  const input = mocks.useStrategiesOpen.mock.calls.at(-1)?.[0]
+  expect(input?.existingCollateralUsd).toBe(123_456_789_012_345_678n)
+  expect(input?.existingDebtUsd).toBe(98_765_432_109_876_543n)
+})
+
+// `<LeverageActions>` is mounted TWICE — once in the empty-portfolio branch above, once in the
+// populated dashboard. They are separate JSX call sites, so passing the totals at one proves
+// nothing about the other; a dropped prop on this one is exactly the kind of thing the first
+// test cannot see.
+it('hands the account totals to the actions panel on the populated dashboard too', async () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  // A non-zero collateralUsd is what routes past the empty-portfolio branch.
+  mocks.useAavePositions.mockReturnValue({
+    ...EMPTY_PORTFOLIO,
+    collateralUsd: 1_234.5,
+    debtUsd: 500,
+    collateralBase: 123_456_789_012_345_678n,
+    debtBase: 98_765_432_109_876_543n,
+    totalPositionPnlUsd: 0,
+    eModeCategoryId: 0,
+    isEModeEnabled: false,
+    eModeLabel: 'Disabled',
+    eModeLtv: 0,
+    eModeLiquidationThreshold: 0,
+    isUnsupportedChain: false,
+    chainName: 'Ethereum',
+  })
+
+  render(<AavePosition />)
+
+  fireEvent.change(await screen.findByLabelText('Margin amount'), { target: { value: '1' } })
+
+  const input = mocks.useStrategiesOpen.mock.calls.at(-1)?.[0]
+  expect(input?.existingCollateralUsd).toBe(123_456_789_012_345_678n)
+  expect(input?.existingDebtUsd).toBe(98_765_432_109_876_543n)
 })
