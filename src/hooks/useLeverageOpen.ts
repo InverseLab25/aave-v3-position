@@ -37,7 +37,7 @@ import { getAdaptersForChain } from '../adapters'
 import type { Adapter, QuoteResponse } from '../adapters/types'
 import { getChainConfig } from '../config/chains'
 import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
-import { selectBuildableRoute } from '../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, selectBuildableRoute } from '../lib/deleverage'
 import { decodeStrategiesError } from '../lib/strategiesErrors'
 import type { StrategiesRemedy } from '../lib/strategiesErrors'
 import { extractRevertMessage } from '../utils/errors'
@@ -237,8 +237,12 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         }
 
         const allowed = new Set(routers.map((r) => r.toLowerCase()))
+        // Same filter the close flow uses, and for the same reason: `supportsExecution` only
+        // says the adapter returns a transaction, not that this contract can execute it. See
+        // COMPATIBLE_ADAPTERS — quoting the rest gets them ranked and sized against, then
+        // rejected at build, which surfaces as a "rate moved" the user cannot act on.
         const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
-          .filter((a) => a.supportsExecution)
+          .filter((a) => (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name))
 
         const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
         const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
@@ -523,6 +527,6 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     preview: effectivePreview,
     previewError: effectivePreviewError,
     isQuoting: effectiveIsQuoting,
-    refresh, frozen, step, txHash, execError, execRemedy, execute,
+    refresh, step, txHash, execError, execRemedy, execute,
   }
 }

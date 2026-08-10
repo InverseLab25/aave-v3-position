@@ -67,13 +67,18 @@ export function quoteRate(
 }
 
 /**
- * Aggregators the deleverager can actually route through.
+ * Aggregators either contract can actually route through.
+ *
+ * Applies to AaveV3Strategies as much as AaveV3Deleverager: both approve `router` and then
+ * call `router` with the caller's calldata (`_swap`, AaveV3Strategies.sol:620), so the same
+ * two conditions bind on both. Filtering by `supportsExecution` alone is NOT equivalent — that
+ * flag only says the adapter returns a transaction at all.
  *
  * Two conditions have to hold, and only the first is a property of the aggregator:
  *
  *  1. Its ERC20 approval-spender equals its call target, it needs no per-swap signature,
- *     and it can direct output to an arbitrary recipient — AaveV3Deleverager approves
- *     `router`, calls `router`, and expects the output on itself. This rules out ParaSwap
+ *     and it can direct output to an arbitrary recipient — both contracts approve `router`,
+ *     call `router`, and expect the output on themselves. This rules out ParaSwap
  *     (separate TokenTransferProxy), CowSwap (off-chain intent), and any Permit2-signature
  *     flow (1inch/0x) a contract can't sign. OpenOcean and Odos both satisfy it.
  *
@@ -81,10 +86,11 @@ export function quoteRate(
  *     router is — see script/RouterSetup.s.sol — so it is the only entry here.
  *
  * A router's address is only known after `buildTransaction`, i.e. after a quote has been
- * paid for, so condition 2 cannot be checked during sizing. Listing an aggregator whose
- * router isn't allowlisted therefore doesn't just waste quota: it can win the ranking and
- * be previewed to the user, and `close()` then silently falls back to a different route
- * that repays at a different rate than the one shown.
+ * paid for, so condition 2 cannot be checked during sizing. Quoting an aggregator that fails
+ * either condition therefore does more than waste quota: it can win the ranking, get sized
+ * against, and then be rejected at build time — leaving the flow to fall back to a strictly
+ * worse route. On the open path that surfaces as a spurious "the rate moved" error the user
+ * can do nothing about, because the route it sized against was never usable.
  *
  * To widen this: allowlist the router on-chain FIRST (RouterSetup.s.sol, owner-signed),
  * then add the name here. Never the other way round.
