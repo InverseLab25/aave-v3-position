@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
-import { erc20Abi, formatUnits, parseUnits } from 'viem'
+import { erc20Abi, formatUnits } from 'viem'
 import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
 import { useStrategiesOpen } from '../hooks/useStrategiesOpen'
+import { useOpenSizing } from '../hooks/useOpenSizing'
 import { getStrategiesAddress } from '../config/chains'
 import { leverageCeilingBps, sliderMax } from '../lib/openPlan'
+import type { MarginLocation } from '../lib/strategies-sdk/sizing'
+import type { OpenMode } from '../lib/strategies-sdk/plan'
 import { PRICE_IMPACT_BLOCK_PERCENT } from '../lib/swapRoute'
+import { ManualAmounts } from './ManualAmounts'
 import { OpenPositionForm } from './OpenPositionForm'
 import { PositionPreview } from './PositionPreview'
 import { ExplorerLink } from './ExplorerLink'
@@ -15,6 +19,9 @@ interface LeverageActionsProps {
   suppliedAssets: SuppliedAsset[]
   availableReserves: AvailableReserve[]
   viewAddress?: `0x${string}`
+  /** `getUserAccountData` totals, 8dp USD — the account the new position lands on top of. */
+  existingCollateralUsd: bigint
+  existingDebtUsd: bigint
 }
 
 type Direction = 'long' | 'short'
@@ -26,14 +33,19 @@ const SIDEBAR: Array<{ key: Direction; title: string; blurb: (v: string, s: stri
 
 const DEFAULT_SLIPPAGE_BPS = 50n
 
-export function LeverageActions({ availableReserves, viewAddress }: LeverageActionsProps) {
+export function LeverageActions({
+  availableReserves, viewAddress, existingCollateralUsd, existingDebtUsd,
+}: LeverageActionsProps) {
   const chainId = useChainId()
   const { address } = useConnection()
   const contract = getStrategiesAddress(chainId)
 
   const [direction, setDirection] = useState<Direction>('long')
-  const [marginIn, setMarginIn] = useState<'collateral' | 'debt'>('collateral')
+  const [marginIn, setMarginIn] = useState<MarginLocation>('collateral')
   const [marginStr, setMarginStr] = useState('')
+  const [manualEnabled, setManualEnabled] = useState(false)
+  const [borrowStr, setBorrowStr] = useState('')
+  const [flashStr, setFlashStr] = useState('')
   // What the user last dragged to (or the panel's default) — NOT necessarily what is actually
   // used below. `leverageBps` derives the clamped, in-force value from this every render.
   const [requestedLeverageBps, setRequestedLeverageBps] = useState(20_000n)
@@ -46,9 +58,15 @@ export function LeverageActions({ availableReserves, viewAddress }: LeverageActi
   const long = direction === 'long'
   const collateralReserve = long ? volatileReserve : stableReserve
   const debtReserve = long ? stableReserve : volatileReserve
-  const mode = long ? (marginIn === 'collateral' ? 1 : 2) : marginIn === 'debt' ? 3 : 4
+  const mode: OpenMode = marginIn === 'none'
+    ? (long ? 5 : 6)
+    : long
+      ? (marginIn === 'collateral' ? 1 : 2)
+      : marginIn === 'debt' ? 3 : 4
 
-  const marginReserve = marginIn === 'collateral' ? collateralReserve : debtReserve
+  // Ratchet posts no margin at all, so this only has to be a reserve the balance read can be
+  // skipped against — it falls out as the collateral side, same as any non-debt margin.
+  const marginReserve = marginIn === 'debt' ? debtReserve : collateralReserve
 
   // Margin is pulled from the WALLET (safeTransferFrom(msg.sender, ...)), not from what is
   // already supplied to Aave — suppliedAssets is structurally always empty for the
@@ -60,7 +78,8 @@ export function LeverageActions({ availableReserves, viewAddress }: LeverageActi
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: address ? [address] : undefined,
-    query: { enabled: !!address && !!marginReserve },
+    // Ratchet posts nothing, so there is no balance to check it against.
+    query: { enabled: !!address && !!marginReserve && marginIn !== 'none' },
   })
   const marginBalance = marginWalletBalance
     ? Number(formatUnits(marginWalletBalance as bigint, marginReserve?.raw.decimals ?? 18))
@@ -87,29 +106,40 @@ export function LeverageActions({ availableReserves, viewAddress }: LeverageActi
     ? leverageMaxBps
     : requestedLeverageBps
 
+  const { sizing, manual } = useOpenSizing({
+    marginIn,
+    marginStr,
+    marginDecimals: marginReserve?.raw.decimals ?? 18,
+    borrowStr,
+    borrowDecimals: debtReserve?.raw.decimals ?? 18,
+    flashStr,
+    flashDecimals: collateralReserve?.raw.decimals ?? 18,
+    leverageBps,
+    manualEnabled,
+  })
+
   const input = useMemo(() => {
-    if (!contract || !volatileReserve || !stableReserve || !collateralReserve || !debtReserve) return null
-    let marginAmount: bigint
-    try {
-      marginAmount = parseUnits(marginStr || '0', marginReserve?.raw.decimals ?? 18)
-    } catch {
-      return null
-    }
-    if (marginAmount <= 0n) return null
+    if (!contract || !sizing) return null
+    if (!volatileReserve || !stableReserve || !collateralReserve || !debtReserve) return null
     return {
       contract,
-      mode: mode as 1 | 2 | 3 | 4,
+      mode,
       volatile: volatileReserve.underlyingAsset,
       stable: stableReserve.underlyingAsset,
-      marginAmount,
-      leverageBps,
+      sizing,
       slippageBps: DEFAULT_SLIPPAGE_BPS,
+      marginBalance: (marginWalletBalance as bigint | undefined) ?? 0n,
+      existingCollateralUsd,
+      existingDebtUsd,
       reserves: {
         collateral: { address: collateralReserve.underlyingAsset, symbol: collateralReserve.symbol, ...collateralReserve.raw },
         debt: { address: debtReserve.underlyingAsset, symbol: debtReserve.symbol, ...debtReserve.raw },
       },
     }
-  }, [contract, mode, volatileReserve, stableReserve, collateralReserve, debtReserve, marginReserve, marginStr, leverageBps])
+  }, [
+    contract, mode, sizing, volatileReserve, stableReserve, collateralReserve, debtReserve,
+    marginWalletBalance, existingCollateralUsd, existingDebtUsd,
+  ])
 
   const {
     preview, previewError, isQuoting, execute, step, execError, execRemedy, txHash, refresh,
@@ -130,6 +160,16 @@ export function LeverageActions({ availableReserves, viewAddress }: LeverageActi
       : execRemedy === 'refresh'
         ? 'Refresh and try again.'
         : null
+
+  // Unlocking manual entry pre-fills from whatever the derived path last priced — an empty form
+  // would throw away the sizing the user just dialled in.
+  const seedManual = (on: boolean) => {
+    if (on && preview && !borrowStr && !flashStr) {
+      setBorrowStr(formatUnits(preview.borrowAmount, debtReserve?.raw.decimals ?? 18))
+      setFlashStr(formatUnits(preview.flashAmount, collateralReserve?.raw.decimals ?? 18))
+    }
+    setManualEnabled(on)
+  }
 
   return (
     <div style={{
@@ -200,10 +240,22 @@ export function LeverageActions({ availableReserves, viewAddress }: LeverageActi
             liquidationThresholdBps={collateralReserve?.raw.liquidationThresholdBps ?? 0n}
             dangerEnabled={dangerEnabled}
             onDangerToggle={setDangerEnabled}
+            manualEnabled={manualEnabled}
+            onManualToggle={seedManual}
           />
 
-          {sizingMessage && (
-            <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>{sizingMessage}</div>
+          {manual ? (
+            <ManualAmounts
+              borrowStr={borrowStr}
+              onBorrowChange={setBorrowStr}
+              flashStr={flashStr}
+              onFlashChange={setFlashStr}
+              debtSymbol={debtReserve?.symbol ?? '—'}
+              collateralSymbol={collateralReserve?.symbol ?? '—'}
+              message={sizingMessage}
+            />
+          ) : (
+            sizingMessage && <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>{sizingMessage}</div>
           )}
 
           <PositionPreview

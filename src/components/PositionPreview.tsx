@@ -58,7 +58,10 @@ export function PositionPreview({
   const rows: Array<[string, string]> = [
     ['Collateral', `${fmt(preview.expectedCollateral, collateralDecimals, 4)} ${collateralSymbol}`],
     ['Debt', `${fmt(preview.expectedDebt, debtDecimals, 2)} ${debtSymbol}`],
-    ['Leverage', `${(Number(preview.expectedLeverageBps) / 10000).toFixed(2)}x`],
+    // Null on the ratchet path: equity added is ~zero, so a ratio would be noise.
+    ['Leverage', preview.expectedLeverageBps === null
+      ? '—'
+      : `${(Number(preview.expectedLeverageBps) / 10000).toFixed(2)}x`],
     ['Route', preview.aggregator],
   ]
 

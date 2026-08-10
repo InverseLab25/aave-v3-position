@@ -238,6 +238,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
     collateralUsd: 0,
     debtUsd: 0,
+    collateralBase: 0n,
+    debtBase: 0n,
     availableBorrowsUsd: 0,
     ltvPercent: 0,
     liquidationThreshold: 0,
@@ -436,6 +438,10 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   return {
     collateralUsd,
     debtUsd,
+    /** The same totals as `collateralUsd`/`debtUsd`, unrounded: Aave base units, 8 decimals.
+     *  Sizing math consumes these; the numbers above are for display. */
+    collateralBase: totalCollateralBase,
+    debtBase: totalDebtBase,
     availableBorrowsUsd,
     ltvPercent,
     liquidationThreshold,

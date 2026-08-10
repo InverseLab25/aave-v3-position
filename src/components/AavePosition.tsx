@@ -68,6 +68,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     isLoading,
     collateralUsd,
     debtUsd,
+    collateralBase,
+    debtBase,
     availableBorrowsUsd,
     ltvPercent,
     liquidationThreshold,
@@ -328,6 +330,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           suppliedAssets={suppliedAssets}
           availableReserves={availableReserves}
           viewAddress={viewAddress}
+          existingCollateralUsd={collateralBase}
+          existingDebtUsd={debtBase}
         />
 
         {isAssetsToSupplyModalOpen && (
@@ -588,6 +592,8 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
         suppliedAssets={suppliedAssets}
         availableReserves={availableReserves}
         viewAddress={viewAddress}
+        existingCollateralUsd={collateralBase}
+        existingDebtUsd={debtBase}
       />
 
       {editCtx && (

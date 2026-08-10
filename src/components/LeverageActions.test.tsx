@@ -36,7 +36,10 @@ beforeEach(() => {
   })
 })
 
-const PROPS = { suppliedAssets: [], availableReserves: [], viewAddress: undefined }
+const PROPS = {
+  suppliedAssets: [], availableReserves: [], viewAddress: undefined,
+  existingCollateralUsd: 0n, existingDebtUsd: 0n,
+}
 
 const WETH: AvailableReserve = {
   symbol: 'WETH', underlyingAsset: '0x1111111111111111111111111111111111111111',
@@ -81,11 +84,12 @@ it('clamps leverage back down when the danger-zone toggle turns off', () => {
   render(<LeverageActions {...PROPS} availableReserves={[WETH, USDC]} />)
 
   // Opt into the danger zone, drag past the soft (2.14x) ceiling, then opt back out.
-  fireEvent.click(screen.getByRole('checkbox'))
+  // Addressed by label, not by role: the manual-entry unlock is a second checkbox in this form.
+  fireEvent.click(screen.getByLabelText(/allow leverage above/i))
   fireEvent.change(screen.getByRole('slider'), { target: { value: '30000' } })
   expect(screen.getByText('3.00x')).toBeTruthy()
 
-  fireEvent.click(screen.getByRole('checkbox'))
+  fireEvent.click(screen.getByLabelText(/allow leverage above/i))
   // Lowering the slider's `max` alone does not lower this state — the DOM clamps the thumb,
   // but sizeOpen still receives 3.00x unless the state itself is clamped back down.
   expect(screen.queryByText('3.00x')).toBeNull()
@@ -123,4 +127,31 @@ it('disables the action and explains when the contract is paused', () => {
   render(<LeverageActions {...PROPS} />)
   expect(screen.getByText(/paused/i)).toBeTruthy()
   expect(screen.getByRole('button', { name: /open position/i }).hasAttribute('disabled')).toBe(true)
+})
+
+it('hides the leverage slider and forces manual entry in ratchet mode', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  render(<LeverageActions {...PROPS} />)
+
+  fireEvent.click(screen.getByRole('button', { name: /no margin/i }))
+
+  expect(screen.queryByRole('slider')).toBeNull()
+  expect(screen.queryByLabelText('Margin amount')).toBeNull()
+  // Manual is not optional here — there is nothing to derive from.
+  expect(screen.queryByLabelText(/enter amounts manually/i)).toBeNull()
+  expect(screen.getByLabelText('Debt amount')).toBeTruthy()
+  expect(screen.getByLabelText('Flash amount')).toBeTruthy()
+})
+
+it('keeps the slider and hides the manual fields until they are unlocked', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  render(<LeverageActions {...PROPS} />)
+
+  expect(screen.getByRole('slider')).toBeTruthy()
+  expect(screen.queryByLabelText('Debt amount')).toBeNull()
+
+  fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
+  expect(screen.getByLabelText('Debt amount')).toBeTruthy()
+  // The slider stays: it is what seeded the amounts now showing.
+  expect(screen.getByRole('slider')).toBeTruthy()
 })

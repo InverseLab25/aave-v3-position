@@ -12,6 +12,7 @@ const BASE = {
   leverageBps: 20_000n, onLeverageChange: vi.fn(),
   ltvBps: 7500n, liquidationThresholdBps: 8000n,
   dangerEnabled: false, onDangerToggle: vi.fn(),
+  manualEnabled: false, onManualToggle: vi.fn(),
 }
 
 it('caps the slider at the soft health-factor ceiling by default', () => {
