@@ -22,6 +22,7 @@ import {
   aaveV3StrategiesAbi,
   type OpenMode,
   type SizeOpenError,
+  type MarginIn,
 } from '../lib/strategies-sdk'
 import {
   MAX_REFINE_ROUNDS,
@@ -196,6 +197,11 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         const { collateral, debtAsset, marginIn } = resolveMode({
           mode: input.mode, volatile: input.volatile, stable: input.stable,
         })
+        // resolveMode's "none" (ratchet modes 5/6) has no wiring into this auto-sizing hook yet
+        // — that lands with manual-amount entry in a later task. Until then, narrow it away for
+        // sizeOpen the same way sizeOpen's own runtime already treats anything but "debt": as
+        // the collateral-margin flow.
+        const marginInForSizing: MarginIn = marginIn === 'debt' ? 'debt' : 'collateral'
 
         const [{ paused }, routers] = await Promise.all([
           getPauseState(client, input.contract),
@@ -210,7 +216,7 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         const coll = input.reserves.collateral
         const debt = input.reserves.debt
         const sizeArgs = {
-          marginIn,
+          marginIn: marginInForSizing,
           marginAmount: input.marginAmount,
           leverageBps: input.leverageBps,
           collateralPriceUsd: coll.priceUsd,

@@ -44,6 +44,13 @@ export function maxLeverageForHealthFactorBps(ltBps: bigint, targetHfBps: bigint
  *  Shared with `plan.ts`'s `resolveMode` so the two can never drift apart. */
 export type MarginIn = "collateral" | "debt";
 
+/**
+ * Adds the ratchet path, where no margin is posted at all. `sizeOpen` never sees this: leverage
+ * is a multiple of a margin base, and with no base the derived path is not merely unused but
+ * undefined. Ratchet positions are sized by hand.
+ */
+export type MarginLocation = MarginIn | "none";
+
 export type SizeOpenError =
   | "ZERO_MARGIN"
   | "ZERO_RATE"

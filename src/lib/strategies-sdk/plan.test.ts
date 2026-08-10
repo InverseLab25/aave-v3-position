@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { encodeFunctionData } from "viem";
 import { aaveV3StrategiesAbi, FULL_CLOSE, ZERO_STRATEGIES_PERMIT, ZERO_STRATEGIES_SIG } from "./abi";
-import { planClose, planOpen, type OpenMode } from "./plan";
+import { planClose, planOpen, resolveMode, type OpenMode } from "./plan";
 
 const X = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const; // WETH (volatile)
 const S = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as const; // USDC (stable)
@@ -26,6 +26,8 @@ describe("planOpen maps (direction, held asset) onto (entry point, asset roles)"
     [2, "openWithDebtMargin", X, S, S],
     [3, "openWithDebtMargin", S, X, X],
     [4, "openWithCollateralMargin", S, X, S],
+    [5, "openWithCollateralMargin", X, S, X],
+    [6, "openWithCollateralMargin", S, X, S],
   ];
   for (const [mode, fn, coll, debt, marginAsset] of table) {
     it(`mode ${mode}`, () => {
@@ -40,7 +42,15 @@ describe("planOpen maps (direction, held asset) onto (entry point, asset roles)"
 });
 
 it("planOpen rejects an out-of-range mode", () => {
-  expect(() => planOpen({ ...openBase, mode: 5 as never })).toThrow("invalid open mode");
+  expect(() => planOpen({ ...openBase, mode: 7 as never })).toThrow("invalid open mode");
+});
+
+it("ratchet modes resolve to no margin and the collateral entry point", () => {
+  for (const mode of [5, 6] as const) {
+    expect(resolveMode({ mode, volatile: X, stable: S }).marginIn).toBe("none");
+    expect(planOpen({ ...openBase, mode, marginAmount: 0n }).functionName)
+      .toBe("openWithCollateralMargin");
+  }
 });
 
 it("planOpen args encode against the ABI for every mode", () => {

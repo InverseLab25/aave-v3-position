@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ZERO_STRATEGIES_SIG } from "./abi";
-import { planOpen, resolveMode, type OpenMode } from "./plan";
+import { planOpen, resolveMode } from "./plan";
 import { sizeOpen } from "./sizing";
 
 // This file proves plan.ts's mode->entry-point mapping and sizing.ts's marginIn->flow mapping
@@ -46,18 +46,28 @@ const GUARDRAILS = {
 
 // Per mode: the price/decimals fixture matching that mode's collateral/debt role assignment, and
 // a margin amount denominated in whichever asset resolveMode says the margin is in (1 WETH for
-// the 18dp asset, 5000 USDC for the 6dp one).
-const CASES: Array<{ mode: OpenMode; prices: RateFixture; marginAmount: bigint }> = [
+// the 18dp asset, 5000 USDC for the 6dp one). Ratchet modes 5/6 carry no margin at all, so they
+// get their own assertion above rather than a row here.
+const CASES: Array<{ mode: 1 | 2 | 3 | 4; prices: RateFixture; marginAmount: bigint }> = [
   { mode: 1, prices: LONG_PRICES, marginAmount: 10n ** 18n }, // margin in WETH (collateral)
   { mode: 2, prices: LONG_PRICES, marginAmount: 5_000_000_000n }, // margin in USDC (debt)
   { mode: 3, prices: SHORT_PRICES, marginAmount: 10n ** 18n }, // margin in WETH (debt)
   { mode: 4, prices: SHORT_PRICES, marginAmount: 5_000_000_000n }, // margin in USDC (collateral)
 ];
 
+it("ratchet modes report marginIn 'none', which sizeOpen never sees", () => {
+  for (const mode of [5, 6] as const) {
+    expect(resolveMode({ mode, volatile: X, stable: S }).marginIn).toBe("none");
+  }
+});
+
 describe("resolveMode's marginIn drives the same flow planOpen picks, for every mode", () => {
   for (const { mode, prices, marginAmount } of CASES) {
     it(`mode ${mode}`, () => {
       const resolved = resolveMode({ mode, volatile: X, stable: S });
+      // CASES only carries modes 1-4, so this never fires — it exists to narrow marginIn's type
+      // for sizeOpen below, which (unlike resolveMode) cannot accept "none".
+      if (resolved.marginIn === "none") throw new Error("unreachable: CASES excludes ratchet modes");
       const plan = planOpen({
         mode,
         volatile: X,
