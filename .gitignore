@@ -43,3 +43,6 @@ idea/
 
 # subagent-driven-development scratch workspace
 .superpowers/
+
+# Design docs and plans — removed from the repo
+docs/
