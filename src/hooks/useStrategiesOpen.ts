@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useChainId, useConnection, usePublicClient, useSignTypedData, useWriteContract } from 'wagmi'
-import { parseAbi, type Address, type Hex } from 'viem'
+import { formatUnits, parseAbi, type Address, type Hex } from 'viem'
 import {
   getAllowedRouters,
   getDelegationAllowance,
@@ -33,6 +33,8 @@ import {
   rateFromQuote,
   sizeOpenErrorMessage,
 } from '../lib/openPlan'
+import { manualOpenErrorMessage, validateManualOpen } from '../lib/manualOpen'
+import type { ManualOpenError } from '../lib/manualOpen'
 import { routeCostPercent } from '../lib/swapRoute'
 import { getAdaptersForChain } from '../adapters'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
@@ -52,18 +54,35 @@ export interface ReserveInfo {
   liquidationThresholdBps: bigint
 }
 
+/**
+ * How the three contract amounts are arrived at. `derived` solves them from a margin and a
+ * target leverage; `manual` takes them as typed. They are a union rather than optional fields
+ * because a half-filled manual entry must never silently fall back to derived sizing.
+ */
+export type OpenSizing =
+  | { kind: 'derived'; marginAmount: bigint; leverageBps: bigint }
+  | { kind: 'manual'; marginAmount: bigint; borrowAmount: bigint; flashAmount: bigint }
+
 export interface OpenInput {
   contract: Address
   mode: OpenMode
   volatile: Address
   stable: Address
-  marginAmount: bigint
-  leverageBps: bigint
+  sizing: OpenSizing
   slippageBps: bigint
   reserves: { collateral: ReserveInfo; debt: ReserveInfo }
+  /** Wallet balance of the margin asset. Manual validation rejects above it. */
+  marginBalance: bigint
+  /** `getUserAccountData` totals, 8dp USD. Folded into manual projections so the health factor
+   *  reflects the whole account, which is what Aave liquidates against. */
+  existingCollateralUsd: bigint
+  existingDebtUsd: bigint
 }
 
-export type PreviewErrorKind = SizeOpenError | 'paused' | 'no-route' | 'no-client' | 'quote-failed'
+export type PreviewErrorKind =
+  | SizeOpenError
+  | ManualOpenError
+  | 'paused' | 'no-route' | 'no-client' | 'quote-failed'
 
 export interface PreviewError {
   kind: PreviewErrorKind
@@ -79,7 +98,8 @@ export interface OpenPreview {
   minOut: bigint
   expectedCollateral: bigint
   expectedDebt: bigint
-  expectedLeverageBps: bigint
+  /** Null on the ratchet path, where equity added is ~zero and the ratio says nothing. */
+  expectedLeverageBps: bigint | null
   expectedHealthFactorBps: bigint
   router: Address
   swapData: Hex
@@ -113,10 +133,16 @@ const ERC20_ABI = parseAbi([
 function reserveKey(r: ReserveInfo): string {
   return `${r.address}|${r.symbol}|${r.decimals}|${r.priceUsd}|${r.ltvBps}|${r.liquidationThresholdBps}`
 }
+function sizingKey(s: OpenSizing): string {
+  return s.kind === 'derived'
+    ? `d|${s.marginAmount}|${s.leverageBps}`
+    : `m|${s.marginAmount}|${s.borrowAmount}|${s.flashAmount}`
+}
 function inputKey(input: OpenInput): string {
   return [
     input.contract, input.mode, input.volatile, input.stable,
-    input.marginAmount, input.leverageBps, input.slippageBps,
+    sizingKey(input.sizing), input.slippageBps,
+    input.marginBalance, input.existingCollateralUsd, input.existingDebtUsd,
     reserveKey(input.reserves.collateral), reserveKey(input.reserves.debt),
   ].join('|')
 }
@@ -197,11 +223,6 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         const { collateral, debtAsset, marginIn } = resolveMode({
           mode: input.mode, volatile: input.volatile, stable: input.stable,
         })
-        // resolveMode's "none" (ratchet modes 5/6) has no wiring into this auto-sizing hook yet
-        // — that lands with manual-amount entry in a later task. Until then, narrow it away for
-        // sizeOpen the same way sizeOpen's own runtime already treats anything but "debt": as
-        // the collateral-margin flow.
-        const marginInForSizing: MarginIn = marginIn === 'debt' ? 'debt' : 'collateral'
 
         const [{ paused }, routers] = await Promise.all([
           getPauseState(client, input.contract),
@@ -215,10 +236,144 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
 
         const coll = input.reserves.collateral
         const debt = input.reserves.debt
+
+        const allowed = new Set(routers.map((r) => r.toLowerCase()))
+        const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
+          .filter((a) => a.supportsExecution)
+
+        const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
+        const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
+        const slippagePercent = Number(input.slippageBps) / 100
+
+        type Candidate = { a: Adapter; q: QuoteResponse }
+
+        // Every candidate was quoted at the same amountIn, so any of them may be built. Fall
+        // through candidates that fail to build or fail validateSwapTx rather than erroring out
+        // on the first pick.
+        const selectBuildableRoute = async (
+          candidates: Candidate[],
+        ): Promise<{ quote: QuoteResponse; adapter: Adapter; built: TransactionPayload } | null> => {
+          for (const cand of candidates) {
+            let candBuilt: TransactionPayload
+            try {
+              candBuilt = await cand.a.buildTransaction(cand.q, slippagePercent, input.contract, chainId)
+            } catch {
+              continue
+            }
+            if (cancelled) return null
+            const problem = validateSwapTx(
+              { to: candBuilt.to, data: candBuilt.data, value: candBuilt.value, spender: candBuilt.spender },
+              allowed.has(candBuilt.to.toLowerCase()),
+            )
+            if (problem) continue
+            return { quote: cand.q, adapter: cand.a, built: candBuilt }
+          }
+          return null
+        }
+
+        // Manual sizing fixes amountIn, so there is nothing for the refine loop to converge on:
+        // one round, then validate coverage against the rate it came back with.
+        if (input.sizing.kind === 'manual') {
+          const { marginAmount, borrowAmount, flashAmount } = input.sizing
+          const manualBase = {
+            marginIn, marginAmount, borrowAmount, flashAmount,
+            marginBalance: input.marginBalance,
+            collateralPriceUsd: coll.priceUsd, debtPriceUsd: debt.priceUsd,
+            collateralDecimals: coll.decimals, debtDecimals: debt.decimals,
+            ltvBps: coll.ltvBps, liquidationThresholdBps: coll.liquidationThresholdBps,
+            existingCollateralUsd: input.existingCollateralUsd,
+            existingDebtUsd: input.existingDebtUsd,
+            slippageBps: input.slippageBps,
+          }
+
+          const rejectManual = (error: ManualOpenError, suggested: bigint | null, out: bigint) =>
+            setPreviewError({
+              kind: error,
+              message: manualOpenErrorMessage(error, {
+                marginSymbol: marginIn === 'debt' ? debt.symbol : coll.symbol,
+                debtSymbol: debt.symbol,
+                collateralSymbol: coll.symbol,
+                marginBalance: formatUnits(input.marginBalance, marginIn === 'debt' ? debt.decimals : coll.decimals),
+                shortfall: formatUnits(flashAmount > out ? flashAmount - out : 0n, coll.decimals),
+                suggestedBorrow: suggested === null ? null : formatUnits(suggested, debt.decimals),
+              }),
+            })
+
+          // Cheap checks first: no point spending a quote on amounts the contract rejects.
+          const dry = validateManualOpen({ ...manualBase, quote: null })
+          if (!dry.ok) { rejectManual(dry.error, dry.suggestedBorrow, 0n); return }
+
+          const amountIn = (borrowAmount + (marginIn === 'debt' ? marginAmount : 0n)).toString()
+          const results = await Promise.all(
+            adapters.map(async (a) => {
+              try {
+                const q = await a.getQuote(fromAsset, toAsset, amountIn, slippagePercent, chainId)
+                return q ? { a, q } : null
+              } catch {
+                return null
+              }
+            }),
+          )
+          if (cancelled) return
+
+          const ranked = results
+            .filter((r): r is Candidate => r !== null)
+            .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
+          if (ranked.length === 0) {
+            setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
+            return
+          }
+
+          const top = ranked[0]
+          const checked = validateManualOpen({
+            ...manualBase,
+            quote: { amountIn: BigInt(top.q.amountIn), amountOut: BigInt(top.q.amountOut) },
+          })
+          if (!checked.ok) {
+            const out = (BigInt(top.q.amountOut) * BigInt(amountIn)) / BigInt(top.q.amountIn)
+            rejectManual(checked.error, checked.suggestedBorrow, out)
+            return
+          }
+
+          const build = await selectBuildableRoute(ranked)
+          if (!build) {
+            setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
+            return
+          }
+
+          setPreview({
+            collateral, debtAsset,
+            marginAsset: marginIn === 'debt' ? debtAsset : collateral,
+            flashAmount, borrowAmount,
+            minOut: minOutFromBuild({
+              buildAmountOut: BigInt(build.built.amountOut ?? build.quote.amountOut),
+              slippageBps: input.slippageBps,
+              flashAmount,
+            }),
+            expectedCollateral: checked.projection.expectedCollateral,
+            expectedDebt: checked.projection.expectedDebt,
+            expectedLeverageBps: checked.projection.expectedLeverageBps,
+            expectedHealthFactorBps: checked.projection.expectedHealthFactorBps,
+            router: build.built.to as Address,
+            swapData: build.built.data as Hex,
+            aggregator: build.adapter.name,
+            priceImpactPercent: routeCostPercent(build.quote.rawAmountInUsd, build.quote.rawAmountOutUsd),
+          })
+          return
+        }
+
+        // Past the manual branch, so the union is settled. `sizeOpen` has no notion of the
+        // ratchet's "none" margin (it solves for a margin that exists), and derived sizing never
+        // reaches this hook in a ratchet mode — narrow it the way sizeOpen's own runtime already
+        // treats anything but "debt": as the collateral-margin flow.
+        const derived = input.sizing
+        if (derived.kind !== 'derived') throw new Error('unreachable: manual path returned above')
+        const marginInForSizing: MarginIn = marginIn === 'debt' ? 'debt' : 'collateral'
+
         const sizeArgs = {
           marginIn: marginInForSizing,
-          marginAmount: input.marginAmount,
-          leverageBps: input.leverageBps,
+          marginAmount: derived.marginAmount,
+          leverageBps: derived.leverageBps,
           collateralPriceUsd: coll.priceUsd,
           debtPriceUsd: debt.priceUsd,
           collateralDecimals: coll.decimals,
@@ -245,7 +400,7 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         // undersizes the trade by exactly marginAmount and reverts on every debt-margin open
         // (Task "CRITICAL 1").
         const swapInFor = (size: { borrowAmount: bigint }) =>
-          size.borrowAmount + (marginIn === 'debt' ? input.marginAmount : 0n)
+          size.borrowAmount + (marginIn === 'debt' ? derived.marginAmount : 0n)
 
         // Seed off the oracle so the first quote is asked for a plausible size.
         let sized = sizeOpen({ ...sizeArgs, rateWad: rateFromOracle({
@@ -254,15 +409,6 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         }) })
         if (!sized.ok) { reject(sized.error); return }
 
-        const allowed = new Set(routers.map((r) => r.toLowerCase()))
-        const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
-          .filter((a) => a.supportsExecution)
-
-        const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
-        const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
-        const slippagePercent = Number(input.slippageBps) / 100
-
-        type Candidate = { a: Adapter; q: QuoteResponse }
         // Every candidate quoted in the winning round, ranked best-output-first. Kept as a
         // list (not just the top one) so route selection below can fall through a candidate
         // that fails to build or fails validateSwapTx, instead of erroring out on the first
@@ -319,43 +465,23 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         }
 
         // Every candidate in rankedFinal was quoted at the same amountIn (one round, one
-        // amount), so quotedSize applies to whichever of them ends up buildable — pick the
-        // first that survives a real build and the same checks the close flow already runs,
-        // rather than building only the top-ranked one and erroring out if it alone fails.
-        let quote: QuoteResponse | null = null
-        let adapter: Adapter | null = null
-        let built: TransactionPayload | null = null
-        for (const cand of rankedFinal) {
-          let candBuilt: TransactionPayload
-          try {
-            candBuilt = await cand.a.buildTransaction(cand.q, slippagePercent, input.contract, chainId)
-          } catch {
-            continue
-          }
-          if (cancelled) return
-          const problem = validateSwapTx(
-            { to: candBuilt.to, data: candBuilt.data, value: candBuilt.value, spender: candBuilt.spender },
-            allowed.has(candBuilt.to.toLowerCase()),
-          )
-          if (problem) continue
-          quote = cand.q
-          adapter = cand.a
-          built = candBuilt
-          break
-        }
-
-        if (!quote || !adapter || !built) {
+        // amount), so quotedSize applies to whichever of them ends up buildable.
+        const build = await selectBuildableRoute(rankedFinal)
+        if (!build) {
           setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
           return
         }
 
         setPreview({
           collateral, debtAsset,
-          marginAsset: marginIn === 'collateral' ? collateral : debtAsset,
+          // Must agree with planOpen, which routes everything but "debt" — the ratchet's "none"
+          // included — through the collateral entry point. This drives which ERC-20 allowance
+          // `execute` checks, so a disagreement approves the wrong token.
+          marginAsset: marginIn === 'debt' ? debtAsset : collateral,
           flashAmount: quotedSize.flashAmount,
           borrowAmount: quotedSize.borrowAmount,
           minOut: minOutFromBuild({
-            buildAmountOut: BigInt(built.amountOut ?? quote.amountOut),
+            buildAmountOut: BigInt(build.built.amountOut ?? build.quote.amountOut),
             slippageBps: input.slippageBps,
             flashAmount: quotedSize.flashAmount,
           }),
@@ -363,10 +489,10 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
           expectedDebt: quotedSize.expectedDebt,
           expectedLeverageBps: quotedSize.expectedLeverageBps,
           expectedHealthFactorBps: quotedSize.expectedHealthFactorBps,
-          router: built.to as Address,
-          swapData: built.data as Hex,
-          aggregator: adapter.name,
-          priceImpactPercent: routeCostPercent(quote.rawAmountInUsd, quote.rawAmountOutUsd),
+          router: build.built.to as Address,
+          swapData: build.built.data as Hex,
+          aggregator: build.adapter.name,
+          priceImpactPercent: routeCostPercent(build.quote.rawAmountInUsd, build.quote.rawAmountOutUsd),
         })
       } catch {
         if (!cancelled) {
@@ -427,10 +553,12 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'allowance',
         args: [owner, input.contract],
       })) as bigint
-      if (allowance < input.marginAmount) {
+      // A zero margin needs no approval, and `allowance < 0n` is already false, so the ratchet
+      // path skips this without a special case.
+      if (allowance < input.sizing.marginAmount) {
         await deps.writeContract({
           address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
-          args: [input.contract, input.marginAmount],
+          args: [input.contract, input.sizing.marginAmount],
         })
       }
 
@@ -456,7 +584,7 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
       const plan = planOpen({
         mode: input.mode, volatile: input.volatile, stable: input.stable,
         flashAmount: effectivePreview.flashAmount, borrowAmount: effectivePreview.borrowAmount,
-        marginAmount: input.marginAmount, minOut: effectivePreview.minOut,
+        marginAmount: input.sizing.marginAmount, minOut: effectivePreview.minOut,
         router: effectivePreview.router, swapData: effectivePreview.swapData, delegation,
       })
       const hash = await deps.writeContract({

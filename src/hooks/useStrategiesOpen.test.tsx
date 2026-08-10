@@ -40,7 +40,15 @@ const RESERVES = {
 
 const INPUT = {
   contract: STRAT, mode: 1 as const, volatile: WETH, stable: USDC,
-  marginAmount: 1_000_000_000_000_000_000n, leverageBps: 20_000n, slippageBps: 50n,
+  sizing: {
+    kind: 'derived' as const,
+    marginAmount: 1_000_000_000_000_000_000n,
+    leverageBps: 20_000n,
+  },
+  slippageBps: 50n,
+  marginBalance: 10n ** 21n,
+  existingCollateralUsd: 0n,
+  existingDebtUsd: 0n,
   reserves: RESERVES,
 }
 
@@ -141,7 +149,11 @@ it('quotes and builds the debt-margin swap for borrowAmount + marginAmount, not 
   const adapter = stubAdapter(400_000_000n) // exactly the oracle rate for RESERVES — one round.
   mocks.getAdaptersForChain.mockReturnValue([adapter])
 
-  const debtMarginInput = { ...INPUT, mode: 2 as const, marginAmount: 1_000_000_000n } // 1000 USDC
+  const debtMarginInput = {
+    ...INPUT,
+    mode: 2 as const,
+    sizing: { kind: 'derived' as const, marginAmount: 1_000_000_000n, leverageBps: 20_000n }, // 1000 USDC
+  }
 
   const { result } = renderHook(() => useStrategiesOpen(debtMarginInput))
   await waitFor(() => expect(result.current.preview).not.toBeNull())
@@ -149,7 +161,7 @@ it('quotes and builds the debt-margin swap for borrowAmount + marginAmount, not 
   // adapter is typed as the real `Adapter` interface (see stubAdapter's return type), so
   // `.mock` needs vitest's own escape hatch to reach the underlying mock's call log.
   const quotedAmountIn = BigInt(vi.mocked(adapter.getQuote).mock.calls[0][2] as string)
-  expect(quotedAmountIn).toBe(result.current.preview!.borrowAmount + debtMarginInput.marginAmount)
+  expect(quotedAmountIn).toBe(result.current.preview!.borrowAmount + debtMarginInput.sizing.marginAmount)
 })
 
 it('re-quotes once when the re-sized borrow grew, and stops there', async () => {
@@ -189,7 +201,10 @@ it('reports a sizing rejection rather than throwing', async () => {
   mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
 
   const { result } = renderHook(() =>
-    useStrategiesOpen({ ...INPUT, leverageBps: 39_200n }), // == the LTV ceiling
+    useStrategiesOpen({
+      ...INPUT,
+      sizing: { ...INPUT.sizing, leverageBps: 39_200n }, // == the LTV ceiling
+    }),
   )
   await waitFor(() => expect(result.current.previewError).not.toBeNull())
   expect(result.current.previewError?.kind).toBe('LEVERAGE_ABOVE_LTV')
@@ -274,9 +289,53 @@ it('invalidates the preview synchronously on an input change, before the debounc
   )
   await waitFor(() => expect(result.current.preview).not.toBeNull())
 
-  rerender({ ...INPUT, marginAmount: INPUT.marginAmount * 2n })
+  rerender({
+    ...INPUT,
+    sizing: { ...INPUT.sizing, marginAmount: INPUT.sizing.marginAmount * 2n },
+  })
 
   // Checked synchronously, deliberately not via waitFor: the whole point is that this holds
   // BEFORE the debounce timer has had any chance to fire.
+  expect(result.current.preview).toBeNull()
+})
+
+it('quotes exactly once on the manual path, with the amounts as typed', async () => {
+  const adapter = stubAdapter(400_000_000n)
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+
+  const { result } = renderHook(() => useStrategiesOpen({
+    ...INPUT,
+    sizing: {
+      kind: 'manual' as const,
+      marginAmount: 1_000_000_000_000_000_000n,
+      borrowAmount: 3_000_000_000n,
+      flashAmount: 1_000_000_000_000_000_000n,
+    },
+  }))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
+
+  // The derived path re-quotes as sizeOpen converges on a rate. Manual has nothing to converge
+  // on: amountIn is whatever the user typed, so a second round could only re-ask the same
+  // question.
+  expect(vi.mocked(adapter.getQuote)).toHaveBeenCalledTimes(1)
+  expect(vi.mocked(adapter.getQuote).mock.calls[0][2]).toBe('3000000000')
+  expect(result.current.preview?.flashAmount).toBe(1_000_000_000_000_000_000n)
+  expect(result.current.preview?.borrowAmount).toBe(3_000_000_000n)
+})
+
+it('surfaces a manual shortfall as a preview error rather than a preview', async () => {
+  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+
+  const { result } = renderHook(() => useStrategiesOpen({
+    ...INPUT,
+    sizing: {
+      kind: 'manual' as const,
+      marginAmount: 1_000_000_000_000_000_000n,
+      borrowAmount: 1_000_000n,   // 1 USDC buys nowhere near the 1 WETH flash
+      flashAmount: 1_000_000_000_000_000_000n,
+    },
+  }))
+
+  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
   expect(result.current.preview).toBeNull()
 })
