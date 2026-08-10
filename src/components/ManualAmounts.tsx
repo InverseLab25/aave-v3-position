@@ -7,8 +7,10 @@ interface ManualAmountsProps {
   debtSymbol: string
   /** `supply - margin`, pre-formatted. Null before both amounts parse. */
   flashDisplay: string | null
-  /** Solved from the router, pre-formatted. Null until a quote lands. */
+  /** Pre-formatted. Null until the amounts imply one. */
   borrowDisplay: string | null
+  /** True while `borrowDisplay` is the oracle's estimate rather than a solved, routed figure. */
+  borrowIsEstimate: boolean
   /** Validation copy from `manualOpenErrorMessage`, already formatted. */
   message: string | null
 }
@@ -61,8 +63,10 @@ export function ManualAmounts(p: ManualAmountsProps) {
           </span>
         </div>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-          <span style={{ color: T.textMuted }}>Borrow from Aave</span>
-          <span style={{ fontWeight: 600 }}>
+          <span style={{ color: T.textMuted }}>
+            Borrow from Aave{p.borrowDisplay !== null && p.borrowIsEstimate ? ' (estimate)' : ''}
+          </span>
+          <span style={{ fontWeight: 600, color: p.borrowIsEstimate ? T.textMuted : T.text }}>
             {p.borrowDisplay === null ? '—' : `${p.borrowDisplay} ${p.debtSymbol}`}
           </span>
         </div>

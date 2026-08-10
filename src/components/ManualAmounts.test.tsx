@@ -10,6 +10,7 @@ const PROPS = {
   debtSymbol: 'USDC',
   flashDisplay: '2.0',
   borrowDisplay: '5020',
+  borrowIsEstimate: false,
   message: null,
 }
 

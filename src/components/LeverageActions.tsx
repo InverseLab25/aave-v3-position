@@ -4,6 +4,7 @@ import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
 import { useStrategiesOpen } from '../hooks/useStrategiesOpen'
 import { useOpenSizing } from '../hooks/useOpenSizing'
+import { seedBorrow } from '../lib/solveBorrow'
 import { getStrategiesAddress } from '../config/chains'
 import { leverageCeilingBps, sliderMax } from '../lib/openPlan'
 import type { MarginLocation } from '../lib/strategies-sdk/sizing'
@@ -123,16 +124,30 @@ export function LeverageActions({
     manualEnabled,
   })
 
-  // What the flash will have to cover, shown before any quote goes out. Mirrors the hook's own
-  // split: the margin only offsets the flash when it is supplied alongside it, which is the
-  // collateral path — on the debt path it pays for part of the swap instead.
-  const flashDisplay = sizing?.kind === 'manual'
-    ? (() => {
-        const flash = marginIn === 'collateral'
-          ? sizing.supplyAmount - sizing.marginAmount
-          : sizing.supplyAmount
-        return flash > 0n ? formatUnits(flash, collateralReserve?.raw.decimals ?? 18) : null
-      })()
+  // What the flash has to cover. Mirrors the hook's own split: the margin only offsets the flash
+  // when it is supplied alongside it, which is the collateral path — on the debt path it pays
+  // for part of the swap instead.
+  const flashAmount = sizing?.kind === 'manual'
+    ? (marginIn === 'collateral' ? sizing.supplyAmount - sizing.marginAmount : sizing.supplyAmount)
+    : 0n
+  const flashDisplay = flashAmount > 0n
+    ? formatUnits(flashAmount, collateralReserve?.raw.decimals ?? 18)
+    : null
+
+  // The borrow, shown while the user types rather than only after a quote settles — it is the
+  // number they are actually deciding on. Before a route answers this is the oracle's estimate,
+  // which is the same figure `solveBorrow` seeds from; once a preview exists it is replaced by
+  // the borrow actually solved against the route, so the row firms up rather than jumping.
+  const seededBorrow = sizing?.kind === 'manual' && collateralReserve && debtReserve
+    ? seedBorrow({
+        flashAmount,
+        debtMargin: marginIn === 'debt' ? sizing.marginAmount : 0n,
+        slipNum: 10_000n - DEFAULT_SLIPPAGE_BPS,
+        collateralPriceUsd: collateralReserve.raw.priceUsd,
+        debtPriceUsd: debtReserve.raw.priceUsd,
+        collateralDecimals: collateralReserve.raw.decimals,
+        debtDecimals: debtReserve.raw.decimals,
+      })
     : null
 
   // Which position the preview card describes, whole. The manual path projects against the
@@ -288,7 +303,14 @@ export function LeverageActions({
               collateralSymbol={collateralReserve?.symbol ?? '—'}
               debtSymbol={debtReserve?.symbol ?? '—'}
               flashDisplay={flashDisplay}
-              borrowDisplay={preview ? formatUnits(preview.borrowAmount, debtReserve?.raw.decimals ?? 18) : null}
+              borrowDisplay={
+                preview
+                  ? formatUnits(preview.borrowAmount, debtReserve?.raw.decimals ?? 18)
+                  : seededBorrow !== null
+                    ? formatUnits(seededBorrow, debtReserve?.raw.decimals ?? 18)
+                    : null
+              }
+              borrowIsEstimate={!preview}
               message={sizingMessage}
             />
           ) : (

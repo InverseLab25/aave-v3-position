@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { solveBorrow } from './solveBorrow'
+import { seedBorrow, solveBorrow } from './solveBorrow'
 import type { SolveBorrowInput } from './solveBorrow'
 import type { QuoteResponse } from '../adapters/types'
 
@@ -132,4 +132,27 @@ it('refuses when the debt-asset margin alone already covers the swap', async () 
   // reverts ZeroAmount on a zero borrow.
   const r = await solveBorrow({ ...BASE, debtMargin: 10n ** 12n, quoteAt })
   expect(r).toMatchObject({ ok: false, error: 'NOT_CONVERGING' })
+})
+
+it('seeds the same borrow the solve starts from, so the form and the solve agree', async () => {
+  const quoteAt = routerAt(ORACLE_RATE_WAD)
+  const seeded = seedBorrow(BASE)
+  const solved = await solveBorrow({ ...BASE, quoteAt })
+
+  expect(seeded).not.toBeNull()
+  if (!solved.ok) throw new Error('expected a solve')
+  // At exactly the oracle rate the seed clears in one round, so the number the user read while
+  // typing is the number that gets borrowed — it firms up rather than jumping.
+  expect(solved.solved.borrowAmount).toBe(seeded)
+})
+
+it('subtracts the debt-asset margin from the seed, as the solve does', () => {
+  const bare = seedBorrow(BASE)
+  const withMargin = seedBorrow({ ...BASE, debtMargin: 500_000_000n })
+  expect(withMargin).toBe(bare! - 500_000_000n)
+})
+
+it('seeds nothing when there is no flash to repay, or no price to imply a rate', () => {
+  expect(seedBorrow({ ...BASE, flashAmount: 0n })).toBeNull()
+  expect(seedBorrow({ ...BASE, debtPriceUsd: 0n })).toBeNull()
 })

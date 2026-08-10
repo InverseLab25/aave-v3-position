@@ -37,6 +37,36 @@ export interface SolveBorrowInput {
 
 export type SolveBorrowError = 'ZERO_FLASH' | 'ZERO_RATE' | 'NO_ROUTE' | 'NOT_CONVERGING'
 
+/** What `seedBorrow` needs — the oracle half of `SolveBorrowInput`, without the router. */
+export type SeedBorrowInput = Pick<
+  SolveBorrowInput,
+  | 'flashAmount' | 'debtMargin' | 'slipNum'
+  | 'collateralPriceUsd' | 'debtPriceUsd' | 'collateralDecimals' | 'debtDecimals'
+>
+
+/**
+ * The borrow implied by oracle prices alone, before any router is asked.
+ *
+ * Costs no network call, so the form can show what will be borrowed the moment the amounts
+ * parse rather than leaving a dash until a quote settles. `solveBorrow` starts from this same
+ * figure and then verifies it, so the number the user reads while typing is the one the solve
+ * begins from — it moves when the route disagrees with the oracle, not arbitrarily.
+ *
+ * Returns null when the inputs cannot imply a rate, or when the debt-asset margin already
+ * covers the whole swap and there is nothing left to borrow.
+ */
+export function seedBorrow(p: SeedBorrowInput): bigint | null {
+  if (p.flashAmount <= 0n) return null
+  if (p.slipNum <= 0n || p.collateralPriceUsd <= 0n || p.debtPriceUsd <= 0n) return null
+
+  const swapIn = ceilDiv(
+    p.flashAmount * p.collateralPriceUsd * 10n ** BigInt(p.debtDecimals) * BPS * (BPS + SEED_MARGIN_BPS),
+    10n ** BigInt(p.collateralDecimals) * p.debtPriceUsd * p.slipNum * BPS,
+  )
+  const borrow = swapIn - p.debtMargin
+  return borrow > 0n ? borrow : null
+}
+
 export interface SolveBorrowResult {
   /** What to borrow from Aave. Always `best.amountIn` minus the debt-asset margin. */
   borrowAmount: bigint
@@ -78,15 +108,15 @@ export async function solveBorrow(p: SolveBorrowInput): Promise<SolveBorrowOutco
   /** What a router contractually guarantees to deliver for a given quoted output. */
   const guaranteedOut = (quotedOut: bigint) => (quotedOut * p.slipNum) / BPS
 
-  // Seed: the debt whose value covers `flashAmount` of collateral at oracle mid-market, plus
-  // slippage and a little headroom. Costs no network call.
-  const seed = ceilDiv(
-    p.flashAmount * p.collateralPriceUsd * 10n ** BigInt(p.debtDecimals) * BPS * (BPS + SEED_MARGIN_BPS),
-    10n ** BigInt(p.collateralDecimals) * p.debtPriceUsd * p.slipNum * BPS,
-  )
-  if (seed <= 0n) return { ok: false, error: 'ZERO_RATE' }
+  // Seed from the oracle — the same figure the form shows while the user types, so the number
+  // they read is the one this solve starts from.
+  const seededBorrow = seedBorrow(p)
+  // The flash and both prices were validated above, so the only remaining reason the seed can
+  // come back empty is a debt-asset margin that already covers the whole swap — leaving nothing
+  // to borrow, which the contract rejects with ZeroAmount.
+  if (seededBorrow === null) return { ok: false, error: 'NOT_CONVERGING' }
 
-  let swapIn = seed
+  let swapIn = seededBorrow + p.debtMargin
   let best: QuoteResponse | null = null
   let ranked: QuoteResponse[] = []
 
