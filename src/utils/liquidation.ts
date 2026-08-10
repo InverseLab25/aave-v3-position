@@ -1,12 +1,16 @@
 /**
- * liquidation — collateral-side liquidation prices for an Aave position.
+ * liquidation — the prices at which an Aave position is liquidated.
  *
  * Aave liquidates when the health factor falls below 1:
  *   HF = Σ(amountᵢ × priceᵢ × LTᵢ) / debtUsd
  *
- * For each collateral asset this module solves that equation for that asset's
- * price, holding every other asset's price fixed — the "isolated" liquidation
- * price that Aave's own UI and DeFi Saver quote.
+ * For each asset this module solves that equation for that asset's price, holding every other
+ * price fixed — the "isolated" liquidation price that Aave's own UI and DeFi Saver quote. Both
+ * sides are solved, because they are liquidated by opposite moves: COLLATERAL by falling, DEBT
+ * by rising. A collateral-only view says nothing useful about a short, where the asset the user
+ * has a view on is the borrowed one.
+ *
+ * Only volatile assets are quoted — see the note in `computeLiquidationView`.
  *
  * Thresholds are each reserve's raw `reserveLiquidationThreshold`. E-Mode
  * overrides are deliberately NOT applied; see the spec at
@@ -60,14 +64,51 @@ export function toCollateralInputs(assets: CollateralSuppliedLike[]): Collateral
     }))
 }
 
+/**
+ * A borrowed asset, for the debt-side solve.
+ *
+ * Debt has no liquidation threshold of its own — Aave counts it at face value — so unlike
+ * {@link CollateralInput} there is nothing to weight it by.
+ */
+export interface DebtInput {
+  symbol: string
+  amount: number
+  priceUsd: number
+}
+
+/** The subset of a borrowed-asset row the debt-side solve reads. */
+export interface BorrowedAssetLike {
+  symbol: string
+  amount?: number
+  priceInUsd?: string
+}
+
+/** Borrowed rows -> the debt this module solves against, on Aave's own oracle price. */
+export function toDebtInputs(assets: BorrowedAssetLike[]): DebtInput[] {
+  return assets.map(a => ({
+    symbol: a.symbol,
+    amount: a.amount ?? 0,
+    priceUsd: Number(a.priceInUsd ?? 0),
+  }))
+}
+
 export interface LiquidationRow {
   symbol: string
   /** null when this asset cannot liquidate the position on its own. */
   liquidationPriceUsd: number | null
   currentPriceUsd: number
-  /** Fractional and normally negative (-0.32 = a 32% fall). null when price is null. */
+  /**
+   * Fractional. Negative on a collateral row (-0.32 = a 32% fall), positive on a debt row
+   * (+0.41 = a 41% rise). null when price is null.
+   */
   bufferPct: number | null
   isVolatile: boolean
+  /**
+   * Which side of the position this row prices, and so which way the price has to move: a
+   * collateral asset liquidates you by FALLING, a debt asset by RISING. Quoting only the first
+   * answers the wrong question for a short, where the asset with a view on it is the debt.
+   */
+  side: 'collateral' | 'debt'
 }
 
 export interface LiquidationView {
@@ -103,6 +144,7 @@ export function isVolatilePrice(priceUsd: number): boolean {
 export function computeLiquidationView(
   collateral: CollateralInput[],
   debtUsd: number,
+  debt: DebtInput[] = [],
 ): LiquidationView {
   if (debtUsd <= 0.001) return { rows: [], marketWideDropPct: null }
 
@@ -114,6 +156,31 @@ export function computeLiquidationView(
     (sum, c) => sum + c.amount * c.priceUsd * c.liquidationThreshold,
     0,
   )
+
+  /**
+   * The price a BORROWED asset has to rise to for HF to reach 1, holding every other price fixed.
+   *
+   * The mirror of the collateral solve below. Aave liquidates at
+   * `weightedCollateral == totalDebt`, so with this asset's own contribution taken out of the
+   * debt side:  P = (weightedCollateral - otherDebtUsd) / amount.
+   */
+  const debtRows: LiquidationRow[] = debt
+    .filter(d => d.amount > 0 && d.priceUsd > 0)
+    .map(d => {
+      const otherDebtUsd = debtUsd - d.amount * d.priceUsd
+      const headroomUsd = totalWeighted - otherDebtUsd
+      // <= 0 means the rest of the debt already exceeds the weighted collateral: this leg's
+      // price cannot be what tips it, because the position is at or past liquidation already.
+      const liquidationPriceUsd = headroomUsd > 0 ? headroomUsd / d.amount : null
+      return {
+        symbol: d.symbol,
+        liquidationPriceUsd,
+        currentPriceUsd: d.priceUsd,
+        bufferPct: liquidationPriceUsd === null ? null : liquidationPriceUsd / d.priceUsd - 1,
+        isVolatile: isVolatilePrice(d.priceUsd),
+        side: 'debt' as const,
+      }
+    })
 
   const rows: LiquidationRow[] = usable.map(c => {
     const weighted = c.amount * c.priceUsd * c.liquidationThreshold
@@ -133,20 +200,35 @@ export function computeLiquidationView(
       currentPriceUsd: c.priceUsd,
       bufferPct: liquidationPriceUsd === null ? null : liquidationPriceUsd / c.priceUsd - 1,
       isVolatile: isVolatilePrice(c.priceUsd),
+      side: 'collateral' as const,
     }
   })
+  rows.push(...debtRows)
 
-  // Closest to liquidation first: the asset needing the SMALLEST fall leads.
-  // bufferPct is negative, so that is descending order (-0.25 sorts above -0.32).
-  // Assets that cannot liquidate the position have no buffer and sort last.
-  rows.sort((a, b) => {
+  // Quote only assets whose price can plausibly reach the number.
+  //
+  // A stablecoin's liquidation price is arithmetically correct and practically meaningless — a
+  // USDC row reading "$0.03" invites the reader to treat a depeg as the risk when the real one
+  // is the volatile leg on the other side. Dropping the ROW does not drop the asset: stable
+  // collateral still carries its full weight in `totalWeighted`, and stable debt still counts in
+  // `debtUsd`, so every price quoted here already accounts for it.
+  const priceable = rows.filter(r => r.isVolatile)
+
+  // Closest to liquidation first: the asset needing the SMALLEST move leads, whichever way it
+  // has to move — collateral buffers are negative and debt buffers positive, so the comparison
+  // is on MAGNITUDE. Among collateral rows alone that is the same order as before (all negative,
+  // so smallest magnitude is the largest value). Rows that cannot liquidate the position have no
+  // buffer and sort last.
+  priceable.sort((a, b) => {
     if (a.bufferPct === null && b.bufferPct === null) return 0
     if (a.bufferPct === null) return 1
     if (b.bufferPct === null) return -1
-    return b.bufferPct - a.bufferPct
+    return Math.abs(a.bufferPct) - Math.abs(b.bufferPct)
   })
 
-  return { rows, marketWideDropPct: marketWideDrop(usable, totalWeighted, debtUsd) }
+  // Collateral-only by design: it answers "how far can the market fall", and debt rising is a
+  // different question that no single factor across both sides would express.
+  return { rows: priceable, marketWideDropPct: marketWideDrop(usable, totalWeighted, debtUsd) }
 }
 
 /**

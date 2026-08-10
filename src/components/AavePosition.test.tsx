@@ -3,15 +3,14 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import type { AvailableReserve } from '../hooks/useAavePositions'
 
 // AavePosition composes a lot of hooks; only useAavePositions, wagmi's useChainId/useConnection/
-// useReadContract (LeverageActions calls these directly — the latter for the margin asset's
-// wallet balance), config/chains' getStrategiesAddress (which gates LeverageActions), and
-// useStrategiesOpen (LeverageActions' sizing/quoting hook) are mocked. Everything else —
-// LiquidationPriceBlock, OpenPositionForm, PositionPreview, the lazy modals — renders for real,
-// same approach as LeverageActions.test.tsx.
+// useReadContract (LeveragePanel calls these directly — the latter for both pair legs' wallet
+// balances), config/chains' getStrategiesAddress (which gates LeveragePanel), and
+// useLeverageOpen (LeveragePanel's quoting hook) are mocked. Everything else — LiquidationPrice-
+// Block, PairPicker, AmountField, PositionSummary, the lazy modals — renders for real.
 const mocks = vi.hoisted(() => ({
   useAavePositions: vi.fn(),
   getStrategiesAddress: vi.fn(),
-  useStrategiesOpen: vi.fn(),
+  useLeverageOpen: vi.fn(),
   useChainId: vi.fn(),
   useConnection: vi.fn(),
   useReadContract: vi.fn(),
@@ -25,7 +24,7 @@ vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getStrategiesAddress: mocks.getStrategiesAddress,
 }))
-vi.mock('../hooks/useStrategiesOpen', () => ({ useStrategiesOpen: mocks.useStrategiesOpen }))
+vi.mock('../hooks/useLeverageOpen', () => ({ useLeverageOpen: mocks.useLeverageOpen }))
 vi.mock('wagmi', () => ({
   useChainId: mocks.useChainId,
   useConnection: mocks.useConnection,
@@ -73,7 +72,7 @@ const EMPTY_PORTFOLIO = {
   isLoading: false,
   collateralUsd: 0,
   debtUsd: 0,
-  // Must mirror useAavePositions' real return shape: LeverageActions declares these two as
+  // Must mirror useAavePositions' real return shape: LeveragePanel declares these two as
   // `bigint`, and this mock is untyped, so omitting them silently feeds it `undefined`.
   collateralBase: 0n,
   debtBase: 0n,
@@ -92,18 +91,49 @@ const EMPTY_PORTFOLIO = {
   chainId: 1,
 }
 
+/**
+ * Account totals that are deliberately not round in float terms: routing them through
+ * `collateralUsd`/`debtUsd` (JS numbers) and back would not reproduce them exactly, which is
+ * what these tests exist to catch.
+ *
+ * They also have to describe a COHERENT account. The supply ceiling folds in the existing
+ * position, so totals paired with a zero LTV read as an account borrowed far past its limit and
+ * the panel correctly refuses to size anything at all.
+ */
+const ODD_TOTALS = {
+  collateralBase: 123_456_789_012_345_678n,
+  debtBase: 9_876_543_210_987n,
+  ltvBps: 8000n,
+  liquidationThresholdBps: 8250n,
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useChainId.mockReturnValue(1)
   mocks.useConnection.mockReturnValue({ address: undefined })
-  mocks.useReadContract.mockReturnValue({ data: undefined })
+  // Per-leg, not one blanket value: the panel picks the default margin asset by comparing the
+  // two legs' USD balances, so returning the same figure for both would decide it by accident.
+  // WETH-only keeps the default on the collateral leg, which is the long-with-WETH case.
+  mocks.useReadContract.mockImplementation((cfg?: { address?: string }) => ({
+    data: cfg?.address === WETH.underlyingAsset ? 100n * 10n ** 18n : 0n,
+  }))
   mocks.useAavePositions.mockReturnValue(EMPTY_PORTFOLIO)
-  mocks.useStrategiesOpen.mockReturnValue({
+  mocks.useLeverageOpen.mockReturnValue({
     preview: null, previewError: null, isQuoting: false,
     refresh: vi.fn(), frozen: { current: false },
     execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
   })
 })
+
+/**
+ * Fill both amounts. The panel gates `input` to null until the sizing is valid on its own — no
+ * point spending a quote on a form that cannot open — so a margin alone reaches the hook as
+ * null. 20 WETH sits comfortably under the ~35.9 WETH ceiling 10 WETH of margin supports.
+ */
+async function fillAmounts() {
+  fireEvent.change(await screen.findByLabelText('Margin amount'), { target: { value: '10' } })
+  fireEvent.change(screen.getByLabelText('Supply to Aave amount'), { target: { value: '20' } })
+}
 
 it('reaches the actions panel from an empty portfolio — opening a leveraged position needs no pre-existing collateral', async () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
@@ -113,32 +143,25 @@ it('reaches the actions panel from an empty portfolio — opening a leveraged po
   // Confirm we are actually on the empty-portfolio branch, not some other render path.
   expect(screen.getByText('Start your Aave position')).toBeTruthy()
 
-  // LeverageActions is lazy-loaded (Suspense), so its content arrives asynchronously.
+  // LeveragePanel is lazy-loaded (Suspense), so its content arrives asynchronously.
   expect(await screen.findByText('Long')).toBeTruthy()
   expect(screen.getByText('Short')).toBeTruthy()
 })
 
 it('hands the account totals to the actions panel as raw 8dp bigints', async () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
-  // Deliberately not round in float terms: routing these through `collateralUsd`/`debtUsd`
-  // (JS numbers) and back would not reproduce them exactly.
-  mocks.useAavePositions.mockReturnValue({
-    ...EMPTY_PORTFOLIO,
-    collateralBase: 123_456_789_012_345_678n,
-    debtBase: 98_765_432_109_876_543n,
-  })
+  mocks.useAavePositions.mockReturnValue({ ...EMPTY_PORTFOLIO, ...ODD_TOTALS })
 
   render(<AavePosition />)
 
-  // A sizing only reaches the hook once there is a margin to size from.
-  fireEvent.change(await screen.findByLabelText('Margin amount'), { target: { value: '1' } })
+  await fillAmounts()
 
-  const input = mocks.useStrategiesOpen.mock.calls.at(-1)?.[0]
-  expect(input?.existingCollateralUsd).toBe(123_456_789_012_345_678n)
-  expect(input?.existingDebtUsd).toBe(98_765_432_109_876_543n)
+  const input = mocks.useLeverageOpen.mock.calls.at(-1)?.[0]
+  expect(input?.existingCollateralUsd).toBe(ODD_TOTALS.collateralBase)
+  expect(input?.existingDebtUsd).toBe(ODD_TOTALS.debtBase)
 })
 
-// `<LeverageActions>` is mounted TWICE — once in the empty-portfolio branch above, once in the
+// `<LeveragePanel>` is mounted TWICE — once in the empty-portfolio branch above, once in the
 // populated dashboard. They are separate JSX call sites, so passing the totals at one proves
 // nothing about the other; a dropped prop on this one is exactly the kind of thing the first
 // test cannot see.
@@ -147,10 +170,9 @@ it('hands the account totals to the actions panel on the populated dashboard too
   // A non-zero collateralUsd is what routes past the empty-portfolio branch.
   mocks.useAavePositions.mockReturnValue({
     ...EMPTY_PORTFOLIO,
+    ...ODD_TOTALS,
     collateralUsd: 1_234.5,
     debtUsd: 500,
-    collateralBase: 123_456_789_012_345_678n,
-    debtBase: 98_765_432_109_876_543n,
     totalPositionPnlUsd: 0,
     eModeCategoryId: 0,
     isEModeEnabled: false,
@@ -163,9 +185,9 @@ it('hands the account totals to the actions panel on the populated dashboard too
 
   render(<AavePosition />)
 
-  fireEvent.change(await screen.findByLabelText('Margin amount'), { target: { value: '1' } })
+  await fillAmounts()
 
-  const input = mocks.useStrategiesOpen.mock.calls.at(-1)?.[0]
-  expect(input?.existingCollateralUsd).toBe(123_456_789_012_345_678n)
-  expect(input?.existingDebtUsd).toBe(98_765_432_109_876_543n)
+  const input = mocks.useLeverageOpen.mock.calls.at(-1)?.[0]
+  expect(input?.existingCollateralUsd).toBe(ODD_TOTALS.collateralBase)
+  expect(input?.existingDebtUsd).toBe(ODD_TOTALS.debtBase)
 })

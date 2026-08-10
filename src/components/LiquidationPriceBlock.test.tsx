@@ -11,8 +11,8 @@ describe('LiquidationPriceBlock — non-modal, multiple rows', () => {
     // (isModal unset) had no coverage before this change.
     const view: LiquidationView = {
       rows: [
-        { symbol: 'WETH', liquidationPriceUsd: 2000, currentPriceUsd: 2500, bufferPct: -0.2, isVolatile: true },
-        { symbol: 'USDC', liquidationPriceUsd: null, currentPriceUsd: 1, bufferPct: null, isVolatile: false },
+        { symbol: 'WETH', liquidationPriceUsd: 2000, currentPriceUsd: 2500, bufferPct: -0.2, isVolatile: true, side: 'collateral' },
+        { symbol: 'USDC', liquidationPriceUsd: null, currentPriceUsd: 1, bufferPct: null, isVolatile: false, side: 'collateral' },
       ],
       marketWideDropPct: null,
     }
@@ -29,7 +29,7 @@ describe('LiquidationPriceBlock — single bare row', () => {
     // an asset, so "None" there would misread as "this position cannot be liquidated".
     const view: LiquidationView = {
       rows: [
-        { symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true },
+        { symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true, side: 'collateral' },
       ],
       marketWideDropPct: null,
     }
@@ -47,14 +47,14 @@ describe('LiquidationPriceBlock agrees with hasLiquidationRowsToShow', () => {
     [
       'a single null row',
       {
-        rows: [{ symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true }],
+        rows: [{ symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true, side: 'collateral' }],
         marketWideDropPct: null,
       },
     ],
     [
       'a single priced row',
       {
-        rows: [{ symbol: 'WETH', liquidationPriceUsd: 2000, currentPriceUsd: 2500, bufferPct: -0.2, isVolatile: true }],
+        rows: [{ symbol: 'WETH', liquidationPriceUsd: 2000, currentPriceUsd: 2500, bufferPct: -0.2, isVolatile: true, side: 'collateral' }],
         marketWideDropPct: null,
       },
     ],
@@ -62,8 +62,8 @@ describe('LiquidationPriceBlock agrees with hasLiquidationRowsToShow', () => {
       'two null rows',
       {
         rows: [
-          { symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true },
-          { symbol: 'USDC', liquidationPriceUsd: null, currentPriceUsd: 1, bufferPct: null, isVolatile: false },
+          { symbol: 'WETH', liquidationPriceUsd: null, currentPriceUsd: 2500, bufferPct: null, isVolatile: true, side: 'collateral' },
+          { symbol: 'USDC', liquidationPriceUsd: null, currentPriceUsd: 1, bufferPct: null, isVolatile: false, side: 'collateral' },
         ],
         marketWideDropPct: null,
       },

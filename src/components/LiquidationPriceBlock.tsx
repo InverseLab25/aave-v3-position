@@ -48,7 +48,15 @@ export function LiquidationPriceBlock({ view, isModal }: LiquidationPriceBlockPr
                 None
               </span>
             ) : (
-              <span className="info-row-value" style={{ fontSize: isModal ? T.fontSize.base : '1.25rem' }}>
+              <span
+                className="info-row-value"
+                style={{ fontSize: isModal ? T.fontSize.base : '1.25rem' }}
+                // Collateral liquidates by falling, debt by rising. Without saying so, a debt
+                // row's price reads as a floor when it is a ceiling — the opposite warning.
+                title={row.side === 'debt'
+                  ? `Liquidated if ${row.symbol} rises to this price`
+                  : `Liquidated if ${row.symbol} falls to this price`}
+              >
                 ${row.liquidationPriceUsd.toFixed(2)}
               </span>
             )}

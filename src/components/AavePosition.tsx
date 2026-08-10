@@ -19,7 +19,7 @@ function lazyModal<P extends object>(load: () => Promise<ComponentType<P>>) {
 }
 
 const ClosePositionModal = lazyModal(() => import('./ClosePositionModal').then((m) => m.ClosePositionModal))
-const LeverageActions = lazyModal(() => import('./LeverageActions').then((m) => m.LeverageActions))
+const LeveragePanel = lazyModal(() => import('./leverage/LeveragePanel').then((m) => m.LeveragePanel))
 const WithdrawModal = lazyModal(() => import('./WithdrawModal').then((m) => m.WithdrawModal))
 const AssetsToSupplyModal = lazyModal(() => import('./AssetsToSupplyModal').then((m) => m.AssetsToSupplyModal))
 const AssetsToBorrowModal = lazyModal(() => import('./AssetsToBorrowModal').then((m) => m.AssetsToBorrowModal))
@@ -27,7 +27,7 @@ const BorrowRepayModal = lazyModal(() => import('./BorrowRepayModal').then((m) =
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
-import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs } from '../utils/liquidation'
+import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
@@ -327,8 +327,9 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           </div>
         </div>
 
-        <LeverageActions
+        <LeveragePanel
           suppliedAssets={suppliedAssets}
+          borrowedAssets={borrowedAssets}
           availableReserves={availableReserves}
           viewAddress={viewAddress}
           existingCollateralUsd={collateralBase}
@@ -336,6 +337,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           existingLtvBps={ltvBps}
           existingLiquidationThresholdBps={liquidationThresholdBps}
         />
+
 
         {isAssetsToSupplyModalOpen && (
           <AssetsToSupplyModal
@@ -369,7 +371,11 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   const exposure = (collateralUsd - debtUsd) > 0 ? (collateralUsd / (collateralUsd - debtUsd)) : 1
   const borrowPowerUsed = (debtUsd + availableBorrowsUsd) > 0 ? (debtUsd / (debtUsd + availableBorrowsUsd)) * 100 : 0
 
-  const liquidationView = computeLiquidationView(toCollateralInputs(suppliedAssets), debtUsd)
+  // Debt rows included: a short (stable collateral, volatile debt) is liquidated by the DEBT
+  // rising, and a collateral-only view answers the wrong question for it entirely.
+  const liquidationView = computeLiquidationView(
+    toCollateralInputs(suppliedAssets), debtUsd, toDebtInputs(borrowedAssets),
+  )
   const chainConfig = getChainConfig(chainId)
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
   const ethPriceUsd = Number(availableReserves?.find((r: AvailableReserve) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)
@@ -433,6 +439,17 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           </div>
         </div>
       </div>
+
+      <LeveragePanel
+        suppliedAssets={suppliedAssets}
+        borrowedAssets={borrowedAssets}
+        availableReserves={availableReserves}
+        viewAddress={viewAddress}
+        existingCollateralUsd={collateralBase}
+        existingDebtUsd={debtBase}
+        existingLtvBps={ltvBps}
+        existingLiquidationThresholdBps={liquidationThresholdBps}
+      />
 
       <div className="asset-tables">
         <div className="card">
@@ -579,15 +596,6 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
         </div>
       </div>
 
-      <LeverageActions
-        suppliedAssets={suppliedAssets}
-        availableReserves={availableReserves}
-        viewAddress={viewAddress}
-        existingCollateralUsd={collateralBase}
-        existingDebtUsd={debtBase}
-        existingLtvBps={ltvBps}
-        existingLiquidationThresholdBps={liquidationThresholdBps}
-      />
 
       {editCtx && (
         <div className="modal-overlay" onClick={cancelDraft}>

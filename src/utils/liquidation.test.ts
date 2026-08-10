@@ -39,8 +39,10 @@ describe('computeLiquidationView — assets that cannot liquidate the position',
       ],
       100000,
     )
-    expect(view.rows.map(r => r.liquidationPriceUsd)).toEqual([null, null])
-    expect(view.rows.map(r => r.bufferPct)).toEqual([null, null])
+    // Only WETH is quoted: USDC is a stablecoin, so its liquidation price is unreachable noise.
+    expect(view.rows.map(r => r.symbol)).toEqual(['WETH'])
+    expect(view.rows.map(r => r.liquidationPriceUsd)).toEqual([null])
+    expect(view.rows.map(r => r.bufferPct)).toEqual([null])
   })
 
   it('returns null for an asset with a zero liquidation threshold', () => {
@@ -83,11 +85,12 @@ describe('computeLiquidationView — assets that cannot liquidate the position',
 })
 
 describe('computeLiquidationView — row ordering', () => {
-  it('puts the asset needing the smallest price drop first, nulls last', () => {
+  it('puts the asset needing the smallest price drop first', () => {
     // Weighted: WETH 308,550 + USDC 800 + cbBTC 336,000 = 645,350 vs $400k debt.
     // WETH  liq price = (400000 - 336800) / 82.5 = 766.06  -> buffer -0.7952
     // cbBTC liq price = (400000 - 309350) / 3.5  = 25900.00 -> buffer -0.7302
-    // cbBTC needs the smaller fall, so it must lead. USDC cannot liquidate -> last.
+    // cbBTC needs the smaller fall, so it must lead. USDC is a stablecoin, so it carries its
+    // weight in the totals above but is not quoted a row of its own.
     const view = computeLiquidationView(
       [
         { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
@@ -96,7 +99,20 @@ describe('computeLiquidationView — row ordering', () => {
       ],
       400000,
     )
-    expect(view.rows.map(r => r.symbol)).toEqual(['cbBTC', 'WETH', 'USDC'])
+    expect(view.rows.map(r => r.symbol)).toEqual(['cbBTC', 'WETH'])
+  })
+
+  it('sorts assets that cannot liquidate the position last', () => {
+    // cbBTC carries no liquidation weight, so no cbBTC price can sink the position.
+    const view = computeLiquidationView(
+      [
+        { symbol: 'cbBTC', amount: 5, priceUsd: 96000, liquidationThreshold: 0 },
+        { symbol: 'WETH', amount: 100, priceUsd: 3740, liquidationThreshold: 0.825 },
+      ],
+      200000,
+    )
+    expect(view.rows.map(r => r.symbol)).toEqual(['WETH', 'cbBTC'])
+    expect(view.rows.at(-1)?.liquidationPriceUsd).toBeNull()
   })
 })
 
@@ -170,5 +186,57 @@ describe('computeLiquidationView — market-wide correlated drop', () => {
     )
     const worstSingle = Math.min(...view.rows.map(r => Math.abs(r.bufferPct as number)))
     expect(Math.abs(view.marketWideDropPct as number)).toBeLessThan(worstSingle)
+  })
+})
+
+describe('computeLiquidationView — debt-side rows', () => {
+  // The shape a short takes: stablecoin collateral, volatile debt. A collateral-only view
+  // answers the wrong question here — USDC falling is not what liquidates this position.
+  const collateral = [{ symbol: 'USDC', amount: 1000, priceUsd: 1, liquidationThreshold: 0.78 }]
+  const debt = [{ symbol: 'WETH', amount: 0.01, priceUsd: 2000 }]
+
+  it('returns the price the borrowed asset must RISE to', () => {
+    // Weighted collateral is 1,000 × 0.78 = 780, against 0.01 WETH of debt: 780 / 0.01 = 78,000.
+    const view = computeLiquidationView(collateral, 20, debt)
+    const weth = view.rows.find(r => r.symbol === 'WETH')
+    expect(weth?.side).toBe('debt')
+    expect(weth?.liquidationPriceUsd).toBeCloseTo(78_000, 6)
+  })
+
+  it('reports the buffer as a POSITIVE fraction — a rise, not a fall', () => {
+    const view = computeLiquidationView(collateral, 20, debt)
+    expect(view.rows.find(r => r.symbol === 'WETH')?.bufferPct).toBeGreaterThan(0)
+  })
+
+  it('drops the stablecoin collateral row — it is the noise this replaces', () => {
+    // USDC would have to fall to $0.026, which is not a risk anyone is managing. It still
+    // carries its full weight in the WETH price solved above.
+    const view = computeLiquidationView(collateral, 20, debt)
+    expect(view.rows.map(r => r.symbol)).toEqual(['WETH'])
+  })
+
+  it('orders by how far the price has to move, whichever way it moves', () => {
+    // A volatile collateral needing a 20% fall leads a volatile debt needing a 50% rise.
+    const view = computeLiquidationView(
+      [{ symbol: 'WETH', amount: 100, priceUsd: 2000, liquidationThreshold: 0.8 }],
+      120_000,
+      [{ symbol: 'WBTC', amount: 1, priceUsd: 60_000 }],
+    )
+    expect(view.rows.map(r => r.symbol)).toEqual(['WETH', 'WBTC'])
+    expect(view.rows[0].bufferPct).toBeLessThan(0)
+    expect(view.rows[1].bufferPct).toBeGreaterThan(0)
+  })
+
+  it('excludes debt already past the weighted collateral', () => {
+    // $900 of other debt against $780 of weighted collateral: this leg cannot be what tips it.
+    const view = computeLiquidationView(
+      collateral, 920, [{ symbol: 'WETH', amount: 0.01, priceUsd: 2000 }, { symbol: 'DAI', amount: 900, priceUsd: 1 }],
+    )
+    expect(view.rows.find(r => r.symbol === 'WETH')?.liquidationPriceUsd).toBeNull()
+  })
+
+  it('omits debt rows entirely when none are passed — the existing callers are unchanged', () => {
+    const view = computeLiquidationView(collateral, 20)
+    expect(view.rows.every(r => r.side === 'collateral')).toBe(true)
   })
 })
