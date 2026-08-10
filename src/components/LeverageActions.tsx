@@ -49,8 +49,7 @@ export function LeverageActions({
   const [marginIn, setMarginIn] = useState<MarginLocation>('collateral')
   const [marginStr, setMarginStr] = useState('')
   const [manualEnabled, setManualEnabled] = useState(false)
-  const [borrowStr, setBorrowStr] = useState('')
-  const [flashStr, setFlashStr] = useState('')
+  const [supplyStr, setSupplyStr] = useState('')
   // What the user last dragged to (or the panel's default) — NOT necessarily what is actually
   // used below. `leverageBps` derives the clamped, in-force value from this every render.
   const [requestedLeverageBps, setRequestedLeverageBps] = useState(20_000n)
@@ -115,13 +114,23 @@ export function LeverageActions({
     marginIn,
     marginStr,
     marginDecimals: marginReserve?.raw.decimals ?? 18,
-    borrowStr,
-    borrowDecimals: debtReserve?.raw.decimals ?? 18,
-    flashStr,
-    flashDecimals: collateralReserve?.raw.decimals ?? 18,
+    supplyStr,
+    supplyDecimals: collateralReserve?.raw.decimals ?? 18,
     leverageBps,
     manualEnabled,
   })
+
+  // What the flash will have to cover, shown before any quote goes out. Mirrors the hook's own
+  // split: the margin only offsets the flash when it is supplied alongside it, which is the
+  // collateral path — on the debt path it pays for part of the swap instead.
+  const flashDisplay = sizing?.kind === 'manual'
+    ? (() => {
+        const flash = marginIn === 'collateral'
+          ? sizing.supplyAmount - sizing.marginAmount
+          : sizing.supplyAmount
+        return flash > 0n ? formatUnits(flash, collateralReserve?.raw.decimals ?? 18) : null
+      })()
+    : null
 
   // Which position the preview card describes, whole. The manual path projects against the
   // existing account (`manualOpen`'s health factor folds it in), so the card's liquidation price
@@ -164,7 +173,11 @@ export function LeverageActions({
   } = useStrategiesOpen(input)
 
   // The contract is undeployed, or we are looking at someone else's portfolio.
-  if (!contract || viewAddress) return null
+  // Only someone else's portfolio hides the panel. An undeployed contract does NOT: the panel
+  // is how the feature is discovered, and hiding it on a chain without a deployment makes it
+  // look absent rather than unavailable. Nothing here can be signed without an address —
+  // `input` stays null, so no quote is requested and Open is disabled.
+  if (viewAddress) return null
 
   const paused = previewError?.kind === 'paused'
   const sizingMessage = previewError && !paused ? previewError.message : null
@@ -180,11 +193,14 @@ export function LeverageActions({
         : null
 
   // Unlocking manual entry pre-fills from whatever the derived path last priced — an empty form
-  // would throw away the sizing the user just dialled in.
+  // would throw away the sizing the user just dialled in. The supply is what the pool receives:
+  // flash plus margin on the collateral path, the flash alone on the debt path.
   const seedManual = (on: boolean) => {
-    if (on && preview && !borrowStr && !flashStr) {
-      setBorrowStr(formatUnits(preview.borrowAmount, debtReserve?.raw.decimals ?? 18))
-      setFlashStr(formatUnits(preview.flashAmount, collateralReserve?.raw.decimals ?? 18))
+    if (on && preview && !supplyStr) {
+      const supplied = marginIn === 'collateral'
+        ? preview.flashAmount + (sizing?.marginAmount ?? 0n)
+        : preview.flashAmount
+      setSupplyStr(formatUnits(supplied, collateralReserve?.raw.decimals ?? 18))
     }
     setManualEnabled(on)
   }
@@ -264,12 +280,12 @@ export function LeverageActions({
 
           {manual ? (
             <ManualAmounts
-              borrowStr={borrowStr}
-              onBorrowChange={setBorrowStr}
-              flashStr={flashStr}
-              onFlashChange={setFlashStr}
-              debtSymbol={debtReserve?.symbol ?? '—'}
+              supplyStr={supplyStr}
+              onSupplyChange={setSupplyStr}
               collateralSymbol={collateralReserve?.symbol ?? '—'}
+              debtSymbol={debtReserve?.symbol ?? '—'}
+              flashDisplay={flashDisplay}
+              borrowDisplay={preview ? formatUnits(preview.borrowAmount, debtReserve?.raw.decimals ?? 18) : null}
               message={sizingMessage}
             />
           ) : (

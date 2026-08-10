@@ -4,42 +4,51 @@ import { ManualAmounts } from './ManualAmounts'
 import { manualOpenErrorMessage } from '../lib/manualOpen'
 
 const PROPS = {
-  borrowStr: '2000',
-  onBorrowChange: vi.fn(),
-  flashStr: '1.0',
-  onFlashChange: vi.fn(),
-  debtSymbol: 'USDC',
+  supplyStr: '3.0',
+  onSupplyChange: vi.fn(),
   collateralSymbol: 'WETH',
+  debtSymbol: 'USDC',
+  flashDisplay: '2.0',
+  borrowDisplay: '5020',
   message: null,
 }
 
-it('labels the two fields by what they borrow from', () => {
+it('takes only the supply, and shows the flash and borrow as derived', () => {
   render(<ManualAmounts {...PROPS} />)
-  expect(screen.getByLabelText('Debt amount')).toBeTruthy()
-  expect(screen.getByLabelText('Flash amount')).toBeTruthy()
-  expect(screen.getByText(/borrow from Aave/i)).toBeTruthy()
-  expect(screen.getByText(/flash from Morpho/i)).toBeTruthy()
+
+  // The supply is the one editable field — the other two are consequences of it.
+  expect(screen.getByLabelText('Supply amount')).toBeTruthy()
+  expect(screen.queryByLabelText(/flash amount/i)).toBeNull()
+  expect(screen.queryByLabelText(/debt amount/i)).toBeNull()
+
+  expect(screen.getByText('2.0 WETH')).toBeTruthy()
+  expect(screen.getByText('5020 USDC')).toBeTruthy()
 })
 
 it('reports edits as raw strings so the parent owns parsing', () => {
-  const onBorrowChange = vi.fn()
-  render(<ManualAmounts {...PROPS} onBorrowChange={onBorrowChange} />)
-  fireEvent.change(screen.getByLabelText('Debt amount'), { target: { value: '2500' } })
-  expect(onBorrowChange).toHaveBeenCalledWith('2500')
+  const onSupplyChange = vi.fn()
+  render(<ManualAmounts {...PROPS} onSupplyChange={onSupplyChange} />)
+  fireEvent.change(screen.getByLabelText('Supply amount'), { target: { value: '4.5' } })
+  expect(onSupplyChange).toHaveBeenCalledWith('4.5')
 })
 
-it('shows the shortfall message when there is one, and nothing when there is not', () => {
-  // Taken from the function that actually produces these strings, rather than invented: a
-  // hand-written string couples the negative assertion below to copy nothing ever emits, so it
-  // would keep passing however the real message changed.
-  const message = manualOpenErrorMessage('SWAP_SHORTFALL', {
-    marginSymbol: 'WETH', debtSymbol: 'USDC', collateralSymbol: 'WETH',
-    marginBalance: '5.0', shortfall: '0.5', suggestedBorrow: '2,010',
+it('shows a dash rather than a stale figure before the derived amounts land', () => {
+  render(<ManualAmounts {...PROPS} flashDisplay={null} borrowDisplay={null} />)
+  // The figures from PROPS must not linger once the props say there is nothing to show.
+  expect(screen.queryByText('2.0 WETH')).toBeNull()
+  expect(screen.queryByText('5020 USDC')).toBeNull()
+  expect(screen.getAllByText('—')).toHaveLength(2)
+})
+
+it('shows the validation message when there is one, and nothing when there is not', () => {
+  // Derived from the real copy: a hard-coded string would keep passing if the message changed.
+  const msg = manualOpenErrorMessage('SUPPLY_BELOW_MARGIN', {
+    marginSymbol: 'WETH', collateralSymbol: 'WETH', marginBalance: '5.0',
   })
 
   const { rerender } = render(<ManualAmounts {...PROPS} />)
-  expect(screen.queryByText(message)).toBeNull()
+  expect(screen.queryByText(msg)).toBeNull()
 
-  rerender(<ManualAmounts {...PROPS} message={message} />)
-  expect(screen.getByText(message)).toBeTruthy()
+  rerender(<ManualAmounts {...PROPS} message={msg} />)
+  expect(screen.getByText(msg)).toBeTruthy()
 })

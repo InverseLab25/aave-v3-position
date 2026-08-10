@@ -7,10 +7,9 @@ interface UseOpenSizingInput {
   marginIn: MarginLocation
   marginStr: string
   marginDecimals: number
-  borrowStr: string
-  borrowDecimals: number
-  flashStr: string
-  flashDecimals: number
+  /** What the user wants supplied to the pool, in the COLLATERAL asset. */
+  supplyStr: string
+  supplyDecimals: number
   leverageBps: bigint
   manualEnabled: boolean
 }
@@ -49,13 +48,12 @@ export function useOpenSizing(p: UseOpenSizingInput): { sizing: OpenSizing | nul
       return { sizing: { kind: 'derived', marginAmount, leverageBps: p.leverageBps }, manual }
     }
 
-    const borrowAmount = parse(p.borrowStr, p.borrowDecimals)
-    const flashAmount = parse(p.flashStr, p.flashDecimals)
-    if (borrowAmount === null || flashAmount === null) return { sizing: null, manual }
+    const supplyAmount = parse(p.supplyStr, p.supplyDecimals)
+    if (supplyAmount === null) return { sizing: null, manual }
 
-    return { sizing: { kind: 'manual', marginAmount, borrowAmount, flashAmount }, manual }
+    return { sizing: { kind: 'manual', marginAmount, supplyAmount }, manual }
   }, [
-    manual, p.marginIn, p.marginStr, p.marginDecimals, p.borrowStr, p.borrowDecimals,
-    p.flashStr, p.flashDecimals, p.leverageBps,
+    manual, p.marginIn, p.marginStr, p.marginDecimals, p.supplyStr, p.supplyDecimals,
+    p.leverageBps,
   ])
 }

@@ -315,7 +315,9 @@ it('invalidates the preview synchronously on an input change, before the debounc
   expect(result.current.preview).toBeNull()
 })
 
-it('quotes exactly once on the manual path, with the amounts as typed', async () => {
+it('derives the flash from supply minus margin, and solves a borrow that repays it', async () => {
+  // 4e8 collateral wei per debt wei is exactly the oracle rate for RESERVES, so the seed
+  // clears in one round and no refinement is spent.
   const adapter = stubAdapter(400_000_000n)
   mocks.getAdaptersForChain.mockReturnValue([adapter])
 
@@ -323,37 +325,45 @@ it('quotes exactly once on the manual path, with the amounts as typed', async ()
     ...INPUT,
     sizing: {
       kind: 'manual' as const,
-      marginAmount: 1_000_000_000_000_000_000n,
-      borrowAmount: 3_000_000_000n,
-      flashAmount: 1_000_000_000_000_000_000n,
+      marginAmount: 1_000_000_000_000_000_000n, // 1 WETH posted
+      supplyAmount: 2_000_000_000_000_000_000n, // 2 WETH into the pool
     },
   }))
   await waitFor(() => expect(result.current.preview).not.toBeNull())
 
-  // The derived path re-quotes as sizeOpen converges on a rate. Manual has nothing to converge
-  // on: amountIn is whatever the user typed, so a second round could only re-ask the same
-  // question.
-  expect(vi.mocked(adapter.getQuote)).toHaveBeenCalledTimes(1)
-  expect(vi.mocked(adapter.getQuote).mock.calls[0][2]).toBe('3000000000')
+  // Mode 1 is the collateral-margin path, so the margin is supplied alongside the flash and
+  // the flash covers only the difference.
   expect(result.current.preview?.flashAmount).toBe(1_000_000_000_000_000_000n)
-  expect(result.current.preview?.borrowAmount).toBe(3_000_000_000n)
+  expect(vi.mocked(adapter.getQuote)).toHaveBeenCalledTimes(1)
+
+  // The borrow is solved, not typed. What matters is the invariant it was solved FOR: the
+  // guaranteed output covers the flash. Pinning an exact figure would just restate the seed.
+  const borrow = result.current.preview!.borrowAmount
+  expect(borrow).toBeGreaterThan(0n)
+  const guaranteed = (borrow * 400_000_000n * (10_000n - INPUT.slippageBps)) / 10_000n
+  expect(guaranteed).toBeGreaterThanOrEqual(result.current.preview!.flashAmount)
 })
 
-it('surfaces a manual shortfall as a preview error rather than a preview', async () => {
-  mocks.getAdaptersForChain.mockReturnValue([stubAdapter(400_000_000n)])
+it('refines the borrow upward when the route prices worse than the oracle', async () => {
+  // 20% worse than oracle: the seed cannot repay the flash, so the solver must scale up rather
+  // than hand back a borrow that would revert.
+  const adapter = stubAdapter(320_000_000n)
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
 
   const { result } = renderHook(() => useStrategiesOpen({
     ...INPUT,
     sizing: {
       kind: 'manual' as const,
       marginAmount: 1_000_000_000_000_000_000n,
-      borrowAmount: 1_000_000n,   // 1 USDC buys nowhere near the 1 WETH flash
-      flashAmount: 1_000_000_000_000_000_000n,
+      supplyAmount: 2_000_000_000_000_000_000n,
     },
   }))
+  await waitFor(() => expect(result.current.preview).not.toBeNull())
 
-  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
-  expect(result.current.preview).toBeNull()
+  expect(vi.mocked(adapter.getQuote).mock.calls.length).toBeGreaterThan(1)
+  const borrow = result.current.preview!.borrowAmount
+  const guaranteed = (borrow * 320_000_000n * (10_000n - INPUT.slippageBps)) / 10_000n
+  expect(guaranteed).toBeGreaterThanOrEqual(result.current.preview!.flashAmount)
 })
 
 it('validates the route it actually builds, not the top-ranked one it may fall through', async () => {
@@ -373,12 +383,11 @@ it('validates the route it actually builds, not the top-ranked one it may fall t
     sizing: {
       kind: 'manual' as const,
       marginAmount: 1_000_000_000_000_000_000n,
-      borrowAmount: 3_000_000_000n,
-      flashAmount: 1_000_000_000_000_000_000n,
+      supplyAmount: 2_000_000_000_000_000_000n,
     },
   }))
 
-  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
+  await waitFor(() => expect(result.current.previewError?.kind).toBe('quote-failed'))
   expect(result.current.preview).toBeNull()
 })
 
@@ -396,12 +405,11 @@ it('rejects a manual open whose BUILD re-simulates below the flash, even when it
     sizing: {
       kind: 'manual' as const,
       marginAmount: 1_000_000_000_000_000_000n,
-      borrowAmount: 3_000_000_000n,
-      flashAmount: 1_000_000_000_000_000_000n,
+      supplyAmount: 2_000_000_000_000_000_000n,
     },
   }))
 
-  await waitFor(() => expect(result.current.previewError?.kind).toBe('SWAP_SHORTFALL'))
+  await waitFor(() => expect(result.current.previewError?.kind).toBe('quote-failed'))
   expect(result.current.preview).toBeNull()
 })
 
@@ -417,8 +425,8 @@ it('reports the collateral as marginAsset on the ratchet modes, matching planOpe
     sizing: {
       kind: 'manual' as const,
       marginAmount: 0n, // ratchet adds no equity
-      borrowAmount: 3_000_000_000n,
-      flashAmount: 1_000_000_000_000_000_000n,
+      // No margin, so the flash IS the supply.
+      supplyAmount: 1_000_000_000_000_000_000n,
     },
     // Ratchet leans on a position that already exists; with none, validateManualOpen rejects
     // RATCHET_NO_POSITION and there is no preview to assert against.

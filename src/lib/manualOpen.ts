@@ -1,4 +1,4 @@
-import { BPS, ceilDiv } from './strategies-sdk/sizing'
+import { BPS } from './strategies-sdk/sizing'
 import type { MarginLocation } from './strategies-sdk/sizing'
 
 /**
@@ -10,12 +10,20 @@ import type { MarginLocation } from './strategies-sdk/sizing'
  */
 
 export type ManualOpenError =
-  | 'ZERO_FLASH'
+  | 'SUPPLY_BELOW_MARGIN'
   | 'ZERO_BORROW'
   | 'MARGIN_EXCEEDS_BALANCE'
   | 'RATCHET_NO_POSITION'
-  | 'SWAP_SHORTFALL'
   | 'LTV_EXCEEDED'
+
+/**
+ * There is deliberately no "the swap cannot repay the flash" member.
+ *
+ * The borrow is not typed — `solveBorrow` derives it FROM the flash it has to repay, so no
+ * combination of amounts the user can enter produces a swap that comes up short. The revert at
+ * `AaveV3Strategies.sol:502` is unreachable from this UI by construction rather than by
+ * checking, which is why this module no longer suggests a corrected borrow either.
+ */
 
 /** A realized rate, taken from a live quote rather than the oracle. */
 export interface ManualQuote {
@@ -71,7 +79,7 @@ export interface ManualProjection {
 
 export type ManualOpenResult =
   | { ok: true; projection: ManualProjection }
-  | { ok: false; error: ManualOpenError; suggestedBorrow: bigint | null }
+  | { ok: false; error: ManualOpenError }
 
 /** The contract swaps borrow PLUS margin on the debt path — AaveV3Strategies.sol:491. */
 function swapInFor(p: ManualOpenInput): bigint {
@@ -80,18 +88,6 @@ function swapInFor(p: ManualOpenInput): bigint {
 
 function usd(amount: bigint, priceUsd: bigint, decimals: number): bigint {
   return (amount * priceUsd) / 10n ** BigInt(decimals)
-}
-
-/**
- * The borrow that would clear the flash at the rate the quote actually realized — not the
- * oracle's. Using the quote's own rate means the suggestion clears on the next attempt rather
- * than landing just short again.
- */
-function suggestBorrow(p: ManualOpenInput, q: ManualQuote): bigint | null {
-  const neededIn = ceilDiv(p.flashAmount * q.amountIn, q.amountOut)
-  const padded = ceilDiv(neededIn * (BPS + p.slippageBps), BPS)
-  const borrow = padded - (p.marginIn === 'debt' ? p.marginAmount : 0n)
-  return borrow > 0n ? borrow : null
 }
 
 /**
@@ -147,11 +143,13 @@ function project(p: ManualOpenInput, expectedSwapOut: bigint): ManualProjection 
 }
 
 export function validateManualOpen(p: ManualOpenInput): ManualOpenResult {
-  const fail = (error: ManualOpenError, suggestedBorrow: bigint | null = null): ManualOpenResult =>
-    ({ ok: false, error, suggestedBorrow })
+  const fail = (error: ManualOpenError): ManualOpenResult => ({ ok: false, error })
 
-  // The contract's own ZeroAmount guards — AaveV3Strategies.sol:274 and :331.
-  if (p.flashAmount <= 0n) return fail('ZERO_FLASH')
+  // `flashAmount` is `supplyAmount - marginAmount`, so a non-positive flash means the user asked
+  // to supply no more than they are posting themselves — nothing to lever, and the contract's
+  // ZeroAmount guard would reject it anyway (AaveV3Strategies.sol:274, :331).
+  if (p.flashAmount <= 0n) return fail('SUPPLY_BELOW_MARGIN')
+  // A backstop only: `solveBorrow` refuses to return a zero or negative borrow.
   if (p.borrowAmount <= 0n) return fail('ZERO_BORROW')
   if (p.marginAmount > p.marginBalance) return fail('MARGIN_EXCEEDS_BALANCE')
 
@@ -165,13 +163,9 @@ export function validateManualOpen(p: ManualOpenInput): ManualOpenResult {
     return { ok: true, projection: project(p, 0n) }
   }
 
+  // The quote here is the one `solveBorrow` settled on, so its output already clears the flash
+  // by construction — there is nothing left to check about coverage, only about Aave's ceiling.
   const expectedSwapOut = (swapInFor(p) * p.quote.amountOut) / p.quote.amountIn
-
-  // The hard floor: the swap output must repay the flash, or the whole transaction reverts —
-  // AaveV3Strategies.sol:502, which fires independently of the user's minOut.
-  if (expectedSwapOut < p.flashAmount) {
-    return fail('SWAP_SHORTFALL', suggestBorrow(p, p.quote))
-  }
 
   const projection = project(p, expectedSwapOut)
 
@@ -193,28 +187,19 @@ export function manualOpenErrorMessage(
   error: ManualOpenError,
   ctx: {
     marginSymbol: string
-    debtSymbol: string
     collateralSymbol: string
     marginBalance: string
-    shortfall: string
-    suggestedBorrow: string | null
   },
 ): string {
   switch (error) {
-    case 'ZERO_FLASH':
-      return 'Enter a flash amount'
+    case 'SUPPLY_BELOW_MARGIN':
+      return `Supply more ${ctx.collateralSymbol} than you post yourself — the difference is what gets levered`
     case 'ZERO_BORROW':
-      return 'Enter a debt amount'
+      return 'This position is too small to route'
     case 'MARGIN_EXCEEDS_BALANCE':
       return `You have ${ctx.marginBalance} ${ctx.marginSymbol}`
     case 'RATCHET_NO_POSITION':
       return 'Ratchet needs collateral already supplied — post margin instead'
-    case 'SWAP_SHORTFALL': {
-      const fix = ctx.suggestedBorrow
-        ? ` Raise debt to about ${ctx.suggestedBorrow} ${ctx.debtSymbol}, or lower the flash.`
-        : ' Lower the flash amount.'
-      return `The borrow is ${ctx.shortfall} ${ctx.collateralSymbol} short of repaying the flash.${fix}`
-    }
     case 'LTV_EXCEEDED':
       return `Too much debt against this much ${ctx.collateralSymbol} — Aave would reject the borrow`
   }

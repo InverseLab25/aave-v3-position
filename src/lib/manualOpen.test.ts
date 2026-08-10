@@ -29,9 +29,9 @@ it('accepts a position whose swap exactly covers the flash', () => {
   expect(r.ok).toBe(true)
 })
 
-it('rejects a zero flash before anything else', () => {
+it('rejects a non-positive flash before anything else', () => {
   const r = validateManualOpen({ ...BASE, flashAmount: 0n, borrowAmount: 0n })
-  expect(r).toMatchObject({ ok: false, error: 'ZERO_FLASH' })
+  expect(r).toMatchObject({ ok: false, error: 'SUPPLY_BELOW_MARGIN' })
 })
 
 it('rejects a zero borrow', () => {
@@ -49,23 +49,18 @@ it('rejects ratchet with no existing position', () => {
   expect(r).toMatchObject({ ok: false, error: 'RATCHET_NO_POSITION' })
 })
 
-it('rejects a borrow that cannot swap into the flash, and suggests one that can', () => {
-  // Halve the borrow: 1,000 USDC buys 0.5 WETH, short of the 1 WETH flash.
-  const r = validateManualOpen({ ...BASE, borrowAmount: 1_000_000_000n })
-  expect(r.ok).toBe(false)
-  if (r.ok) return
-  expect(r.error).toBe('SWAP_SHORTFALL')
-  // 1 WETH needs 2,000 USDC at the quoted rate, padded by 0.5% slippage.
-  expect(r.suggestedBorrow).toBe(2_010_000_000n)
+it('rejects a supply no larger than the margin, since there is nothing to lever', () => {
+  // flashAmount is `supply - margin`, so a non-positive flash is what that looks like here.
+  const r = validateManualOpen({ ...BASE, flashAmount: 0n })
+  expect(r).toMatchObject({ ok: false, error: 'SUPPLY_BELOW_MARGIN' })
 })
 
-it('subtracts debt-asset margin from the suggested borrow, since it joins the swap', () => {
-  const r = validateManualOpen({
-    ...BASE, marginIn: 'debt', marginAmount: 500_000_000n, borrowAmount: 100_000_000n,
-  })
-  expect(r.ok).toBe(false)
-  if (r.ok) return
-  expect(r.suggestedBorrow).toBe(2_010_000_000n - 500_000_000n)
+it('no longer polices swap coverage — solveBorrow makes a short swap unreachable', () => {
+  // A borrow far too small to buy the flash back. Under the old typed-borrow model this was
+  // SWAP_SHORTFALL; now the borrow is solved FROM the flash, so nothing can reach here short.
+  // Only Aave's own ceiling is left to judge.
+  const r = validateManualOpen({ ...BASE, borrowAmount: 1_000_000_000n })
+  expect(r.ok).toBe(true)
 })
 
 it('rejects a position whose implied LTV reaches the reserve ceiling', () => {
@@ -190,12 +185,11 @@ it('projects without a quote so the form can render before the first round lands
 })
 
 describe('manualOpenErrorMessage', () => {
-  it('names the shortfall and the borrow that would clear it', () => {
-    const msg = manualOpenErrorMessage('SWAP_SHORTFALL', {
-      marginSymbol: 'WETH', debtSymbol: 'USDC', collateralSymbol: 'WETH',
-      marginBalance: '5.0', shortfall: '0.5', suggestedBorrow: '2,010',
+  it('tells the user to raise the supply, naming the collateral asset', () => {
+    const msg = manualOpenErrorMessage('SUPPLY_BELOW_MARGIN', {
+      marginSymbol: 'WETH', collateralSymbol: 'WETH', marginBalance: '5.0',
     })
-    expect(msg).toContain('0.5')
-    expect(msg).toContain('2,010')
+    expect(msg).toContain('WETH')
+    expect(msg.toLowerCase()).toContain('supply')
   })
 })

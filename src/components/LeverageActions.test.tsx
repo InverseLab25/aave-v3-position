@@ -97,10 +97,15 @@ it('clamps leverage back down when the danger-zone toggle turns off', () => {
   expect(screen.getByText('2.14x')).toBeTruthy()
 })
 
-it('renders nothing while the contract is undeployed', () => {
+it('still renders the panel while the contract is undeployed, with nothing priced', () => {
+  // Showing the panel on a chain without a deployment is deliberate: it is how the feature is
+  // discoverable, and how it can be reviewed before a deployment exists. Nothing is priced or
+  // signable — `input` stays null without a contract, so no quote goes out and Open is dead.
   mocks.getStrategiesAddress.mockReturnValue(null)
-  const { container } = render(<LeverageActions {...PROPS} />)
-  expect(container.firstChild).toBeNull()
+  render(<LeverageActions {...PROPS} />)
+
+  expect(screen.getByText('Long')).toBeTruthy()
+  expect(screen.getByRole('button', { name: /open position/i })).toHaveProperty('disabled', true)
 })
 
 it('renders nothing while viewing another address', () => {
@@ -140,8 +145,7 @@ it('hides the leverage slider and forces manual entry in ratchet mode', () => {
   expect(screen.queryByLabelText('Margin amount')).toBeNull()
   // Manual is not optional here — there is nothing to derive from.
   expect(screen.queryByLabelText(/enter amounts manually/i)).toBeNull()
-  expect(screen.getByLabelText('Debt amount')).toBeTruthy()
-  expect(screen.getByLabelText('Flash amount')).toBeTruthy()
+  expect(screen.getByLabelText('Supply amount')).toBeTruthy()
 })
 
 // The single highest-consequence expression in the panel: `mode` decides which asset becomes
@@ -274,10 +278,10 @@ it('keeps the slider and hides the manual fields until they are unlocked', () =>
   render(<LeverageActions {...PROPS} />)
 
   expect(screen.getByRole('slider')).toBeTruthy()
-  expect(screen.queryByLabelText('Debt amount')).toBeNull()
+  expect(screen.queryByLabelText('Supply amount')).toBeNull()
 
   fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
-  expect(screen.getByLabelText('Debt amount')).toBeTruthy()
+  expect(screen.getByLabelText('Supply amount')).toBeTruthy()
   // The slider stays: it is what seeded the amounts now showing.
   expect(screen.getByRole('slider')).toBeTruthy()
 })

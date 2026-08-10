@@ -34,6 +34,8 @@ import {
   sizeOpenErrorMessage,
 } from '../lib/openPlan'
 import { manualOpenErrorMessage, validateManualOpen } from '../lib/manualOpen'
+import { solveBorrow } from '../lib/solveBorrow'
+import { BPS } from '../lib/strategies-sdk/sizing'
 import type { ManualOpenError } from '../lib/manualOpen'
 import { routeCostPercent } from '../lib/swapRoute'
 import { getAdaptersForChain } from '../adapters'
@@ -61,7 +63,12 @@ export interface ReserveInfo {
  */
 export type OpenSizing =
   | { kind: 'derived'; marginAmount: bigint; leverageBps: bigint }
-  | { kind: 'manual'; marginAmount: bigint; borrowAmount: bigint; flashAmount: bigint }
+  /**
+   * `supplyAmount` is what lands in the pool; `marginAmount` is what the user posts toward it.
+   * The flash covers the difference and the borrow is SOLVED to repay that flash, so neither
+   * is typed — see `solveBorrow`.
+   */
+  | { kind: 'manual'; marginAmount: bigint; supplyAmount: bigint }
 
 export interface OpenInput {
   contract: Address
@@ -141,7 +148,7 @@ function reserveKey(r: ReserveInfo): string {
 function sizingKey(s: OpenSizing): string {
   return s.kind === 'derived'
     ? `d|${s.marginAmount}|${s.leverageBps}`
-    : `m|${s.marginAmount}|${s.borrowAmount}|${s.flashAmount}`
+    : `m|${s.marginAmount}|${s.supplyAmount}`
 }
 function inputKey(input: OpenInput): string {
   return [
@@ -280,7 +287,89 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
         // Manual sizing fixes amountIn, so there is nothing for the refine loop to converge on:
         // one round, then validate coverage against the rate it came back with.
         if (input.sizing.kind === 'manual') {
-          const { marginAmount, borrowAmount, flashAmount } = input.sizing
+          const { marginAmount, supplyAmount } = input.sizing
+
+          // What the flash has to cover is whatever the pool receives that the user did not
+          // post themselves. On the collateral path the margin is supplied alongside the flash
+          // (AaveV3Strategies.sol:480-481), so it reduces the flash one-for-one. On the debt
+          // path — and on ratchet, where there is no margin at all — the flash IS the supply,
+          // because the margin goes into the swap rather than the pool (:491).
+          const flashAmount = marginIn === 'collateral' ? supplyAmount - marginAmount : supplyAmount
+          const debtMargin = marginIn === 'debt' ? marginAmount : 0n
+
+          const rejectEarly = (error: ManualOpenError) =>
+            setPreviewError({
+              kind: error,
+              message: manualOpenErrorMessage(error, {
+                marginSymbol: marginIn === 'debt' ? debt.symbol : coll.symbol,
+                collateralSymbol: coll.symbol,
+                marginBalance: formatUnits(
+                  input.marginBalance, marginIn === 'debt' ? debt.decimals : coll.decimals,
+                ),
+              }),
+            })
+
+          // Cheap checks before spending a quote. `borrowAmount` is not known yet, so it is
+          // passed as a placeholder that cannot trip its own guard; the real one is validated
+          // below once solved.
+          const dry = validateManualOpen({
+            marginIn, marginAmount, borrowAmount: 1n, flashAmount,
+            marginBalance: input.marginBalance,
+            collateralPriceUsd: coll.priceUsd, debtPriceUsd: debt.priceUsd,
+            collateralDecimals: coll.decimals, debtDecimals: debt.decimals,
+            ltvBps: coll.ltvBps, liquidationThresholdBps: coll.liquidationThresholdBps,
+            existingCollateralUsd: input.existingCollateralUsd,
+            existingDebtUsd: input.existingDebtUsd,
+            existingLtvBps: input.existingLtvBps,
+            existingLiquidationThresholdBps: input.existingLiquidationThresholdBps,
+            slippageBps: input.slippageBps,
+            quote: null,
+          })
+          if (!dry.ok) { rejectEarly(dry.error); return }
+
+          // Every candidate from the round `solveBorrow` settles on. It reads `best` off the
+          // same round's ranked list, so whatever it returns corresponds to this snapshot.
+          let solvedCandidates: Candidate[] = []
+          const solution = await solveBorrow({
+            flashAmount,
+            debtMargin,
+            slipNum: BPS - input.slippageBps,
+            rounds: MAX_REFINE_ROUNDS,
+            collateralPriceUsd: coll.priceUsd,
+            debtPriceUsd: debt.priceUsd,
+            collateralDecimals: coll.decimals,
+            debtDecimals: debt.decimals,
+            quoteAt: async (swapIn) => {
+              const results = await Promise.all(
+                adapters.map(async (a) => {
+                  try {
+                    const q = await a.getQuote(
+                      fromAsset, toAsset, swapIn.toString(), slippagePercent, chainId,
+                    )
+                    return q ? { a, q } : null
+                  } catch {
+                    return null
+                  }
+                }),
+              )
+              solvedCandidates = results
+                .filter((r): r is Candidate => r !== null)
+                .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
+              return solvedCandidates.map((c) => c.q)
+            },
+          })
+          if (cancelled) return
+
+          if (!solution.ok) {
+            setPreviewError(
+              solution.error === 'NO_ROUTE'
+                ? { kind: 'no-route', message: 'No allowlisted router can price this pair.' }
+                : { kind: 'quote-failed', message: 'Could not price a borrow that repays the flash.' },
+            )
+            return
+          }
+          const borrowAmount = solution.solved.borrowAmount
+
           const manualBase = {
             marginIn, marginAmount, borrowAmount, flashAmount,
             marginBalance: input.marginBalance,
@@ -294,52 +383,10 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
             slippageBps: input.slippageBps,
           }
 
-          const rejectManual = (error: ManualOpenError, suggested: bigint | null, out: bigint) =>
-            setPreviewError({
-              kind: error,
-              message: manualOpenErrorMessage(error, {
-                marginSymbol: marginIn === 'debt' ? debt.symbol : coll.symbol,
-                debtSymbol: debt.symbol,
-                collateralSymbol: coll.symbol,
-                marginBalance: formatUnits(input.marginBalance, marginIn === 'debt' ? debt.decimals : coll.decimals),
-                shortfall: formatUnits(flashAmount > out ? flashAmount - out : 0n, coll.decimals),
-                suggestedBorrow: suggested === null ? null : formatUnits(suggested, debt.decimals),
-              }),
-            })
-
-          // Cheap checks first: no point spending a quote on amounts the contract rejects.
-          const dry = validateManualOpen({ ...manualBase, quote: null })
-          if (!dry.ok) { rejectManual(dry.error, dry.suggestedBorrow, 0n); return }
-
-          const amountIn = (borrowAmount + (marginIn === 'debt' ? marginAmount : 0n)).toString()
-          const results = await Promise.all(
-            adapters.map(async (a) => {
-              try {
-                const q = await a.getQuote(fromAsset, toAsset, amountIn, slippagePercent, chainId)
-                return q ? { a, q } : null
-              } catch {
-                return null
-              }
-            }),
-          )
-          if (cancelled) return
-
-          const ranked = results
-            .filter((r): r is Candidate => r !== null)
-            .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
-          if (ranked.length === 0) {
-            setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
-            return
-          }
-
           // Build FIRST, then validate what was actually built. selectBuildableRoute falls
-          // through candidates that fail to build, and `ranked` is best-output-first, so a
-          // fallback prices strictly worse than the top — validating the top and signing a
-          // fallback can pass a coverage check the signed route fails, and minOut floors at
-          // flashAmount, so that reverts on-chain. Rejecting is the right outcome here rather
-          // than falling through further: if the built route cannot repay the flash, neither
-          // can anything ranked below it.
-          const build = await selectBuildableRoute(ranked)
+          // through candidates that fail to build, and the list is best-output-first, so a
+          // fallback prices strictly worse than the route the borrow was solved against.
+          const build = await selectBuildableRoute(solvedCandidates)
           if (cancelled) return
           if (!build) {
             setPreviewError({ kind: 'no-route', message: 'No allowlisted router can price this pair.' })
@@ -348,24 +395,26 @@ export function useStrategiesOpen(input: OpenInput | null, injected?: Partial<Op
 
           // The BUILT route's output, not the quote's. TransactionPayload.amountOut is
           // re-simulated at build time and documented as authoritative over the quote's, and it
-          // is what `minOut` below is derived from. Checking coverage against the optimistic
-          // quote while flooring minOut at the built figure lets a route that degraded between
-          // quote and build through both gates, to revert on-chain at
-          // InsufficientOutputForFlashLoanRepayment — the revert this validation exists to
-          // prevent.
+          // is what `minOut` below is derived from.
           const builtOut = BigInt(build.built.amountOut ?? build.quote.amountOut)
+
+          // The borrow was solved against the quote; the build can come back worse. That is a
+          // moving market rather than anything the user got wrong — re-solving here would race
+          // the same drift, so ask for a refresh instead. Nothing unsafe reaches the chain
+          // either way: `minOut` floors at `flashAmount` below.
+          if ((builtOut * (BPS - input.slippageBps)) / BPS < flashAmount) {
+            setPreviewError({
+              kind: 'quote-failed',
+              message: 'The route moved while pricing this — refresh to requote.',
+            })
+            return
+          }
 
           const checked = validateManualOpen({
             ...manualBase,
             quote: { amountIn: BigInt(build.quote.amountIn), amountOut: builtOut },
           })
-          if (!checked.ok) {
-            // Read off the same output the rejection came from, so the shortfall shown can never
-            // disagree with the check that produced it.
-            const out = (builtOut * BigInt(amountIn)) / BigInt(build.quote.amountIn)
-            rejectManual(checked.error, checked.suggestedBorrow, out)
-            return
-          }
+          if (!checked.ok) { rejectEarly(checked.error); return }
 
           setPreview({
             collateral, debtAsset,
