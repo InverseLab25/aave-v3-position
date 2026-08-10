@@ -1,4 +1,4 @@
-import type { LiquidationView } from '../utils/liquidation'
+import type { LiquidationRow, LiquidationView } from '../utils/liquidation'
 import { T } from '../styles/theme'
 
 interface LiquidationPriceBlockProps {
@@ -6,9 +6,17 @@ interface LiquidationPriceBlockProps {
   isModal?: boolean
 }
 
+type PricedRow = LiquidationRow & { liquidationPriceUsd: number }
 
 export function LiquidationPriceBlock({ view, isModal }: LiquidationPriceBlockProps) {
-  if (view.rows.length === 0) return null
+  // An asset that cannot liquidate the position on its own has no price to attribute, and the
+  // row is labelled by the position, not by the asset — so the word "None" there reads as an
+  // affirmative "this position cannot be liquidated". Drop the row rather than claim that.
+  const priced = view.rows.filter((row): row is PricedRow => row.liquidationPriceUsd !== null)
+  // The correlated figure survives every row being unattributable on its own: assets that only
+  // liquidate the position TOGETHER are exactly the case it exists to quote.
+  const drop = view.rows.length > 1 ? view.marketWideDropPct : null
+  if (priced.length === 0 && drop === null) return null
 
   return (
     <div
@@ -18,9 +26,7 @@ export function LiquidationPriceBlock({ view, isModal }: LiquidationPriceBlockPr
         gap: T.space[3]
       }}
     >
-      {view.rows.map(row => {
-        const isUnliquidatable = row.liquidationPriceUsd === null
-        return (
+      {priced.map(row => (
           <div key={row.symbol} className="info-row" style={{ fontSize: T.fontSize.sm, padding: 0, paddingBottom: T.space[1] }}>
             <span className="info-row-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               {!isModal && (
@@ -30,22 +36,18 @@ export function LiquidationPriceBlock({ view, isModal }: LiquidationPriceBlockPr
                   <line x1="12" y1="8" x2="12.01" y2="8"></line>
                 </svg>
               )}
-              {isModal ? 'Liquidation price' : `Liquidation price ${view.rows.length > 1 ? `(${row.symbol})` : ''}`}
+              {/* Every row carries the same label, so once there is more than one the symbol is
+                  what tells them apart — in the modal too, where the preview card can now show
+                  a row per collateral asset. */}
+              {priced.length > 1 ? `Liquidation price (${row.symbol})` : 'Liquidation price'}
             </span>
-            {isUnliquidatable ? (
-              <span className="info-row-value text-muted" style={{ fontWeight: 400, fontSize: T.fontSize.sm }}>
-                None
-              </span>
-            ) : (
-              <span className="info-row-value" style={{ fontSize: isModal ? T.fontSize.base : '1.25rem' }}>
-                ${row.liquidationPriceUsd!.toFixed(2)}
-              </span>
-            )}
+            <span className="info-row-value" style={{ fontSize: isModal ? T.fontSize.base : '1.25rem' }}>
+              ${row.liquidationPriceUsd.toFixed(2)}
+            </span>
           </div>
-        )
-      })}
-      
-      {view.marketWideDropPct !== null && view.rows.length > 1 && (
+      ))}
+
+      {drop !== null && (
          <div className="info-row" style={{ fontSize: T.fontSize.sm, padding: 0, paddingBottom: T.space[1] }}>
             <span className="info-row-label" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
               {!isModal && (
@@ -58,7 +60,7 @@ export function LiquidationPriceBlock({ view, isModal }: LiquidationPriceBlockPr
               Market-wide drop
             </span>
             <span className="info-row-value" style={{ fontSize: isModal ? T.fontSize.base : '1.25rem' }}>
-              {(view.marketWideDropPct * 100).toFixed(1)}%
+              {(drop * 100).toFixed(1)}%
             </span>
          </div>
       )}

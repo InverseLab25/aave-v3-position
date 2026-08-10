@@ -35,6 +35,31 @@ export interface SuppliedAssetLike {
   liquidationThreshold?: number
 }
 
+/**
+ * A supplied row plus the flag that decides whether it carries liquidation weight at all.
+ * Required rather than optional: defaulting a missing flag would silently drop every row, and
+ * an empty collateral set reads as "nothing can be liquidated" rather than as a wiring bug.
+ */
+export interface CollateralSuppliedLike extends SuppliedAssetLike {
+  usageAsCollateralEnabledOnUser: boolean
+}
+
+/**
+ * Supplied rows -> the collateral this module solves against. Only collateral-enabled supplies
+ * carry liquidation weight, and Aave liquidates on its own oracle, so the price is `priceInUsd`
+ * and never an API price.
+ */
+export function toCollateralInputs(assets: CollateralSuppliedLike[]): CollateralInput[] {
+  return assets
+    .filter(a => a.usageAsCollateralEnabledOnUser)
+    .map(a => ({
+      symbol: a.symbol,
+      amount: a.amount ?? 0,
+      priceUsd: Number(a.priceInUsd ?? 0),
+      liquidationThreshold: a.liquidationThreshold ?? 0,
+    }))
+}
+
 export interface LiquidationRow {
   symbol: string
   /** null when this asset cannot liquidate the position on its own. */

@@ -9,6 +9,7 @@ import { leverageCeilingBps, sliderMax } from '../lib/openPlan'
 import type { MarginLocation } from '../lib/strategies-sdk/sizing'
 import type { OpenMode } from '../lib/strategies-sdk/plan'
 import { PRICE_IMPACT_BLOCK_PERCENT } from '../lib/swapRoute'
+import { toCollateralInputs } from '../utils/liquidation'
 import { ManualAmounts } from './ManualAmounts'
 import { OpenPositionForm } from './OpenPositionForm'
 import { PositionPreview } from './PositionPreview'
@@ -37,7 +38,7 @@ const SIDEBAR: Array<{ key: Direction; title: string; blurb: (v: string, s: stri
 const DEFAULT_SLIPPAGE_BPS = 50n
 
 export function LeverageActions({
-  availableReserves, viewAddress, existingCollateralUsd, existingDebtUsd,
+  suppliedAssets, availableReserves, viewAddress, existingCollateralUsd, existingDebtUsd,
   existingLtvBps, existingLiquidationThresholdBps,
 }: LeverageActionsProps) {
   const chainId = useChainId()
@@ -121,6 +122,16 @@ export function LeverageActions({
     leverageBps,
     manualEnabled,
   })
+
+  // Which position the preview card describes, whole. The manual path projects against the
+  // existing account (`manualOpen`'s health factor folds it in), so the card's liquidation price
+  // has to see that same account — per asset, since the new leg and any existing holding of the
+  // same asset fall together. The derived path is sized by `sizeOpen`, which knows nothing of the
+  // account, so it gets nothing: a card mixing an account-wide liquidation price with a
+  // position-only health factor is two answers to one question. Both fields move together.
+  const existingForPreview = manual
+    ? { collateral: toCollateralInputs(suppliedAssets), debtUsd: existingDebtUsd }
+    : { collateral: [], debtUsd: 0n }
 
   const input = useMemo(() => {
     if (!contract || !sizing) return null
@@ -274,9 +285,8 @@ export function LeverageActions({
             collateralPriceUsd={Number(collateralReserve?.priceInUsd ?? 0)}
             debtPriceUsd={Number(debtReserve?.priceInUsd ?? 0)}
             liquidationThreshold={collateralReserve?.liquidationThreshold ?? 0}
-            existingCollateralUsd={existingCollateralUsd}
-            existingDebtUsd={existingDebtUsd}
-            existingLiquidationThreshold={Number(existingLiquidationThresholdBps) / 10000}
+            existingCollateral={existingForPreview.collateral}
+            existingDebtUsd={existingForPreview.debtUsd}
           />
 
           {priceImpactBlocked && (

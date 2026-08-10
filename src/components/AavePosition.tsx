@@ -27,8 +27,7 @@ const BorrowRepayModal = lazyModal(() => import('./BorrowRepayModal').then((m) =
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
-import { computeLiquidationView } from '../utils/liquidation'
-import type { CollateralInput } from '../utils/liquidation'
+import { computeLiquidationView, toCollateralInputs } from '../utils/liquidation'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
@@ -370,19 +369,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
   const exposure = (collateralUsd - debtUsd) > 0 ? (collateralUsd / (collateralUsd - debtUsd)) : 1
   const borrowPowerUsed = (debtUsd + availableBorrowsUsd) > 0 ? (debtUsd / (debtUsd + availableBorrowsUsd)) * 100 : 0
 
-  // Only collateral-enabled supplies carry liquidation weight. Prices come from the
-  // Aave oracle (`priceInUsd`), never `apiEthPrice` — Aave liquidates on its own oracle.
-  const liquidationView = computeLiquidationView(
-    suppliedAssets
-      .filter((a: SuppliedAsset) => a.usageAsCollateralEnabledOnUser)
-      .map((a: SuppliedAsset): CollateralInput => ({
-        symbol: a.symbol,
-        amount: a.amount,
-        priceUsd: Number(a.priceInUsd),
-        liquidationThreshold: a.liquidationThreshold,
-      })),
-    debtUsd,
-  )
+  const liquidationView = computeLiquidationView(toCollateralInputs(suppliedAssets), debtUsd)
   const chainConfig = getChainConfig(chainId)
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
   const ethPriceUsd = Number(availableReserves?.find((r: AvailableReserve) => r.symbol.toUpperCase() === nativeWrappedSymbol)?.priceInUsd || 0)

@@ -1,6 +1,6 @@
 import { expect, it, vi, beforeEach } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
-import type { AvailableReserve } from '../hooks/useAavePositions'
+import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
 
 const mocks = vi.hoisted(() => ({
   getStrategiesAddress: vi.fn(),
@@ -180,6 +180,94 @@ it.each(MODE_CASES)(
     expect(input?.mode).toBe(mode)
   },
 )
+
+// --- one basis per card ---------------------------------------------------------------------
+//
+// The panel renders PositionPreview on BOTH sizing paths, and the two paths compute
+// `expectedHealthFactorBps` differently: `manualOpen` folds the user's existing Aave account in,
+// `sizeOpen` does not. Whatever the panel hands the card as the existing account therefore has
+// to match the path in force — an account-wide liquidation price beside a position-only health
+// factor is two answers to one question, and the ratchet norm (levering an existing position in
+// the SAME asset) is where it misreads hardest.
+
+/** 4 WETH already supplied and collateral-enabled — $10,000 at an 80% liquidation threshold. */
+const SUPPLIED_WETH: SuppliedAsset = {
+  symbol: 'WETH', underlyingAsset: WETH.underlyingAsset, decimals: 18,
+  amount: 4, amountRaw: 4_000_000_000_000_000_000n, valueUsd: 10_000, priceInUsd: '2500', apy: 2,
+  aTokenAddress: WETH.aTokenAddress, usageAsCollateralEnabledOnUser: true, liquidationThreshold: 0.8,
+  interestEarnedTokens: 0, interestEarnedUsd: 0,
+  positionPnl: {
+    avgEntryPriceUsd: 2500, realizedPnlUsd: 0, unrealizedPriceGainUsd: 0,
+    interestUsd: 0, totalPnlUsd: 0,
+  },
+}
+
+/** That same account as `getUserAccountData` reports it: $10,000 supplied, $6,000 owed, 80% LT. */
+const WITH_POSITION = {
+  ...PROPS,
+  availableReserves: [WETH, USDC],
+  suppliedAssets: [SUPPLIED_WETH],
+  existingCollateralUsd: 1_000_000_000_000n,
+  existingDebtUsd: 600_000_000_000n,
+  existingLtvBps: 7500n,
+  existingLiquidationThresholdBps: 8000n,
+}
+
+/** A 2 WETH / 2,000 USDC leg. The health factor is the caller's to supply — that is the basis. */
+const previewWithHf = (expectedHealthFactorBps: bigint) => ({
+  collateral: WETH.underlyingAsset, debtAsset: USDC.underlyingAsset,
+  marginAsset: WETH.underlyingAsset,
+  flashAmount: 1_000_000_000_000_000_000n, borrowAmount: 2_000_000_000n,
+  minOut: 1_000_000_000_000_000_000n,
+  expectedCollateral: 2_000_000_000_000_000_000n, expectedDebt: 2_000_000_000n,
+  expectedLeverageBps: 20_000n, expectedHealthFactorBps,
+  router: '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5', swapData: '0x',
+  aggregator: 'KyberSwap', priceImpactPercent: null,
+})
+
+/** See `expectOneBasis` in PositionPreview.test.tsx — same closed-form check, same reasoning. */
+function expectOneBasis(currentPriceUsd: number) {
+  const hf = Number(screen.getByText('Health factor').nextElementSibling?.textContent)
+  const liq = Number(
+    screen.getByText(/^Liquidation price/).nextElementSibling?.textContent?.replace('$', ''),
+  )
+  expect(liq).toBeGreaterThan(0)
+  expect(Math.abs(hf * liq - currentPriceUsd) / currentPriceUsd).toBeLessThan(0.005)
+}
+
+it('keeps the derived card position-only, matching the health factor sizeOpen produced', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  // 2 x 2,500 x 0.8 / 2,000 = 2.00 — sizeOpen's figure, the new leg alone. Liquidation price
+  // $1,250. Hand the card the existing account here and it solves $8,000 of debt against
+  // $8,000 of existing weight, quoting no liquidation price at all beside that 2.00.
+  mocks.useStrategiesOpen.mockReturnValue({
+    preview: previewWithHf(20_000n), previewError: null, isQuoting: false,
+    refresh: vi.fn(), frozen: { current: false },
+    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
+  })
+
+  render(<LeverageActions {...WITH_POSITION} />)
+
+  expect(screen.getByText('$1250.00')).toBeTruthy()
+  expectOneBasis(2500)
+})
+
+it('folds the existing account into the manual card, matching the health factor manualOpen produced', () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  // 6 x 2,500 x 0.8 / 8,000 = 1.50 — manualOpen's figure, account and new leg together. The
+  // liquidation price has to see the same 6 WETH: $8,000 / (6 x 0.8) = $1,666.67.
+  mocks.useStrategiesOpen.mockReturnValue({
+    preview: previewWithHf(15_000n), previewError: null, isQuoting: false,
+    refresh: vi.fn(), frozen: { current: false },
+    execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
+  })
+
+  render(<LeverageActions {...WITH_POSITION} />)
+  fireEvent.click(screen.getByLabelText(/enter amounts manually/i))
+
+  expect(screen.getByText('$1666.67')).toBeTruthy()
+  expectOneBasis(2500)
+})
 
 it('keeps the slider and hides the manual fields until they are unlocked', () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')

@@ -3,6 +3,7 @@ import type { OpenPreview } from '../hooks/useStrategiesOpen'
 import { evaluateHf } from '../utils/health'
 import { computeLiquidationView } from '../utils/liquidation'
 import type { CollateralInput } from '../utils/liquidation'
+import { BPS } from '../lib/strategies-sdk/sizing'
 import { PRICE_IMPACT_HIGH_PERCENT } from '../lib/swapRoute'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { T } from '../styles/theme'
@@ -17,19 +18,26 @@ interface PositionPreviewProps {
   debtPriceUsd: number
   /** The collateral reserve's liquidation threshold as a FRACTION, e.g. 0.83 — not bps. */
   liquidationThreshold: number
-  /** `getUserAccountData` totals, 8dp USD — what this position is being added to. */
-  existingCollateralUsd: bigint
+  /**
+   * The account this position lands on top of: its collateral PER ASSET, and its debt as an
+   * 8dp USD total.
+   *
+   * These have to describe the same basis `preview.expectedHealthFactorBps` was computed on, and
+   * the caller owns keeping them that way — empty and 0n whenever the preview's numbers are the
+   * position's deltas alone. An account-wide liquidation price beside a position-only health
+   * factor is how this card came to tell a safe user they were already liquidatable.
+   *
+   * Per asset rather than one aggregate because a fall in the new leg's price moves any existing
+   * holding of that same asset with it — see the merge below.
+   */
+  existingCollateral: CollateralInput[]
   existingDebtUsd: bigint
-  /** The ACCOUNT's weighted liquidation threshold as a FRACTION — what the existing collateral
-   *  above is already weighted at. */
-  existingLiquidationThreshold: number
 }
 
-/**
- * Row symbol for the existing account, aggregated. Never displayed: it participates in the
- * liquidation maths (it covers debt) but has no price of its own to quote.
- */
-const EXISTING_ROW = '__existing__'
+/** bps -> a display double. Amounts stay bigint; only the rendered figure crosses over. */
+function fromBps(value: bigint): number {
+  return Number(value) / Number(BPS)
+}
 
 function fmt(amount: bigint, decimals: number, places: number): string {
   return Number(formatUnits(amount, decimals)).toLocaleString(undefined, {
@@ -47,52 +55,44 @@ function fmt(amount: bigint, decimals: number, places: number): string {
 export function PositionPreview({
   preview, collateralSymbol, debtSymbol,
   collateralDecimals, debtDecimals, collateralPriceUsd, debtPriceUsd, liquidationThreshold,
-  existingCollateralUsd, existingDebtUsd, existingLiquidationThreshold,
+  existingCollateral, existingDebtUsd,
 }: PositionPreviewProps) {
   if (!preview) return null
 
   const collateralAmount = Number(formatUnits(preview.expectedCollateral, collateralDecimals))
   const debtAmount = Number(formatUnits(preview.expectedDebt, debtDecimals))
-  const hf = Number(preview.expectedHealthFactorBps) / 10000
+  const hf = fromBps(preview.expectedHealthFactorBps)
   const hfLevel = evaluateHf(hf)
 
-  // Every number on this card has to sit on ONE basis. `expectedHealthFactorBps` is account-wide
-  // (it folds the existing position in), so the liquidation price must be too — solving it
-  // against the position's deltas alone told a comfortably safe user, on the ratchet path, that
-  // they were already liquidatable.
-  //
-  // Aave's USD totals are 8dp; `formatUnits` is display-only, and everything downstream here is
-  // already the Number-based liquidation model.
-  const existingCollUsd = Number(formatUnits(existingCollateralUsd, 8))
-  const existingDebtUsdNum = Number(formatUnits(existingDebtUsd, 8))
+  // Copied, not mutated in place: the array belongs to the caller and is re-read every render.
+  const collateralRows: CollateralInput[] = existingCollateral.map((row) => ({ ...row }))
 
-  // computeLiquidationView takes POSITIONAL args — a collateral array and the debt in USD.
-  // `liquidationThreshold` is load-bearing here: it is what turns collateral into the weighted
-  // value the liquidation price solves against, so it must be the reserve's real fraction.
-  const collateralRows: CollateralInput[] = [{
-    symbol: collateralSymbol,
-    amount: collateralAmount,
-    priceUsd: collateralPriceUsd,
-    liquidationThreshold,
-  }]
-  if (existingCollUsd > 0) {
-    // The existing account enters as one aggregate at its account-wide threshold. Priced at $1
-    // per unit, so `amount` is its USD value and its weighted contribution comes out exact — and
-    // so `isVolatilePrice` reads a portfolio (which has no single price to fall) as stable and
-    // keeps it out of the market-wide-drop figure.
+  // The new leg MERGES into the existing row for the same asset instead of sitting beside it.
+  // Both move together when that asset's price falls, so two rows would hold the existing units
+  // at today's price and quote a liquidation price far under the truth — and once those units
+  // alone cover the debt, quote none at all. Ratchet exists to lever an existing position,
+  // usually in that same asset, so this is the norm there rather than an edge case.
+  const sameAsset = collateralRows.find(
+    (row) => row.symbol.toUpperCase() === collateralSymbol.toUpperCase(),
+  )
+  if (sameAsset) {
+    // Same reserve, so the row's own price and threshold already describe the new units too.
+    sameAsset.amount += collateralAmount
+  } else {
     collateralRows.push({
-      symbol: EXISTING_ROW,
-      amount: existingCollUsd,
-      priceUsd: 1,
-      liquidationThreshold: existingLiquidationThreshold,
+      symbol: collateralSymbol,
+      amount: collateralAmount,
+      priceUsd: collateralPriceUsd,
+      liquidationThreshold,
     })
   }
 
-  const view = computeLiquidationView(
+  // Aave's USD totals are 8dp; `formatUnits` is display-only, and everything downstream here is
+  // already the Number-based liquidation model.
+  const liquidationView = computeLiquidationView(
     collateralRows,
-    debtAmount * debtPriceUsd + existingDebtUsdNum,
+    debtAmount * debtPriceUsd + Number(formatUnits(existingDebtUsd, 8)),
   )
-  const liquidationView = { ...view, rows: view.rows.filter((r) => r.symbol !== EXISTING_ROW) }
 
   const rows: Array<[string, string]> = [
     ['Collateral', `${fmt(preview.expectedCollateral, collateralDecimals, 4)} ${collateralSymbol}`],
@@ -100,7 +100,7 @@ export function PositionPreview({
     // Null on the ratchet path: equity added is ~zero, so a ratio would be noise.
     ['Leverage', preview.expectedLeverageBps === null
       ? '—'
-      : `${(Number(preview.expectedLeverageBps) / 10000).toFixed(2)}x`],
+      : `${fromBps(preview.expectedLeverageBps).toFixed(2)}x`],
     ['Route', preview.aggregator],
   ]
 
