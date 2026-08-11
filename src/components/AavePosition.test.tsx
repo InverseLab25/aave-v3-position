@@ -99,6 +99,7 @@ const EMPTY_PORTFOLIO = {
   collateralFlags: {},
   hasAnyCollateralEnabled: false,
   eModeExcludedReserves: {},
+  hasReadError: false,
   chainId: 1,
 }
 
@@ -201,4 +202,18 @@ it('hands the account totals to the actions panel on the populated dashboard too
   const input = mocks.useLeverageOpen.mock.calls.at(-1)?.[0]
   expect(input?.existingCollateralUsd).toBe(ODD_TOTALS.collateralBase)
   expect(input?.existingDebtUsd).toBe(ODD_TOTALS.debtBase)
+})
+
+it('shows a read failure as a failure, not as an empty portfolio', async () => {
+  // A failed read zeroes every total and empties both asset lists, which is indistinguishable
+  // from a fresh account. Falling through to "Start your Aave position" would invite someone
+  // with real debt to size a leveraged open against an account that only READS as empty —
+  // `collateralBase`/`debtBase` feed the supply ceiling.
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+  mocks.useAavePositions.mockReturnValue({ ...EMPTY_PORTFOLIO, hasReadError: true })
+
+  render(<AavePosition />)
+
+  expect(screen.getByText('Could not read your Aave position')).toBeTruthy()
+  expect(screen.queryByText('Start your Aave position')).toBeNull()
 })

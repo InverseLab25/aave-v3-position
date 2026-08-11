@@ -84,6 +84,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     collateralFlags,
     hasAnyCollateralEnabled,
     eModeExcludedReserves,
+    hasReadError,
     chainId
   } = useAavePositions({ viewAddress, viewChainId })
 
@@ -295,6 +296,25 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
 
   if (!isConnected) return null
   if (isLoading) return <div>Loading Aave Position...</div>
+  // Checked BEFORE the empty-position branch, because a failed read looks exactly like an
+  // empty account: zeroed totals and no assets. Falling through would invite someone with a
+  // real position to open a leveraged one sized against an account that reads as empty.
+  if (hasReadError) {
+    return (
+      <div className="dashboard-container">
+        {isViewMode && renderViewModeBanner()}
+        <div className="card" style={{ textAlign: 'center', padding: T.space[8] }}>
+          <h2 style={{ fontSize: T.fontSize.xl, margin: `0 0 ${T.space[2]}` }}>
+            Could not read your Aave position
+          </h2>
+          <p style={{ color: T.textMuted, margin: 0 }}>
+            The network request failed, so this is not a picture of your account. Reload before
+            acting on anything here.
+          </p>
+        </div>
+      </div>
+    )
+  }
   if (suppliedAssets.length === 0 && borrowedAssets.length === 0 && collateralUsd === 0) {
     // Read-only view of someone else's wallet: nothing to act on.
     if (isViewMode) {

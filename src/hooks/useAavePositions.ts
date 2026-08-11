@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useConnection, useReadContract, useReadContracts, useChainId } from 'wagmi'
-import { formatUnits } from 'viem'
+import { formatUnits, maxUint256 } from 'viem'
 import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { getChainConfig } from '../config/chains'
 
@@ -197,7 +197,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   )
 
   // 1. Fetch top-level account data for Health Factor and LTV
-  const { data: accountData, isLoading: isAccountLoading } = useReadContract({
+  const { data: accountData, isLoading: isAccountLoading, error: accountError } = useReadContract({
     chainId,
     address: chainConfig?.aave.poolAddress,
     abi: aavePoolAbi,
@@ -277,7 +277,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   const addressesProvider = chainConfig?.aave.poolAddressesProvider
 
   // 2. Fetch detailed asset breakdown
-  const { data: uiData, isLoading: isUiLoading } = useReadContracts({
+  const { data: uiData, isLoading: isUiLoading, error: uiError } = useReadContracts({
     contracts: [
       {
         chainId,
@@ -301,6 +301,21 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   // Existing consumers (e.g., AavePosition) use this to decide whether to render.
   const isConnected = isViewMode ? !!targetAddress : isWalletConnected
 
+  /**
+   * A read FAILED, as distinct from an account having nothing in it.
+   *
+   * `useReadContracts` reports a per-call failure by leaving `result` undefined, which the
+   * derivation below cannot tell apart from an empty position — so without this the whole hook
+   * returns zeroed totals and an empty asset list, and the UI shows "start your position" to
+   * someone who has one. That is not only cosmetic: `collateralBase`/`debtBase` feed
+   * `maxSupplyAmount`, so a user carrying real debt would be offered a supply ceiling computed
+   * for an empty account, and a health factor that ignores what they already owe. Aave rejects
+   * the borrow on-chain, so it fails closed — but only after they have paid for the attempt.
+   */
+  const hasReadError = Boolean(
+    accountError || uiError || uiData?.some((r) => r.status === 'failure'),
+  )
+
   const emptyResult = {
     isConnected,
     isViewMode,
@@ -309,6 +324,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     chainName: chainConfig?.name ?? 'Unknown',
     isUnsupportedChain: !hasAaveConfig,
     isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
+    hasReadError,
     collateralUsd: 0,
     debtUsd: 0,
     collateralBase: 0n,
@@ -360,8 +376,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   const ltvPercent = Number(ltv) / 100
   const liquidationThreshold = Number(currentLiquidationThreshold) / 10000
 
-  const MAX_UINT256 = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
-  const formattedHealthFactor = healthFactor === MAX_UINT256 ? '∞' : formatUnits(healthFactor, 18)
+  // Aave returns uint256 max when there is no debt to be liquidated against.
+  const formattedHealthFactor = healthFactor === maxUint256 ? '∞' : formatUnits(healthFactor, 18)
 
   const globalReserves = uiData[0].result[0]
   const userReserves = uiData[1].result[0]
@@ -422,7 +438,11 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
   userReserves.forEach((uRes) => {
     if (uRes.scaledATokenBalance === 0n && uRes.scaledVariableDebt === 0n) return;
 
-    const reserve = globalReserves.find((r) => r.underlyingAsset === uRes.underlyingAsset)
+    // Lowercased on both sides like every other address comparison here: a miss silently
+    // drops the asset from the position rather than erroring.
+    const reserve = globalReserves.find(
+      (r) => r.underlyingAsset.toLowerCase() === uRes.underlyingAsset.toLowerCase(),
+    )
     if (!reserve) return;
 
     const priceUsd = Number(reserve.priceInMarketReferenceCurrency) / 1e8
@@ -575,6 +595,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     chainName: chainConfig?.name ?? 'Unknown',
     isUnsupportedChain: false,
     isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
+    hasReadError,
     eModeCategoryId,
     isEModeEnabled: eModeCategoryId > 0,
     eModeLabel: eModeCategory?.label || (eModeCategoryId === 1 ? 'ETH Correlated' : eModeCategoryId === 2 ? 'Stablecoins' : eModeCategoryId > 0 ? `Category ${eModeCategoryId}` : 'Disabled'),
