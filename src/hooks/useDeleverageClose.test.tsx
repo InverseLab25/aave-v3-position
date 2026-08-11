@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { parseUnits } from 'viem'
+import { parseUnits, WaitForTransactionReceiptTimeoutError } from 'viem'
 
 /**
  * `buildPlan` is where every close is validated before a signature is ever requested, and it was
@@ -399,6 +399,64 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     expect(reverted.status).toBe('reverted')
 
     // Still reusable: a revert leaves the aToken nonce untouched.
+    signTypedData.mockClear()
+    waitForTransactionReceipt.mockResolvedValue({ status: 'success' })
+    const retry = await r.current.close(baseInput)
+
+    expect(signTypedData).not.toHaveBeenCalled()
+    expect(retry.status).toBe('success')
+  })
+
+  it('reports a receipt timeout as unresolved, not as a failure, and hands back the hash', async () => {
+    // An MEV-protected RPC only includes transactions that would SUCCEED, so a close that would
+    // revert is simply never mined and no receipt ever arrives. The hash is the one thing worth
+    // returning here — it is how the user checks whether it landed after all.
+    const r = mount()
+    await r.current.close(baseInput)
+    waitForTransactionReceipt.mockRejectedValue(
+      new WaitForTransactionReceiptTimeoutError({ hash: '0xhash' }),
+    )
+
+    let out!: Awaited<ReturnType<typeof r.current.close>>
+    await act(async () => {
+      out = await r.current.close(baseInput)
+    })
+
+    expect(out.status).toBe('error')
+    expect(out.hash).toBe('0xhash')
+    expect(r.current.logs.some((l) => /may still land/i.test(l))).toBe(true)
+  })
+
+  it('does not claim a five-minute wait when the receipt read failed for another reason', async () => {
+    // A bare catch reported an RPC blip three seconds in as "no receipt after 5 minutes", which
+    // sends the user off to watch an explorer for a transaction that was never the problem.
+    const r = mount()
+    await r.current.close(baseInput)
+    waitForTransactionReceipt.mockRejectedValue(new Error('HTTP request failed'))
+
+    let out!: Awaited<ReturnType<typeof r.current.close>>
+    await act(async () => {
+      out = await r.current.close(baseInput)
+    })
+
+    expect(out.status).toBe('error')
+    // Still the hash: it was submitted, whatever went wrong with reading the receipt.
+    expect(out.hash).toBe('0xhash')
+    expect(r.current.logs.some((l) => /minutes/i.test(l))).toBe(false)
+    expect(r.current.logs.some((l) => /HTTP request failed/.test(l))).toBe(true)
+  })
+
+  it('keeps the held signatures when no receipt arrives — that nonce may still be unspent', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    waitForTransactionReceipt.mockRejectedValue(
+      new WaitForTransactionReceiptTimeoutError({ hash: '0xhash' }),
+    )
+    await r.current.close(baseInput)
+
+    // Clearing them would force a fresh prompt for a nonce that may never have been consumed.
+    // Whether they are still WITHIN their reuse window is a separate question — see the note in
+    // ClosePositionModal's failure branch.
     signTypedData.mockClear()
     waitForTransactionReceipt.mockResolvedValue({ status: 'success' })
     const retry = await r.current.close(baseInput)

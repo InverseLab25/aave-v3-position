@@ -1,7 +1,10 @@
 import { useCallback, useRef, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
-import { erc20Abi, formatUnits, parseSignature, parseUnits, type Address } from 'viem'
+import {
+  erc20Abi, formatUnits, parseSignature, parseUnits,
+  WaitForTransactionReceiptTimeoutError, type Address,
+} from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
@@ -890,15 +893,28 @@ export function useDeleverageClose() {
         let receipt
         try {
           receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS })
-        } catch {
-          // Timed out, not failed: the transaction may still land later, or may never have been
-          // included at all. Reporting either as a revert would be a guess, so say exactly what
-          // is known and hand over the hash.
+        } catch (e) {
+          // Two different situations, and naming the wrong one sends the user to the wrong place.
           //
-          // Re-pressing is safe even if it eventually lands. Both attempts spend the same permit
-          // nonce, so whichever arrives second reverts inside the aToken's `permit` rather than
-          // closing the position twice.
-          log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
+          // Either way the transaction IS submitted, so the hash comes back rather than the null
+          // the generic failure path returns — it is the only way to find out what became of it.
+          //
+          // Re-pressing is safe even if it eventually lands. Both attempts spend the same aToken
+          // permit nonce, so whichever arrives second reverts inside `permit` rather than closing
+          // the position twice.
+          if (e instanceof WaitForTransactionReceiptTimeoutError) {
+            // Timed out, not failed: it may still land later, or may never have been included at
+            // all — an MEV-protected RPC includes only transactions that would succeed, so one
+            // that would revert simply never appears. Calling that a revert would be a guess.
+            log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
+          } else {
+            // The receipt READ failed — an RPC error, a dropped connection. That says nothing
+            // about the transaction, and quoting the timeout here would send the user off to
+            // watch an explorer over something that was never the problem.
+            const detail =
+              (e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? String(e)
+            log(`Could not read the receipt: ${detail}. The transaction was submitted — check the explorer before retrying.`)
+          }
           setStep('error')
           return { hash, status: 'error' }
         }

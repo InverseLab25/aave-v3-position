@@ -342,9 +342,17 @@ export function ClosePositionModal({
       setStep(2)
       resetForm()
     } else {
-      // Failed before landing. The hook has already dropped the stale quote; pull a fresh one
-      // now rather than leaving the user looking at numbers that have just been disproved.
-      // The held signature survives, so their next press still needs no wallet prompt.
+      // Did not land — either it failed outright, or no receipt arrived and it is unresolved.
+      // The hook has already dropped the stale quote; pull a fresh one now rather than leaving
+      // the user looking at numbers that have just been disproved. Its log line says which case
+      // this was, and whether there is a hash worth checking on an explorer.
+      //
+      // The held signature survives here, but that does NOT always mean the next press skips the
+      // wallet prompt. A permit is reusable only while more than MIN_SIGNATURE_REMAINING_S of its
+      // PERMIT_TTL_S is left — a window measured from SIGNING — so a failure that surfaces after
+      // the receipt timeout (five minutes from submission, hence strictly later) will always ask
+      // for a fresh signature. Re-signing is safe: the on-chain nonce has not advanced, so
+      // whichever transaction lands first consumes it and the other reverts inside `permit`.
       setStep(0)
       setSlippageTooTight(result.slippageTooTight === true)
       setRefreshTick((t) => t + 1)
