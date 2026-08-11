@@ -54,9 +54,9 @@ interface KyberRoutesResponse {
  * USD price of the connected chain's NATIVE currency — ETH on Ethereum and the L2s, but BNB on
  * BNB Chain, POL on Polygon, AVAX on Avalanche. Null when the chain cannot be priced.
  *
- * Named `useEthPrice` for its call sites' sake; it is really "native price". Callers multiply it
- * by a gas amount denominated in the native token, so quoting mainnet ETH everywhere — which this
- * used to do — priced a sub-cent Polygon transaction at ether rates.
+ * Callers multiply this by an amount denominated in the native token, so quoting mainnet ETH
+ * everywhere — which this used to do, back when it was called `useEthPrice` — priced a sub-cent
+ * Polygon transaction at ether rates.
  *
  * The price and the chain it was quoted on are stored TOGETHER, and the return is gated on them
  * agreeing. That is what makes a chain switch surface immediately: the moment `chainId` changes
@@ -66,7 +66,7 @@ interface KyberRoutesResponse {
  * `chainId` is a parameter rather than read from wagmi alone so view-mode, which resolves a
  * different chain than the connected one, prices the chain being VIEWED.
  */
-export function useEthPrice(chainId?: number) {
+export function useNativePrice(chainId?: number) {
   const connectedChainId = useChainId();
   const resolvedChainId = chainId ?? connectedChainId;
   const quote = NATIVE_QUOTES[resolvedChainId];

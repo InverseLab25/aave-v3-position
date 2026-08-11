@@ -35,7 +35,7 @@ const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 interface AavePositionProps {
   viewAddress?: `0x${string}`
   viewChainId?: number
-  apiEthPrice?: number | null
+  apiNativePrice?: number | null
 }
 
 function StatBox({ label, value, valueClass, title }: { label: string; value: React.ReactNode; valueClass?: string; title?: string }) {
@@ -59,7 +59,7 @@ function DetailRow({ label, value, icon }: { label: string; value: React.ReactNo
   )
 }
 
-export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePositionProps = {}) {
+export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AavePositionProps = {}) {
   const {
     isConnected,
     isViewMode,
@@ -154,7 +154,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
     const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
-    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(a.priceInUsd)
+    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
 
     // For lenders: netPrincipal = balance - interestEarned; supply P&L uses netPrincipal for price and interestTokens at current price.
     // For borrowers: same shape but sign flipped and interest treated as cost.
@@ -192,7 +192,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
     const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
-    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(a.priceInUsd)
+    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
     const valueUsd = a.amount * currentPrice
 
     return (
@@ -235,7 +235,7 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
     const isNativeToken = asset.symbol.toUpperCase() === nativeWrappedSymbol
-    const currentPrice = (isNativeToken && apiEthPrice) ? apiEthPrice : Number(asset.priceInUsd)
+    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(asset.priceInUsd)
 
     return {
       side,

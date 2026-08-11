@@ -10,23 +10,25 @@ const DexDiscovery = lazy(() =>
 )
 import { getChainConfig } from './config/chains'
 import { useViewMode } from './hooks/useViewMode'
-import { useEthPrice } from './hooks/useEthPrice'
+import { useNativePrice } from './hooks/useNativePrice'
 import { useAavePositions } from './hooks/useAavePositions'
 
 function App() {
   const { viewAddress, viewChainId } = useViewMode()
   const connectedChainId = useChainId()
   const chainId = viewChainId ?? connectedChainId
-  // Pinned to the chain being VIEWED, not the connected one, and re-quoted whenever that
-  // changes. Despite the name it is the native currency's price — BNB, POL or AVAX where those
-  // are native. Null on a chain with no quote route, and the wrapped-native fallback takes over.
-  const apiEthPrice = useEthPrice(chainId)
+  // Pinned to the chain being VIEWED, not the connected one, and re-quoted whenever that changes.
+  // Null on a chain with no quote route, and the wrapped-native fallback below takes over.
+  const apiNativePrice = useNativePrice(chainId)
   const chainConfig = getChainConfig(chainId)
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
 
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-  const wethAsset = suppliedAssets.find((a: SuppliedAsset) => a.symbol.toUpperCase() === nativeWrappedSymbol)
-  const ethPrice = apiEthPrice !== null ? apiEthPrice : (wethAsset ? Number(wethAsset.priceInUsd) : 0)
+  // The wrapped token is the native one prefixed with W on every chain here — WETH, WBNB, WPOL,
+  // WAVAX — so the label follows the chain instead of claiming ETH everywhere.
+  const nativeSymbol = nativeWrappedSymbol.replace(/^W/, '')
+  const wrappedNativeAsset = suppliedAssets.find((a: SuppliedAsset) => a.symbol.toUpperCase() === nativeWrappedSymbol)
+  const nativePrice = apiNativePrice !== null ? apiNativePrice : (wrappedNativeAsset ? Number(wrappedNativeAsset.priceInUsd) : 0)
 
   const isViewMode = !!viewAddress
   const [selectedTab, setSelectedTab] = useState<'aave' | 'dex'>('aave')
@@ -89,7 +91,7 @@ function App() {
             }}></div>
             {chainName}
           </div>
-          {ethPrice !== null && (
+          {nativePrice !== null && (
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -102,7 +104,8 @@ function App() {
               border: '1px solid #d1d5db',
               whiteSpace: 'nowrap'
             }}>
-              ETH: ${ethPrice.toFixed(2)}
+              {/* Two places reads $0.08 for POL, which is most of its value gone. */}
+              {nativeSymbol}: ${nativePrice < 1 ? nativePrice.toFixed(4) : nativePrice.toFixed(2)}
             </div>
           )}
         </div>
@@ -114,7 +117,7 @@ function App() {
       </header>
       <main>
         <div style={{ display: activeTab === 'aave' ? 'block' : 'none' }}>
-          <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} apiEthPrice={apiEthPrice} />
+          <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} apiNativePrice={apiNativePrice} />
         </div>
         {!isViewMode && activeTab === 'dex' && (
           <Suspense fallback={<div style={{ padding: '20px' }}>Loading DEX Discovery…</div>}>
