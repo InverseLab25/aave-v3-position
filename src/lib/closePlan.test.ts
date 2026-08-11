@@ -8,6 +8,7 @@ import {
   routeCostPercent,
   isSlippageShapedFailure,
   suggestWiderSlippage,
+  MAX_OUTPUT_DEGRADATION_PERCENT,
   type HeldSignature,
 } from './closePlan'
 
@@ -103,6 +104,8 @@ describe('canReuseSignature', () => {
     deadline: NOW + 300n,
     permit: { value: parseUnits('42', 18), deadline: NOW + 300n, v: 27, r: '0x', s: '0x' },
     revoke: { deadline: NOW + 300n, v: 27, r: '0x', s: '0x' },
+    // Not read by reuseBlocker — present so the fixture is a complete HeldSignature.
+    reviewedOut: 1_000n,
   }
 
   const need = {
@@ -179,6 +182,8 @@ describe('planWithdrawal + canReuseSignature', () => {
       deadline: 1000n,
       permit: { value: first.permitValue, deadline: 1000n, v: 27, r: '0x', s: '0x' },
       revoke: { deadline: 1000n, v: 27, r: '0x', s: '0x' },
+      // Not read by reuseBlocker — present so the fixture is a complete HeldSignature.
+      reviewedOut: 1_000n,
     }
 
     // Spans the gap between sizeSwap's two paths: the oracle seed lands tight, the
@@ -265,6 +270,8 @@ describe('reuseBlocker', () => {
     nonce: 7n, value: parseUnits('42', 18), deadline: NOW + 420n,
     permit: { value: parseUnits('42', 18), deadline: NOW + 420n, v: 27, r: '0x', s: '0x' },
     revoke: { deadline: NOW + 420n, v: 27, r: '0x', s: '0x' },
+    // Not read by reuseBlocker — present so the fixture is a complete HeldSignature.
+    reviewedOut: 1_000n,
   }
   const need = {
     chainId: 1, owner: A, aToken: A, spender: A,
@@ -295,5 +302,46 @@ describe('reuseBlocker', () => {
   it('a 300s usable window survives a 4-minute review', () => {
     // deadline = now + 420, margin = 120 -> reusable until now + 300.
     expect(reuseBlocker(held, { ...need, nowSeconds: NOW + 240n })).toBeNull()
+  })
+})
+
+describe('MAX_OUTPUT_DEGRADATION_PERCENT — the baseline is what the user reviewed', () => {
+  /**
+   * The guard bounds how far the EXECUTING route may fall below the one the user reviewed. The
+   * baseline therefore has to be the output quoted when the signature was taken and carried on
+   * the held signature — not the plan's own `expectedOut`, which `close()` re-quotes on every
+   * press. These pin the arithmetic; `useDeleverageClose` supplies the baseline.
+   */
+  const degradation = (built: bigint, baseline: bigint) =>
+    baseline > 0n ? (Number(built - baseline) / Number(baseline)) * 100 : 0
+
+  const blocks = (built: bigint, baseline: bigint) =>
+    degradation(built, baseline) < MAX_OUTPUT_DEGRADATION_PERCENT
+
+  it('lets a route through when it is within tolerance of the reviewed output', () => {
+    // 0.5% worse than reviewed, tolerance is 1%.
+    expect(blocks(995n, 1000n)).toBe(false)
+  })
+
+  it('blocks a route that fell further than the tolerance below the reviewed output', () => {
+    expect(blocks(950n, 1000n)).toBe(true)
+  })
+
+  it('lets an IMPROVED route through', () => {
+    expect(blocks(1050n, 1000n)).toBe(false)
+  })
+
+  it('catches drift the re-quote baseline would hide — the regression this guard exists for', () => {
+    // The user reviewed 1000. While they read it, the price moved and a fresh quote came back
+    // at 950; the build then landed at 949. Measured against the FRESH quote that is 0.1% and
+    // sails through, which is what made the guard toothless. Against the reviewed 1000 it is
+    // 5.1% and stops.
+    expect(blocks(949n, 950n)).toBe(false)
+    expect(blocks(949n, 1000n)).toBe(true)
+  })
+
+  it('does not divide by zero on a degenerate baseline', () => {
+    expect(degradation(1000n, 0n)).toBe(0)
+    expect(blocks(1000n, 0n)).toBe(false)
   })
 })

@@ -327,7 +327,9 @@ export function useDeleverageClose() {
       assertErc20Reserve(debtAddr, 'debt')
 
       const slippageBps = Math.round(slippagePercent * 100)
-      if (slippageBps < 0 || slippageBps >= 10000) {
+      // `Number.isFinite` first: NaN fails BOTH comparisons below, so without it a NaN slippage
+      // sails past this guard and dies in `BigInt()` with a RangeError instead of this message.
+      if (!Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps >= 10000) {
         throw new CloseError('pair', 'Slippage must be between 0% and 100%')
       }
       const slipNum = BigInt(10000 - slippageBps)
@@ -370,6 +372,15 @@ export function useDeleverageClose() {
       }
       if (debt === 0n) throw new CloseError('pair', 'No debt to close')
       if (collAmount === 0n) throw new CloseError('pair', 'No collateral to withdraw')
+      // An explicit amount above the balance is a typo, not a MAX — `'all'` is how you ask for
+      // everything. Left unchecked it sizes a swap larger than the withdrawal that funds it, and
+      // surfaces first as a negative "kept supplied" in the preview.
+      if (typeof collateralIn === 'bigint' && collateralIn > collAmount) {
+        throw new CloseError(
+          'pair',
+          `You have ${formatUnits(collAmount, collateral.decimals)} ${collateral.symbol} supplied`,
+        )
+      }
 
       // 3. Quote and size.
       logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
@@ -554,6 +565,9 @@ export function useDeleverageClose() {
           deadline,
           permit: { value: w.permitValue, deadline, v: vOf(grant), r: grant.r, s: grant.s },
           revoke: { deadline, v: vOf(revoke), r: revoke.r, s: revoke.s },
+          // The number the user is about to be shown and asked to confirm. buildFreshRoute
+          // measures the executing route against this, not against its own re-quote.
+          reviewedOut: p.expectedOut,
         }
         return null
       }
@@ -607,9 +621,16 @@ export function useDeleverageClose() {
         // position a route that degraded several percent still clears it, and the surplus —
         // which is the user's — silently shrinks. Compare against what they actually reviewed
         // and stop, rather than submit numbers they never saw.
+        //
+        // The baseline is the output quoted when the SIGNATURE was taken, carried on the held
+        // signature. Neither obvious alternative works: `p.expectedOut` is re-quoted by this
+        // press's own `buildPlan`, and the router's `outputChangePercent` measures its build
+        // against the re-quote it was handed seconds earlier. Both span milliseconds, so both
+        // are blind to exactly the window this guard exists to cover — the one where the user
+        // was reading the numbers.
+        const baseline = signatures.current?.reviewedOut ?? p.expectedOut
         const degradation =
-          tx.outputChangePercent ??
-          (Number(builtOut - p.expectedOut) / Number(p.expectedOut)) * 100
+          baseline > 0n ? (Number(builtOut - baseline) / Number(baseline)) * 100 : 0
         if (degradation < MAX_OUTPUT_DEGRADATION_PERCENT) {
           throw new CloseError(
             'pair',

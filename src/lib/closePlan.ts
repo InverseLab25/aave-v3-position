@@ -151,6 +151,16 @@ export interface HeldSignature {
   deadline: bigint
   permit: PermitArgs
   revoke: RevokeArgs
+  /**
+   * Expected swap output at the moment this signature was taken — the number the user is asked
+   * to review before pressing again.
+   *
+   * Lives here rather than on the plan because this object is the only thing that spans the two
+   * presses. The plan is rebuilt from scratch on the second press, so its own `expectedOut` is a
+   * quote from milliseconds ago and cannot measure drift across the review window, which is the
+   * whole job of {@link MAX_OUTPUT_DEGRADATION_PERCENT}.
+   */
+  reviewedOut: bigint
 }
 
 export interface SignatureNeed {
