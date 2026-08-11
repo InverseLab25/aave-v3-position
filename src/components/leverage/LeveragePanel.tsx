@@ -24,6 +24,7 @@ import { getStrategiesAddress } from '../../config/chains'
 import { isVolatilePrice, toCollateralInputs } from '../../utils/liquidation'
 import { ExplorerLink } from '../ExplorerLink'
 import { AmountField } from './AmountField'
+import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
 import { T } from '../../styles/theme'
@@ -147,10 +148,10 @@ export function LeveragePanel({
   // Defaults, not initial state: the reserve list arrives asynchronously, so seeding useState
   // from it would freeze whatever happened to be there on the first render. An override wins
   // once the user picks, and until then this tracks the list.
-  const defaultSubject = availableReserves.find((r) => isVolatilePrice(Number(r.priceInUsd)))
-    ?? availableReserves[0]
-  const defaultQuote = availableReserves.find((r) => !isVolatilePrice(Number(r.priceInUsd)))
-    ?? availableReserves.find((r) => r.underlyingAsset !== defaultSubject?.underlyingAsset)
+  const { subject: defaultSubject, quote: defaultQuote } = useMemo(
+    () => defaultPair(availableReserves),
+    [availableReserves],
+  )
 
   // Boost needs BOTH something to lever and room to lever it: the ratchet path repays its flash
   // from a fresh borrow, so it wants headroom under Aave's LTV, which is account-wide.
