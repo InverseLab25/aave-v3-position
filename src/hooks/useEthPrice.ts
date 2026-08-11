@@ -1,16 +1,49 @@
 import { useState, useEffect } from 'react';
 import { useChainId } from 'wagmi';
 import { fetchQuoteJson } from '../adapters/http';
-import { getChainConfig } from '../config/chains';
 
 const POLL_MS = 10_000;
 
-// Native ETH -> USDT on mainnet. USDT has 6 decimals.
-const PRICE_URL =
-  'https://aggregator-api.kyberswap.com/ethereum/api/v1/routes' +
-  '?tokenIn=0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE' +
-  '&tokenOut=0xdAC17F958D2ee523a2206206994597C13D831ec7' +
-  '&amountIn=1000000000000000000';
+/** The de-facto native-token sentinel every aggregator here accepts. */
+const NATIVE_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+
+/** One native token, priced in one unit. `amountIn` is always 1e18 — every native here is 18dp. */
+const ONE_NATIVE = '1000000000000000000';
+
+interface NativeQuote {
+  /** KyberSwap's own chain slug. Matches `getKyberChain` in adapters/kyberswap.ts. */
+  slug: string;
+  /** The stablecoin to price against, and ITS decimals — which are not always six. */
+  stable: string;
+  decimals: number;
+}
+
+/**
+ * How to price each chain's native currency.
+ *
+ * A per-chain stablecoin rather than one address reused everywhere, because the "same" stable has
+ * a different address on every chain and several chains carry both a native and a bridged version
+ * that can trade apart. Each entry below was confirmed against the live API to return a quote at a
+ * sane price — a wrong address does not error, it returns a plausible number for the wrong token.
+ *
+ * BSC's USDT is EIGHTEEN decimals. Reading it as six would report BNB at ~1e12 dollars.
+ *
+ * A chain absent here cannot be priced, and the hook returns null so the caller falls back to the
+ * Aave oracle. Testnets are deliberately absent: there is no real liquidity to quote.
+ */
+const NATIVE_QUOTES: Record<number, NativeQuote> = {
+  1: { slug: 'ethereum', stable: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
+  10: { slug: 'optimism', stable: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', decimals: 6 },
+  56: { slug: 'bsc', stable: '0x55d398326f99059fF775485246999027B3197955', decimals: 18 },
+  137: { slug: 'polygon', stable: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', decimals: 6 },
+  8453: { slug: 'base', stable: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
+  42161: { slug: 'arbitrum', stable: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', decimals: 6 },
+  43114: { slug: 'avalanche', stable: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', decimals: 6 },
+};
+
+const quoteUrl = (q: NativeQuote) =>
+  `https://aggregator-api.kyberswap.com/${q.slug}/api/v1/routes` +
+  `?tokenIn=${NATIVE_SENTINEL}&tokenOut=${q.stable}&amountIn=${ONE_NATIVE}`;
 
 interface KyberRoutesResponse {
   code: number;
@@ -18,33 +51,31 @@ interface KyberRoutesResponse {
 }
 
 /**
- * Spot price of the chain's native currency in USD, or null when it cannot be priced here.
+ * USD price of the connected chain's NATIVE currency — ETH on Ethereum and the L2s, but BNB on
+ * BNB Chain, POL on Polygon, AVAX on Avalanche. Null when the chain cannot be priced.
  *
- * The quote below is hardcoded to MAINNET ETH, so it is only the right answer on chains whose
- * native currency is ether. On BNB Chain, Polygon and Avalanche it is not — and since callers
- * multiply this by a gas amount denominated in the native token, returning it there prices a
- * sub-cent Polygon transaction at ETH rates. Null is the honest answer on those chains, and it
- * routes callers to their existing fallback: the chain's own wrapped-native reserve, priced by
- * Aave's oracle.
+ * Named `useEthPrice` for its call sites' sake; it is really "native price". Callers multiply it
+ * by a gas amount denominated in the native token, so quoting mainnet ETH everywhere — which this
+ * used to do — priced a sub-cent Polygon transaction at ether rates.
  *
- * `chainId` is a parameter rather than read from wagmi alone so view-mode (which resolves a
- * different chain than the connected one) prices the chain being VIEWED.
+ * The price and the chain it was quoted on are stored TOGETHER, and the return is gated on them
+ * agreeing. That is what makes a chain switch surface immediately: the moment `chainId` changes
+ * the previous chain's price stops being returned, rather than lingering until the next poll
+ * lands and briefly showing BNB's number labelled as ETH.
+ *
+ * `chainId` is a parameter rather than read from wagmi alone so view-mode, which resolves a
+ * different chain than the connected one, prices the chain being VIEWED.
  */
 export function useEthPrice(chainId?: number) {
   const connectedChainId = useChainId();
   const resolvedChainId = chainId ?? connectedChainId;
-  // Same convention the rest of the app uses for "the chain's wrapped native": the first
-  // default token. WETH means the native currency is ether.
-  const nativeIsEth =
-    getChainConfig(resolvedChainId)?.defaultTokens?.[0]?.symbol?.toUpperCase() === 'WETH';
+  const quote = NATIVE_QUOTES[resolvedChainId];
 
-  const [price, setPrice] = useState<number | null>(null);
+  // One piece of state, so the price can never be read against a chain it did not come from.
+  const [quoted, setQuoted] = useState<{ chainId: number; price: number } | null>(null);
 
   useEffect(() => {
-    // Don't poll at all for a chain this quote cannot price. The stale value is not cleared
-    // here — setting state from an effect is what `react-hooks/set-state-in-effect` forbids,
-    // and it is unnecessary: the return below gates the value rather than the store.
-    if (!nativeIsEth) return;
+    if (!quote) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,13 +89,16 @@ export function useEthPrice(chainId?: number) {
         // Through the shared gate rather than a bare fetch: this hits the SAME origin as the
         // swap-quote adapter, so an unmetered poll here spends part of KyberSwap's 3/s budget
         // without the limiter knowing, and can push a sizing burst over the limit into 429s.
-        const json = await fetchQuoteJson<KyberRoutesResponse>(PRICE_URL);
+        const json = await fetchQuoteJson<KyberRoutesResponse>(quoteUrl(quote));
         const amountOut = json.data?.routeSummary?.amountOut;
         if (!cancelled && json.code === 0 && amountOut) {
-          setPrice(Number(amountOut) / 1e6);
+          setQuoted({
+            chainId: resolvedChainId,
+            price: Number(amountOut) / 10 ** quote.decimals,
+          });
         }
       } catch (e) {
-        if (!cancelled) console.error('Failed to fetch ETH price from Kyberswap', e);
+        if (!cancelled) console.error('Failed to fetch native price from Kyberswap', e);
       } finally {
         inFlight = false;
         // Schedule the next poll only once this one has settled. `setInterval` fired on a
@@ -94,9 +128,10 @@ export function useEthPrice(chainId?: number) {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [nativeIsEth]);
+    // Re-quotes from scratch on a chain switch, which is the point.
+  }, [resolvedChainId, quote]);
 
-  // Derived, not stored: switching to a non-ETH chain must not leave the previous chain's
-  // price readable, and gating here does that without a state write.
-  return nativeIsEth ? price : null;
+  // Derived, not stored: a price from the previous chain must stop being returned the instant
+  // the chain changes, without a state write from render or an effect.
+  return quoted?.chainId === resolvedChainId ? quoted.price : null;
 }

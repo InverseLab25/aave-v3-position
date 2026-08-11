@@ -17,8 +17,9 @@ function App() {
   const { viewAddress, viewChainId } = useViewMode()
   const connectedChainId = useChainId()
   const chainId = viewChainId ?? connectedChainId
-  // Pinned to the chain being viewed: the poll is mainnet-ETH-only, so it returns null on a
-  // chain whose native currency is not ether and the wrapped-native fallback below takes over.
+  // Pinned to the chain being VIEWED, not the connected one, and re-quoted whenever that
+  // changes. Despite the name it is the native currency's price — BNB, POL or AVAX where those
+  // are native. Null on a chain with no quote route, and the wrapped-native fallback takes over.
   const apiEthPrice = useEthPrice(chainId)
   const chainConfig = getChainConfig(chainId)
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
