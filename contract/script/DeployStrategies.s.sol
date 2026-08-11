@@ -6,10 +6,7 @@ import {CREATE3} from "solady/utils/CREATE3.sol";
 import {AaveV3Strategies} from "../src/AaveV3Strategies.sol";
 
 interface ICreateX {
-    function deployCreate3(bytes32 salt, bytes memory initCode)
-        external
-        payable
-        returns (address newContract);
+    function deployCreate3(bytes32 salt, bytes memory initCode) external payable returns (address newContract);
 }
 
 /// @title AaveV3Strategies deterministic deployment via CreateX (CREATE3)
@@ -56,7 +53,7 @@ interface ICreateX {
 ///     --sig "buildSalt()"
 ///
 ///   # predict the address (offline — no RPC, valid for every chain)
-///   SALT=0x… OWNER=0x… forge script script/DeployStrategies.s.sol:DeployStrategies \
+///   DEPLOYER=0x… forge script script/DeployStrategies.s.sol:DeployStrategies \
 ///     --sig "predict()"
 ///
 ///   # deploy
@@ -64,7 +61,12 @@ interface ICreateX {
 ///     --rpc-url $RPC_URL --sender $DEPLOYER --broadcast --slow --verify
 ///
 /// Env vars:
-///   SALT  - required. Must encode the deployer in bytes 0..19 and 0x00 in byte 20.
+///   SALT  - OPTIONAL. Must encode the deployer in bytes 0..19 and 0x00 in byte 20. Unset, a
+///           deterministic default is derived from the deployer, which is what every existing
+///           deployment used — so leaving it unset keeps the address you already have. Set it
+///           only when you deliberately want a DIFFERENT address, e.g. a second instance.
+///   DEPLOYER - required by `predict()` and `buildSalt()` only. `run()` takes the deployer from
+///           the broadcasting sender instead.
 ///   OWNER - required. Contract owner. Unlike CREATE2 this does NOT affect the address, so it
 ///           may legitimately differ per chain — but you almost certainly want it identical.
 contract DeployStrategies is Script {
@@ -85,9 +87,16 @@ contract DeployStrategies is Script {
     address internal constant AAVE_POOL_BASE = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
     address internal constant AAVE_POOL_ARBITRUM = 0x794a61358D6845594F94dc1DB02A252b5b4814aD;
 
+    /// @dev A reserve known to be listed on each chain, used only to probe the Pool's version —
+    ///      see {_assertPoolSupportsReserveTokenGetters}. WETH is the safest choice: every Aave
+    ///      V3 market this script targets lists it, and none is likely to delist it.
+    address internal constant WETH_ETHEREUM = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address internal constant WETH_BASE = 0x4200000000000000000000000000000000000006;
+    address internal constant WETH_ARBITRUM = 0x82aF49447D8a07e3bd95BD0d56f35241523fBab1;
+
     function run() external returns (address strategies) {
-        (bytes32 salt, address owner) = _config();
         address deployer = msg.sender;
+        (bytes32 salt, address owner) = _config(deployer);
 
         _assertSaltIsCrossChainStable(salt, deployer);
         address predicted = _predict(salt, deployer);
@@ -99,8 +108,8 @@ contract DeployStrategies is Script {
 
         require(CREATEX.code.length != 0, "CreateX not deployed on this chain");
 
-        (address morpho, address pool) = _chainConfig();
-        _assertDependenciesLive(morpho, pool);
+        (address morpho, address pool, address probeAsset) = _chainConfig();
+        _assertDependenciesLive(morpho, pool, probeAsset);
         console2.log("Morpho:   ", morpho);
         console2.log("AavePool: ", pool);
 
@@ -112,9 +121,7 @@ contract DeployStrategies is Script {
         // The init code deliberately differs per chain — the constructor arguments carry the
         // chain's addresses. Under CREATE2 that would move the address; under CREATE3 it does
         // not, which is the entire reason this script uses CreateX.
-        bytes memory initCode = abi.encodePacked(
-            type(AaveV3Strategies).creationCode, abi.encode(owner, morpho, pool)
-        );
+        bytes memory initCode = abi.encodePacked(type(AaveV3Strategies).creationCode, abi.encode(owner, morpho, pool));
 
         vm.startBroadcast();
         strategies = ICreateX(CREATEX).deployCreate3(salt, initCode);
@@ -134,8 +141,12 @@ contract DeployStrategies is Script {
     ///      (0x67363d3d37363d34f03d5260086018f3), so the two derive the same address.
     ///      Verified against the vendored library rather than assumed.
     function predict() external view returns (address predicted) {
-        (bytes32 salt,) = _config();
+        // DEPLOYER first, and the salt derived from IT rather than from `msg.sender`. Deriving
+        // from msg.sender made this revert on its own cross-chain-stability assert for anyone
+        // whose forge sender did not already equal DEPLOYER — i.e. anyone following the usage
+        // above, which passes no --sender. A pre-flight that cannot be run is not a pre-flight.
         address deployer = vm.envAddress("DEPLOYER");
+        (bytes32 salt,) = _config(deployer);
 
         _assertSaltIsCrossChainStable(salt, deployer);
         predicted = _predict(salt, deployer);
@@ -161,10 +172,28 @@ contract DeployStrategies is Script {
         console2.logBytes32(salt);
     }
 
-    function _config() internal view returns (bytes32 salt, address owner) {
-        salt = vm.envBytes32("SALT");
+    /// @dev SALT is honoured when set, and falls back to {_defaultSalt} when it is not.
+    ///
+    ///      It used to be ignored outright: the salt was derived in place and the documented
+    ///      `SALT` env var read by nothing, which made `buildSalt` decorative and left no way to
+    ///      supply a salt at all.
+    function _config(address deployer) internal view returns (bytes32 salt, address owner) {
+        salt = vm.envOr("SALT", _defaultSalt(deployer));
         owner = vm.envOr("OWNER", address(0));
         require(owner != address(0) || msg.sig == this.predict.selector, "OWNER required");
+    }
+
+    /// @dev The salt used when SALT is unset: deployer in bytes 0..19, 0x00 in byte 20, fixed
+    ///      entropy in bytes 21..31 — satisfying {_assertSaltIsCrossChainStable} by construction.
+    ///
+    ///      The entropy is `uint88`, i.e. ELEVEN bytes, matching `buildSalt`. It was `uint96`
+    ///      here, which is twelve and therefore spills into byte 20 — and the low twelve bytes
+    ///      of keccak256("solady") start with 0xf5, so the default salt tripped the very assert
+    ///      this script exists to enforce. Combined with `SALT` being unread, that left `run()`
+    ///      reverting on every invocation with no way to pass a working salt. Nothing was ever
+    ///      deployed at the old address, so correcting the width moves nothing.
+    function _defaultSalt(address deployer) internal pure returns (bytes32) {
+        return bytes32(uint256(uint160(deployer)) << 96) | bytes32(uint256(uint88(uint256(keccak256("solady")))));
     }
 
     /// @dev Reproduces CreateX's `_guard` for the (sender-matches, no-redeploy-protection)
@@ -199,21 +228,50 @@ contract DeployStrategies is Script {
     ///      unlisted chain fails loudly instead of guessing.
     ///
     ///      Adding a chain means adding its pair here, and nothing else.
-    function _chainConfig() internal view returns (address morpho, address pool) {
-        if (block.chainid == 1) return (MORPHO_ETHEREUM, AAVE_POOL_ETHEREUM);
-        if (block.chainid == 8453) return (MORPHO_BASE, AAVE_POOL_BASE);
-        if (block.chainid == 42161) return (MORPHO_ARBITRUM, AAVE_POOL_ARBITRUM);
-        revert(
-            "unsupported chain - add its Morpho Blue and Aave V3 Pool to _chainConfig before deploying"
-        );
+    function _chainConfig() internal view returns (address morpho, address pool, address probeAsset) {
+        if (block.chainid == 1) return (MORPHO_ETHEREUM, AAVE_POOL_ETHEREUM, WETH_ETHEREUM);
+        if (block.chainid == 8453) return (MORPHO_BASE, AAVE_POOL_BASE, WETH_BASE);
+        if (block.chainid == 42161) return (MORPHO_ARBITRUM, AAVE_POOL_ARBITRUM, WETH_ARBITRUM);
+        revert("unsupported chain - add its Morpho Blue and Aave V3 Pool to _chainConfig before deploying");
     }
 
     /// @dev Both addresses must actually hold code on this chain. Catches a stale registry
     ///      entry, a fork pointed at the wrong network, or a chain where Aave has since
     ///      migrated — a simulation failure here costs nothing, the same mistake in production
     ///      costs a user's gas and lands broken code at a known address.
-    function _assertDependenciesLive(address morpho, address pool) internal view {
+    function _assertDependenciesLive(address morpho, address pool, address probeAsset) internal view {
         require(morpho.code.length != 0, "Morpho Blue has no code at the configured address on this chain");
         require(pool.code.length != 0, "Aave V3 Pool has no code at the configured address on this chain");
+        _assertPoolSupportsReserveTokenGetters(pool, probeAsset);
+    }
+
+    /// @dev The Pool must be Aave v3.3 or later.
+    ///
+    ///      `AaveV3Strategies._reserveToken` resolves aTokens and variable-debt tokens through
+    ///      `getReserveAToken(address)` and `getReserveVariableDebtToken(address)`, which do not
+    ///      exist before v3.3 — older Pools expose the addresses only inside `getReserveData`.
+    ///      A `code.length != 0` check passes on such a Pool, so the contract would deploy
+    ///      cleanly and then revert on every close and every fresh-delegation open.
+    ///
+    ///      That is worth failing a simulation over specifically because of CREATE3: the address
+    ///      derives from (deployer, salt) alone, so a bricked deployment permanently occupies
+    ///      the shared address on that chain. Recovering means a new salt, which moves the
+    ///      address on EVERY chain and invalidates the front end's per-chain wiring.
+    function _assertPoolSupportsReserveTokenGetters(address pool, address probeAsset) internal view {
+        (bool okAToken, bytes memory aTokenRet) =
+            pool.staticcall(abi.encodeWithSignature("getReserveAToken(address)", probeAsset));
+        require(
+            okAToken && aTokenRet.length >= 32,
+            "Aave Pool predates v3.3: getReserveAToken(address) missing - every close would revert"
+        );
+        require(abi.decode(aTokenRet, (address)) != address(0), "Aave Pool returned no aToken for the probe asset");
+
+        (bool okDebt, bytes memory debtRet) =
+            pool.staticcall(abi.encodeWithSignature("getReserveVariableDebtToken(address)", probeAsset));
+        require(
+            okDebt && debtRet.length >= 32,
+            "Aave Pool predates v3.3: getReserveVariableDebtToken(address) missing - every open would revert"
+        );
+        require(abi.decode(debtRet, (address)) != address(0), "Aave Pool returned no debt token for the probe asset");
     }
 }
