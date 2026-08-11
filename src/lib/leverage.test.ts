@@ -10,6 +10,7 @@ import {
   resolveOpenMode,
   resolveRoles,
   validateSizing,
+  collateralEnablement,
 } from './leverage'
 
 /** The worked example this module was designed against: ETH at $2,000, WETH LTV 80%. */
@@ -394,5 +395,108 @@ describe('validateSizing — ordered, first failure wins', () => {
 
   it('accepts a supply exactly at the ceiling', () => {
     expect(validateSizing({ ...base, supplyAmount: weth('200') })).toBeNull()
+  })
+})
+
+describe('collateralEnablement — supplying is not the same as collateralising', () => {
+  /** An ordinary collateral-eligible reserve the user has never touched. */
+  const base = {
+    scaledATokenBalance: 0n,
+    enabledOnUser: false,
+    usageAsCollateralEnabled: true,
+    ltvBps: 8000n,
+    debtCeiling: 0n,
+    eModeExcluded: false,
+    hasOtherCollateral: false,
+  }
+
+  it('counts a first supply into an ordinary reserve', () => {
+    expect(collateralEnablement(base)).toEqual({
+      willCount: true, reason: null, silentlyMisSecures: false,
+    })
+  })
+
+  it('counts a reserve the user already has switched on, whatever its config says', () => {
+    // Already enabled beats every other consideration: the supply lands somewhere that counts.
+    expect(
+      collateralEnablement({
+        ...base, enabledOnUser: true, scaledATokenBalance: 5n, debtCeiling: 1_000_000n,
+      }).willCount,
+    ).toBe(true)
+  })
+
+  it('refuses an isolation-mode reserve, because this contract cannot auto-enable one', () => {
+    // validateAutomaticUseAsCollateral rejects any debt-ceiling reserve unless the supplier holds
+    // ISOLATED_COLLATERAL_SUPPLIER_ROLE, which AaveV3Strategies does not.
+    expect(collateralEnablement({ ...base, debtCeiling: 1_000_000n })).toEqual({
+      willCount: false, reason: 'ISOLATION_MODE', silentlyMisSecures: false,
+    })
+  })
+
+  it('refuses a reserve the user holds with the collateral flag off — Aave never retries the enable', () => {
+    expect(collateralEnablement({ ...base, scaledATokenBalance: 1n })).toEqual({
+      willCount: false, reason: 'NOT_ENABLED', silentlyMisSecures: false,
+    })
+  })
+
+  it('refuses a zero-LTV reserve', () => {
+    expect(collateralEnablement({ ...base, ltvBps: 0n }).reason).toBe('ZERO_LTV')
+  })
+
+  it('refuses a reserve that is not collateral-eligible at all', () => {
+    expect(collateralEnablement({ ...base, usageAsCollateralEnabled: false }).reason)
+      .toBe('RESERVE_DISABLED')
+  })
+
+  it('lets eMode exclusion override an explicitly enabled reserve', () => {
+    // calculateUserAccountData zeroes ltv/lt for an out-of-category reserve and then skips it,
+    // so the collateral flag can be set while the contribution is still nothing.
+    expect(collateralEnablement({ ...base, enabledOnUser: true, eModeExcluded: true })).toEqual({
+      willCount: false, reason: 'EMODE_EXCLUDED', silentlyMisSecures: false,
+    })
+  })
+
+  it('marks the silent case only when other collateral would back the borrow', () => {
+    // With no other collateral Aave reverts COLLATERAL_BALANCE_IS_ZERO and nothing is mis-secured;
+    // with some, the borrow succeeds against it and the user is never told.
+    expect(collateralEnablement({ ...base, debtCeiling: 1n }).silentlyMisSecures).toBe(false)
+    expect(
+      collateralEnablement({ ...base, debtCeiling: 1n, hasOtherCollateral: true }).silentlyMisSecures,
+    ).toBe(true)
+  })
+})
+
+describe('validateSizing — collateral enablement', () => {
+  const sized = {
+    marginAsset: 'collateral' as const,
+    marginAmount: weth('10'),
+    supplyAmount: weth('20'),
+    marginBalance: weth('10'),
+    maxSupply: weth('200'),
+  }
+
+  it('reports COLLATERAL_NOT_ENABLED once the amounts themselves are valid', () => {
+    expect(
+      validateSizing({
+        ...sized,
+        collateral: { willCount: false, reason: 'ISOLATION_MODE', silentlyMisSecures: true },
+      }),
+    ).toBe('COLLATERAL_NOT_ENABLED')
+  })
+
+  it('reports the amount problem first — that is the one the user can fix by retyping', () => {
+    expect(
+      validateSizing({
+        ...sized,
+        supplyAmount: weth('500'),
+        collateral: { willCount: false, reason: 'ISOLATION_MODE', silentlyMisSecures: true },
+      }),
+    ).toBe('SUPPLY_ABOVE_MAX')
+  })
+
+  it('does not block when enablement is unresolved', () => {
+    // A read that has not landed must degrade to today's behaviour, never gate the form.
+    expect(validateSizing({ ...sized, collateral: null })).toBeNull()
+    expect(validateSizing(sized)).toBeNull()
   })
 })

@@ -26,6 +26,7 @@ import {
   projectOpen,
   resolveOpenMode,
   validateSizing,
+  type CollateralEnablement,
   type Direction,
   type LeverageError,
   type MarginLocation,
@@ -86,6 +87,12 @@ export interface LeverageOpenInput {
   /** That account's collateral-weighted LTV and threshold, bps, eMode included. */
   existingLtvBps: bigint
   existingLiquidationThresholdBps: bigint
+  /**
+   * Whether Aave will actually count the incoming supply toward borrow power — see
+   * `collateralEnablement`. Null when the caller has not resolved the reserve config, which
+   * skips the check rather than blocking every open on a missing read.
+   */
+  collateralEnablement?: CollateralEnablement | null
 }
 
 export interface OpenPreview {
@@ -141,6 +148,11 @@ function inputKey(i: LeverageOpenInput): string {
     i.slippageBps, i.marginBalance,
     i.existingCollateralUsd, i.existingDebtUsd, i.existingLtvBps, i.existingLiquidationThresholdBps,
     reserveKey(i.reserves.collateral), reserveKey(i.reserves.debt),
+    // Folded in because it changes both the sizing verdict and the projection's LTV inputs, so a
+    // preview computed before the reserve config resolved must not survive it arriving.
+    i.collateralEnablement === null || i.collateralEnablement === undefined
+      ? '-'
+      : `${i.collateralEnablement.willCount}:${i.collateralEnablement.reason ?? ''}`,
   ].join('|')
 }
 
@@ -220,6 +232,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           supplyAmount: typedAmount,
           marginBalance: input.marginBalance,
           maxSupply: input.maxSupply,
+          collateral: input.collateralEnablement,
         })
         if (sizingError) {
           setPreviewError(sizingError)

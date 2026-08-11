@@ -5,6 +5,7 @@ import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../../hooks
 import { useLeverageOpen } from '../../hooks/useLeverageOpen'
 import {
   deriveOpen,
+  collateralEnablement,
   leverageErrorMessage,
   maxBorrowAmount,
   maxSupplyAmount,
@@ -31,6 +32,12 @@ interface LeveragePanelProps {
   suppliedAssets: SuppliedAsset[]
   borrowedAssets: BorrowedAsset[]
   availableReserves: AvailableReserve[]
+  /** Per-reserve collateral state for this account, keyed by lowercased underlying address. */
+  collateralFlags: Record<string, { scaledATokenBalance: bigint; enabledOnUser: boolean }>
+  /** Whether ANY reserve is switched on as collateral — see `collateralEnablement`. */
+  hasAnyCollateralEnabled: boolean
+  /** Reserves the user's eMode category excludes from collateral, lowercased. Empty when off. */
+  eModeExcludedReserves: Record<string, boolean>
   viewAddress?: `0x${string}`
   /** `getUserAccountData` totals, 8dp USD — the account the new position lands on top of. */
   existingCollateralUsd: bigint
@@ -69,7 +76,8 @@ function display(amount: bigint, decimals: number, places: number): string {
  * `lib/leverage.ts` for the model.
  */
 export function LeveragePanel({
-  suppliedAssets, borrowedAssets, availableReserves, viewAddress,
+  suppliedAssets, borrowedAssets, availableReserves, collateralFlags, hasAnyCollateralEnabled,
+  eModeExcludedReserves, viewAddress,
   existingCollateralUsd, existingDebtUsd, existingLtvBps, existingLiquidationThresholdBps,
 }: LeveragePanelProps) {
   const chainId = useChainId()
@@ -277,6 +285,28 @@ export function LeveragePanel({
       })
     : null
 
+  /**
+   * Whether Aave will actually count this supply toward the user's borrow power.
+   *
+   * Supplying and collateralising are not the same thing — see `collateralEnablement`. Null
+   * until the reserve resolves, which `validateSizing` reads as "unknown, don't block": a
+   * missing read must never gate the form.
+   */
+  const enablement = collateralReserve
+    ? collateralEnablement({
+        scaledATokenBalance:
+          collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.scaledATokenBalance ?? 0n,
+        enabledOnUser:
+          collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.enabledOnUser ?? false,
+        usageAsCollateralEnabled: collateralReserve.raw.usageAsCollateralEnabled,
+        ltvBps: collateralReserve.raw.ltvBps,
+        debtCeiling: collateralReserve.raw.debtCeiling,
+        eModeExcluded:
+          eModeExcludedReserves[collateralReserve.underlyingAsset.toLowerCase()] ?? false,
+        hasOtherCollateral: hasAnyCollateralEnabled,
+      })
+    : null
+
   // What the position becomes, at oracle prices, before any router is asked. Costs no network
   // call, so every "after" figure is readable from the first keystroke instead of appearing only
   // once a quote settles. `expectedSwapOut` is the flash itself: at oracle prices the swap repays
@@ -291,8 +321,12 @@ export function LeveragePanel({
         debtPriceUsd: debtReserve.raw.priceUsd,
         collateralDecimals: collateralReserve.raw.decimals,
         debtDecimals: debtReserve.raw.decimals,
-        ltvBps: collateralReserve.raw.ltvBps,
-        liquidationThresholdBps: collateralReserve.raw.liquidationThresholdBps,
+        // Zeroed when Aave will not count this reserve: `calculateUserAccountData` skips such a
+        // supply entirely, so blending its own LTV in would show a health factor and liquidation
+        // price the account is not actually going to have.
+        ltvBps: enablement && !enablement.willCount ? 0n : collateralReserve.raw.ltvBps,
+        liquidationThresholdBps:
+          enablement && !enablement.willCount ? 0n : collateralReserve.raw.liquidationThresholdBps,
         existingCollateralUsd,
         existingDebtUsd,
         existingLtvBps,
@@ -304,6 +338,7 @@ export function LeveragePanel({
   // gates `input` to null so a form that cannot possibly open never spends a quote.
   const sizingError = validateSizing({
     marginAsset, marginAmount, supplyAmount: typedAmount, marginBalance, maxSupply,
+    collateral: enablement,
   })
 
   /**
@@ -333,6 +368,7 @@ export function LeveragePanel({
       existingDebtUsd,
       existingLtvBps,
       existingLiquidationThresholdBps,
+      collateralEnablement: enablement,
       reserves: {
         collateral: {
           address: collateralReserve.underlyingAsset, symbol: collateralReserve.symbol,
@@ -366,6 +402,7 @@ export function LeveragePanel({
         dangerMaxSupply: danger || dangerMax <= safeMax
           ? null
           : display(dangerMax, collateralReserve.raw.decimals, 4),
+        collateral: enablement,
       })
     : null
 

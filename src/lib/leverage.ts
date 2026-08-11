@@ -379,6 +379,7 @@ export type LeverageError =
   | "SUPPLY_BELOW_MARGIN"
   | "SUPPLY_ABOVE_MAX"
   | "BOOST_NO_HEADROOM"
+  | "COLLATERAL_NOT_ENABLED"
   | "ZERO_BORROW"
   | "LTV_EXCEEDED"
   | "NO_ROUTE"
@@ -387,10 +388,104 @@ export type LeverageError =
   | "PAUSED"
   | "NO_CLIENT";
 
+/**
+ * Why Aave would not count a supply into this reserve toward the user's borrow power.
+ *
+ * Supplying is not the same as collateralising. `SupplyLogic.executeSupply` only attempts to
+ * switch a reserve on as collateral for a FIRST supply that passes
+ * `validateAutomaticUseAsCollateral`, and that check refuses any reserve carrying a debt ceiling
+ * unless the supplier holds `ISOLATED_COLLATERAL_SUPPLIER_ROLE` — which AaveV3Strategies does not
+ * hold and cannot grant itself.
+ *
+ * When the supply lands as non-collateral, `AaveV3Strategies.sol:487` still borrows successfully —
+ * Aave validates the new debt against whatever OTHER collateral the account already has. The
+ * position opens, nothing reverts, and the debt is secured by assets the user never chose to
+ * pledge. There is no on-chain signal, which is why this has to be caught before quoting.
+ */
+export type CollateralNotCountedReason =
+  | "EMODE_EXCLUDED"
+  | "NOT_ENABLED"
+  | "RESERVE_DISABLED"
+  | "ZERO_LTV"
+  | "ISOLATION_MODE";
+
+export interface CollateralEnablementInput {
+  /** The user's current aToken balance. Non-zero means this is not a first supply, so Aave
+   *  never runs the auto-enable path at all. */
+  scaledATokenBalance: bigint;
+  /** Whether the user already has this reserve switched on as collateral. */
+  enabledOnUser: boolean;
+  /** Reserve-level collateral flag, from `getReservesData`. */
+  usageAsCollateralEnabled: boolean;
+  /** Reserve LTV in bps. Zero marks a borrow-only or deprecated reserve. */
+  ltvBps: bigint;
+  /** Non-zero puts the reserve in isolation mode. */
+  debtCeiling: bigint;
+  /**
+   * True when the user sits in an eMode category that does not list this reserve as collateral.
+   *
+   * Checked separately because it OVERRIDES the collateral flag rather than replacing it:
+   * `calculateUserAccountData` assigns such a reserve `ltv = liquidationThreshold = 0` and then
+   * skips it (`if (liquidationThreshold != 0 && isUsingAsCollateral(i))`), so the flag can be set
+   * and the contribution still zero.
+   */
+  eModeExcluded: boolean;
+  /**
+   * Whether the account has any OTHER collateral enabled.
+   *
+   * This decides the FAILURE MODE, not whether it fails. With none, Aave reverts
+   * `COLLATERAL_BALANCE_IS_ZERO` and the user simply cannot open — annoying, harmless. With some,
+   * the borrow succeeds against it and the mis-securing is silent, which is the case worth
+   * shouting about.
+   */
+  hasOtherCollateral: boolean;
+}
+
+export interface CollateralEnablement {
+  willCount: boolean;
+  reason: CollateralNotCountedReason | null;
+  /** The dangerous case: the open would succeed and pledge unrelated collateral. */
+  silentlyMisSecures: boolean;
+}
+
+/** See {@link CollateralNotCountedReason}. Mirrors Aave's `validateAutomaticUseAsCollateral`. */
+export function collateralEnablement(p: CollateralEnablementInput): CollateralEnablement {
+  const no = (reason: CollateralNotCountedReason): CollateralEnablement => ({
+    willCount: false,
+    reason,
+    silentlyMisSecures: p.hasOtherCollateral,
+  });
+
+  // First, because it beats every other answer: an out-of-category reserve contributes nothing
+  // even when the user has explicitly switched it on.
+  if (p.eModeExcluded) return no("EMODE_EXCLUDED");
+
+  // Already on — the supply lands on a reserve that already counts, whatever its config says.
+  if (p.enabledOnUser) return { willCount: true, reason: null, silentlyMisSecures: false };
+
+  // Off, so the supply has to switch it on. Aave only tries that on a first supply.
+  if (p.scaledATokenBalance !== 0n) return no("NOT_ENABLED");
+
+  // `validateAutomaticUseAsCollateral` → `validateUseAsCollateral`.
+  if (!p.usageAsCollateralEnabled) return no("RESERVE_DISABLED");
+  if (p.ltvBps === 0n) return no("ZERO_LTV");
+  // Refused for ANY debt-ceiling reserve here, not just when the user holds other collateral:
+  // the supplier is this contract, which does not hold ISOLATED_COLLATERAL_SUPPLIER_ROLE.
+  if (p.debtCeiling !== 0n) return no("ISOLATION_MODE");
+
+  return { willCount: true, reason: null, silentlyMisSecures: false };
+}
+
 export interface ValidateSizingInput extends DeriveOpenInput {
   marginBalance: bigint;
   /** From {@link maxSupplyAmount}, at whichever ceiling is currently in force. */
   maxSupply: bigint;
+  /**
+   * From {@link collateralEnablement}. Null skips the check — for callers that have not resolved
+   * the reserve config yet, so a missing read degrades to today's behaviour rather than blocking
+   * every open.
+   */
+  collateral?: CollateralEnablement | null;
 }
 
 /**
@@ -413,6 +508,9 @@ export function validateSizing(p: ValidateSizingInput): LeverageError | null {
   // (AaveV3Strategies.sol:274, :331).
   if (deriveOpen(p).flashAmount <= 0n) return "SUPPLY_BELOW_MARGIN";
   if (p.supplyAmount > p.maxSupply) return "SUPPLY_ABOVE_MAX";
+  // Last, because it is the only one the user cannot fix by retyping a number — showing it while
+  // the amounts are still incomplete would be noise.
+  if (p.collateral && !p.collateral.willCount) return "COLLATERAL_NOT_ENABLED";
   return null;
 }
 
@@ -424,6 +522,33 @@ export interface LeverageErrorContext {
   maxSupply: string;
   /** The ceiling the danger toggle would unlock, or null when it is already unlocked. */
   dangerMaxSupply: string | null;
+  /** From {@link collateralEnablement}, so `COLLATERAL_NOT_ENABLED` can say WHICH way it failed. */
+  collateral?: CollateralEnablement | null;
+}
+
+/**
+ * Why this reserve will not back the borrow, in the user's terms.
+ *
+ * Split out because the five reasons need genuinely different advice — two are fixable by the
+ * user in one transaction, two are not fixable at all, and one is only fixable by unwinding the
+ * rest of their account.
+ */
+function collateralNotCountedMessage(ctx: LeverageErrorContext): string {
+  const symbol = ctx.collateralSymbol;
+  switch (ctx.collateral?.reason) {
+    case "EMODE_EXCLUDED":
+      return `Your E-Mode category doesn't include ${symbol}, so supplying it adds no borrowing power — switch E-Mode off, or pick a collateral inside your category`;
+    case "NOT_ENABLED":
+      return `You already hold ${symbol} with "use as collateral" switched off — turn it on in Aave first, or this supply won't back the borrow`;
+    case "RESERVE_DISABLED":
+      return `Aave doesn't accept ${symbol} as collateral`;
+    case "ZERO_LTV":
+      return `${symbol} has no borrowing power on Aave — it can be supplied but not borrowed against`;
+    case "ISOLATION_MODE":
+      return `${symbol} is an isolated asset, and Aave won't enable it as collateral when it's supplied on your behalf`;
+    default:
+      return `Aave won't count ${symbol} as collateral for your account`;
+  }
 }
 
 /** User-facing copy. The enum members are internal names meant for logs, never for a UI. */
@@ -443,6 +568,14 @@ export function leverageErrorMessage(error: LeverageError, ctx: LeverageErrorCon
         : `Max supply is ${ctx.maxSupply} ${ctx.collateralSymbol}`;
     case "BOOST_NO_HEADROOM":
       return "No borrow power left to boost with — repay some debt or supply more collateral";
+    case "COLLATERAL_NOT_ENABLED": {
+      const why = collateralNotCountedMessage(ctx);
+      // Spelling out the consequence only where it exists. With no other collateral Aave simply
+      // rejects the borrow, so warning about pledged assets would be a lie.
+      return ctx.collateral?.silentlyMisSecures
+        ? `${why}. Your existing collateral would be backing this debt instead.`
+        : why;
+    }
     case "ZERO_BORROW":
       return "This position is too small to route";
     case "LTV_EXCEEDED":

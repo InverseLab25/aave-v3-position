@@ -81,6 +81,9 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
     suppliedAssets,
     borrowedAssets,
     availableReserves,
+    collateralFlags,
+    hasAnyCollateralEnabled,
+    eModeExcludedReserves,
     chainId
   } = useAavePositions({ viewAddress, viewChainId })
 
@@ -331,6 +334,9 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
           suppliedAssets={suppliedAssets}
           borrowedAssets={borrowedAssets}
           availableReserves={availableReserves}
+          collateralFlags={collateralFlags}
+          hasAnyCollateralEnabled={hasAnyCollateralEnabled}
+          eModeExcludedReserves={eModeExcludedReserves}
           viewAddress={viewAddress}
           existingCollateralUsd={collateralBase}
           existingDebtUsd={debtBase}
@@ -444,6 +450,9 @@ export function AavePosition({ viewAddress, viewChainId, apiEthPrice }: AavePosi
         suppliedAssets={suppliedAssets}
         borrowedAssets={borrowedAssets}
         availableReserves={availableReserves}
+        collateralFlags={collateralFlags}
+        hasAnyCollateralEnabled={hasAnyCollateralEnabled}
+        eModeExcludedReserves={eModeExcludedReserves}
         viewAddress={viewAddress}
         existingCollateralUsd={collateralBase}
         existingDebtUsd={debtBase}

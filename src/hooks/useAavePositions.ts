@@ -27,6 +27,24 @@ const aavePoolAbi = [
     type: 'function',
   },
   {
+    // The INDEX into this list is the reserve id the eMode bitmap below is keyed by.
+    inputs: [],
+    name: 'getReservesList',
+    outputs: [{ internalType: 'address[]', name: '', type: 'address[]' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
+    // Aave v3.2+ replaced the per-reserve eMode category id with per-category bitmaps. Verified
+    // against the mainnet Pool: category 1 returns 0b…1011, whose bits 0 and 1 are WETH and
+    // wstETH (in) and bit 2 is WBTC (out).
+    inputs: [{ internalType: 'uint8', name: 'id', type: 'uint8' }],
+    name: 'getEModeCategoryCollateralBitmap',
+    outputs: [{ internalType: 'uint128', name: '', type: 'uint128' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  {
     inputs: [{ internalType: 'uint8', name: 'id', type: 'uint8' }],
     name: 'getEModeCategoryData',
     outputs: [
@@ -124,6 +142,13 @@ export interface AvailableReserve {
     /** USD price on Aave's 8-decimal market-reference scale. */
     priceUsd: bigint
     decimals: number
+    /** Reserve-level collateral flag. False means Aave accepts no collateral here at all. */
+    usageAsCollateralEnabled: boolean
+    /**
+     * Non-zero puts the reserve in isolation mode, which is what stops a supply made ON BEHALF
+     * of a user from being auto-enabled as collateral — see `collateralEnablement`.
+     */
+    debtCeiling: bigint
   }
 }
 
@@ -149,6 +174,12 @@ export interface UseAavePositionsOptions {
 const EMPTY_SUPPLIED: SuppliedAsset[] = []
 const EMPTY_BORROWED: BorrowedAsset[] = []
 const EMPTY_RESERVES: AvailableReserve[] = []
+const EMPTY_EMODE_EXCLUDED: Record<string, boolean> = {}
+/** Shared so the empty result keeps a stable identity across renders, like its siblings above. */
+const EMPTY_COLLATERAL_FLAGS: Record<
+  string,
+  { scaledATokenBalance: bigint; enabledOnUser: boolean }
+> = {}
 
 export function useAavePositions(options?: UseAavePositionsOptions) {
   const { address: connectedAddress, isConnected: isWalletConnected } = useConnection()
@@ -197,6 +228,48 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     args: eModeCategoryId > 0 ? [eModeCategoryId] : undefined,
     query: { enabled: eModeCategoryId > 0 && hasAaveConfig }
   })
+
+  // 1d. The reserve list, whose INDEX is the reserve id the eMode bitmap below is keyed by.
+  // Verified against mainnet: getReservesList()[0] is WETH and bit 0 of category 1's collateral
+  // bitmap is set, [2] is WBTC and bit 2 is clear.
+  const { data: reservesList } = useReadContract({
+    chainId,
+    address: chainConfig?.aave.poolAddress,
+    abi: aavePoolAbi,
+    functionName: 'getReservesList',
+    query: { enabled: hasAaveConfig }
+  })
+
+  // 1e. Which reserves the user's eMode category will actually count as collateral.
+  //
+  // Needed because eMode does not merely re-rate a reserve, it can zero it: an out-of-category
+  // collateral is assigned ltv = liquidationThreshold = 0 and then SKIPPED entirely by
+  // `calculateUserAccountData`. Supplying it therefore adds no borrowing power even though the
+  // user's collateral flag for it is set — which is invisible without this read.
+  const { data: eModeCollateralBitmap } = useReadContract({
+    chainId,
+    address: chainConfig?.aave.poolAddress,
+    abi: aavePoolAbi,
+    functionName: 'getEModeCategoryCollateralBitmap',
+    args: eModeCategoryId > 0 ? [eModeCategoryId] : undefined,
+    query: { enabled: eModeCategoryId > 0 && hasAaveConfig }
+  })
+
+  /**
+   * Reserves the user's eMode category excludes from collateral, lowercased.
+   *
+   * Empty when eMode is off, and empty while either read is in flight — an unresolved read must
+   * read as "not excluded" so a slow RPC cannot block the form. `collateralEnablement` treats
+   * this as one input among several, so a false negative here degrades to today's behaviour.
+   */
+  const eModeExcludedReserves: Record<string, boolean> = {}
+  if (eModeCategoryId > 0 && reservesList && eModeCollateralBitmap !== undefined) {
+    reservesList.forEach((asset, i) => {
+      if (((eModeCollateralBitmap >> BigInt(i)) & 1n) === 0n) {
+        eModeExcludedReserves[asset.toLowerCase()] = true
+      }
+    })
+  }
 
   // Narrowed once so the typed ABI's `args` tuples accept it: both reads below require a
   // defined provider address, which `hasAaveConfig` already guarantees at runtime but
@@ -255,9 +328,12 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     eModeLabel: 'Disabled',
     eModeLtv: 0,
     eModeLiquidationThreshold: 0,
+    eModeExcludedReserves: EMPTY_EMODE_EXCLUDED,
     suppliedAssets: EMPTY_SUPPLIED,
     borrowedAssets: EMPTY_BORROWED,
-    availableReserves: EMPTY_RESERVES
+    availableReserves: EMPTY_RESERVES,
+    collateralFlags: EMPTY_COLLATERAL_FLAGS,
+    hasAnyCollateralEnabled: false
   }
 
   // ~200 lines of reserve parsing, interest and P&L maths. It is a pure function of the
@@ -315,8 +391,32 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
       liquidationThresholdBps: BigInt(reserve.reserveLiquidationThreshold),
       priceUsd: BigInt(reserve.priceInMarketReferenceCurrency),
       decimals: Number(reserve.decimals),
+      usageAsCollateralEnabled: Boolean(reserve.usageAsCollateralEnabled),
+      debtCeiling: BigInt(reserve.debtCeiling ?? 0n),
     },
   }))
+
+  /**
+   * Per-reserve collateral state for the connected account, keyed by lowercased address.
+   *
+   * Kept separate from `availableReserves` because it is USER state, not market state: two
+   * accounts see the same reserve differently, and `collateralEnablement` needs both halves.
+   * `getUserReservesData` returns an entry per listed reserve, including untouched ones, so a
+   * missing key means the reserve is not listed rather than that the user holds none.
+   */
+  const collateralFlags: Record<string, { scaledATokenBalance: bigint; enabledOnUser: boolean }> = {}
+  for (const uRes of userReserves) {
+    collateralFlags[uRes.underlyingAsset.toLowerCase()] = {
+      scaledATokenBalance: BigInt(uRes.scaledATokenBalance),
+      enabledOnUser: Boolean(uRes.usageAsCollateralEnabledOnUser),
+    }
+  }
+
+  /** Whether ANY reserve is switched on as collateral — decides whether a bad open reverts
+   *  (nothing enabled, Aave rejects the borrow) or silently pledges the rest of the account. */
+  const hasAnyCollateralEnabled = Object.values(collateralFlags).some(
+    (f) => f.enabledOnUser && f.scaledATokenBalance > 0n,
+  )
 
 
   userReserves.forEach((uRes) => {
@@ -459,7 +559,9 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalPositionPnlUsd,
     suppliedAssets,
     borrowedAssets,
-    availableReserves
+    availableReserves,
+    collateralFlags,
+    hasAnyCollateralEnabled
   }
   }, [targetAddress, hasAaveConfig, accountData, uiData, netPrincipals, costBasis])
 
@@ -478,6 +580,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     eModeLabel: eModeCategory?.label || (eModeCategoryId === 1 ? 'ETH Correlated' : eModeCategoryId === 2 ? 'Stablecoins' : eModeCategoryId > 0 ? `Category ${eModeCategoryId}` : 'Disabled'),
     eModeLtv: eModeCategory?.ltv ? Number(eModeCategory.ltv) / 100 : 0,
     eModeLiquidationThreshold: eModeCategory?.liquidationThreshold ? Number(eModeCategory.liquidationThreshold) / 10000 : 0,
+    eModeExcludedReserves,
     ...derived
   }
 }

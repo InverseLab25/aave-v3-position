@@ -46,7 +46,10 @@ const WETH: AvailableReserve = {
   variableDebtTokenAddress: '0x2222222222222222222222222222222222222222',
   aTokenAddress: '0x3333333333333333333333333333333333333333',
   liquidationThreshold: 0.83,
-  raw: { ltvBps: 8000n, liquidationThresholdBps: 8300n, priceUsd: 300_000_000_000n, decimals: 18 },
+  raw: {
+    ltvBps: 8000n, liquidationThresholdBps: 8300n, priceUsd: 300_000_000_000n, decimals: 18,
+    usageAsCollateralEnabled: true, debtCeiling: 0n,
+  },
 }
 
 const USDC: AvailableReserve = {
@@ -59,7 +62,10 @@ const USDC: AvailableReserve = {
   variableDebtTokenAddress: '0x5555555555555555555555555555555555555555',
   aTokenAddress: '0x6666666666666666666666666666666666666666',
   liquidationThreshold: 0.85,
-  raw: { ltvBps: 7500n, liquidationThresholdBps: 8500n, priceUsd: 100_000_000n, decimals: 6 },
+  raw: {
+    ltvBps: 7500n, liquidationThresholdBps: 8500n, priceUsd: 100_000_000n, decimals: 6,
+    usageAsCollateralEnabled: true, debtCeiling: 0n,
+  },
 }
 
 /** A connected wallet with nothing supplied or borrowed yet — the "Start your Aave
@@ -88,6 +94,11 @@ const EMPTY_PORTFOLIO = {
   suppliedAssets: [],
   borrowedAssets: [],
   availableReserves: [WETH, USDC],
+  // Same reason as the bigints above — LeveragePanel indexes this map directly, so omitting it
+  // throws rather than degrading. Empty is the honest empty-portfolio value.
+  collateralFlags: {},
+  hasAnyCollateralEnabled: false,
+  eModeExcludedReserves: {},
   chainId: 1,
 }
 

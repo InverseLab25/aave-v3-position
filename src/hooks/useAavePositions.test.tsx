@@ -43,6 +43,10 @@ const reserve = {
   reserveLiquidationThreshold: 8250n,
   liquidityIndex: RAY,
   variableBorrowIndex: RAY,
+  // Read by `collateralEnablement` via `raw`: an ordinary collateral-eligible reserve with no
+  // debt ceiling, i.e. not in isolation mode.
+  usageAsCollateralEnabled: true,
+  debtCeiling: 0n,
 }
 
 const userReserve = {
@@ -185,9 +189,66 @@ describe('useAavePositions raw reserve config', () => {
       liquidationThresholdBps: 8300n,
       priceUsd: 250_000_000_000n,
       decimals: 18,
+      usageAsCollateralEnabled: true,
+      debtCeiling: 0n,
     })
     // the lossy display fields are unchanged
     expect(weth?.liquidationThreshold).toBe(0.83)
     expect(weth?.priceInUsd).toBe('2500')
+  })
+})
+
+describe('eMode collateral exclusion', () => {
+  const WBTC = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599' as const
+
+  /**
+   * Drives the five Pool reads separately. The default mock answers every `useReadContract` with
+   * the same account-data tuple, which is fine while nothing reads eMode — but the bitmap decode
+   * is exactly the thing that needs each read answered on its own.
+   */
+  const drivePool = (eModeId: bigint, list: readonly string[], bitmap: bigint) =>
+    mocks.useReadContract.mockImplementation((cfg?: { functionName?: string }) => {
+      switch (cfg?.functionName) {
+        case 'getUserEMode': return { data: eModeId, isLoading: false }
+        case 'getReservesList': return { data: list, isLoading: false }
+        case 'getEModeCategoryCollateralBitmap': return { data: bitmap, isLoading: false }
+        default: return { data: accountData, isLoading: false }
+      }
+    })
+
+  it('excludes reserves whose bit is clear in the category bitmap', () => {
+    // Mirrors mainnet category 1: index 0 (WETH) in, index 1 (WBTC here) out.
+    drivePool(1n, [WETH, WBTC], 0b01n)
+
+    const { result } = renderHook(() => useAavePositions())
+
+    expect(result.current.eModeExcludedReserves[WBTC.toLowerCase()]).toBe(true)
+    expect(result.current.eModeExcludedReserves[WETH.toLowerCase()]).toBeUndefined()
+  })
+
+  it('excludes nothing when eMode is off, whatever the bitmap says', () => {
+    // A stale bitmap must not leak into a non-eMode account — category 0 means no restriction.
+    drivePool(0n, [WETH, WBTC], 0b00n)
+
+    const { result } = renderHook(() => useAavePositions())
+
+    expect(result.current.eModeExcludedReserves).toEqual({})
+  })
+
+  it('excludes nothing while the reads are still in flight', () => {
+    // An unresolved read must read as "not excluded": a slow RPC cannot be allowed to block the
+    // open form, and `collateralEnablement` still has four other inputs.
+    mocks.useReadContract.mockImplementation((cfg?: { functionName?: string }) =>
+      cfg?.functionName === 'getUserEMode'
+        ? { data: 1n, isLoading: false }
+        : cfg?.functionName === 'getReservesList' ||
+          cfg?.functionName === 'getEModeCategoryCollateralBitmap'
+        ? { data: undefined, isLoading: true }
+        : { data: accountData, isLoading: false },
+    )
+
+    const { result } = renderHook(() => useAavePositions())
+
+    expect(result.current.eModeExcludedReserves).toEqual({})
   })
 })
