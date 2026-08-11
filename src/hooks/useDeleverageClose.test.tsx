@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { renderHook, act } from '@testing-library/react'
 import { parseUnits } from 'viem'
 
 /**
@@ -52,6 +52,13 @@ vi.mock('../lib/aaveStatics', () => ({
 vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
 vi.mock('../adapters/http', () => ({ clearQuoteCache: vi.fn(), fetchQuoteJson: vi.fn() }))
 vi.mock('../lib/sizing', () => ({ sizeSwap: mocks.sizeSwap, oracleSeed: mocks.oracleSeed }))
+// Partial, deliberately: only `selectRoute` reaches the network (it builds router calldata).
+// planWithdrawal, reuseBlocker, computeMinOut and assertExecutable stay real, because those
+// ARE the decisions under test — mocking them would hollow the suite out.
+vi.mock('../lib/closePlan', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  selectRoute: vi.fn(),
+}))
 
 import { useDeleverageClose } from './useDeleverageClose'
 
@@ -264,5 +271,212 @@ describe('buildPlan — validation before any signature is requested', () => {
   it('passes the slippage complement through as slipNum', async () => {
     await previewWith({ slippagePercent: 1 })
     expect(mocks.sizeSwap).toHaveBeenCalledWith(expect.objectContaining({ slipNum: 9900n }))
+  })
+})
+
+/*//////////////////////////////////////////////////////////////
+                      EXECUTION: close()
+//////////////////////////////////////////////////////////////*/
+
+/**
+ * A syntactically valid 65-byte signature. `parseSignature` is real here — the permits are the
+ * subject of these tests, so faking the parse would hollow them out.
+ */
+const SIG = `0x${'11'.repeat(32)}${'22'.repeat(32)}1b` as const
+
+/** Ranked-quote shape `rankRoutes` will keep: the aggregator must be in COMPATIBLE_ADAPTERS. */
+const quote = (amountOut: bigint) => ({
+  aggregator: 'KyberSwap',
+  amountIn: parseUnits('7', 18).toString(),
+  amountOut: amountOut.toString(),
+  netReturnUsd: 21000,
+  rawAmountInUsd: '21000',
+  rawAmountOutUsd: '20990',
+})
+
+const route = (builtOut: bigint) => ({
+  router: ROUTER,
+  swapData: '0xdeadbeef',
+  chosen: quote(builtOut),
+  tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: builtOut.toString() },
+  rejected: [],
+})
+
+describe('close() — signatures, reuse and the degradation baseline', () => {
+  let signTypedData: ReturnType<typeof vi.fn>
+  let writeContract: ReturnType<typeof vi.fn>
+  let waitForTransactionReceipt: ReturnType<typeof vi.fn>
+  let selectRoute: ReturnType<typeof vi.fn>
+  let simulateContract: ReturnType<typeof vi.fn>
+  /** Mutable: the hook captures publicClient at render, so a test that needs the nonce to
+   *  move mid-flight has to change it through this rather than by re-mocking the hook. */
+  let nonce = 7n
+
+  beforeEach(async () => {
+    signTypedData = vi.fn().mockResolvedValue(SIG)
+    writeContract = vi.fn().mockResolvedValue('0xhash')
+    waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success' })
+
+    mocks.useWalletClient.mockReturnValue({ data: { signTypedData, writeContract } })
+    nonce = 7n
+    mocks.usePublicClient.mockReturnValue({
+      readContract: vi.fn(async ({ address, functionName }: { address: string; functionName: string }) => {
+        if (functionName === 'nonces') return nonce
+        if (functionName === 'paused') return 0n
+        if (functionName === 'getAllowedRouters') return [ROUTER]
+        if (functionName === 'balanceOf') return address === ATOKEN ? COLL_AMOUNT : DEBT
+        throw new Error(`unmocked read: ${functionName}`)
+      }),
+      waitForTransactionReceipt,
+      estimateContractGas: vi.fn().mockResolvedValue(900_000n),
+    })
+    // The single adapter behind the real `quoteAt`, so buildFreshRoute re-quotes for real.
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+    ])
+
+    selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    selectRoute.mockResolvedValue(route(SIZED.expectedOut))
+
+    const actions = await import('wagmi/actions')
+    vi.mocked(actions.estimateFeesPerGas).mockResolvedValue({
+      maxFeePerGas: 30_000_000_000n,
+      maxPriorityFeePerGas: 1_000_000_000n,
+      gasPrice: 30_000_000_000n,
+    } as never)
+    simulateContract = vi.mocked(actions.simulateContract)
+    simulateContract.mockResolvedValue({ request: { to: DELEVERAGER } } as never)
+  })
+
+  const mount = () => renderHook(() => useDeleverageClose()).result
+
+  it('first press banks the signatures and submits nothing', async () => {
+    // The whole point of stopping here: the user gets the numbers back to review, and the
+    // second press executes with no wallet dialog in between. That gap used to be where the
+    // router's output floor went stale.
+    const r = mount()
+    const out = await r.current.close(baseInput)
+
+    expect(out.status).toBe('signed')
+    expect(out.hash).toBeNull()
+    // Grant + revoke, at sequential nonces.
+    expect(signTypedData).toHaveBeenCalledTimes(2)
+    expect(writeContract).not.toHaveBeenCalled()
+    expect(out.signatureExpiresAt).toBeGreaterThan(0)
+  })
+
+  it('second press reuses the held signatures and submits without a new prompt', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    signTypedData.mockClear()
+
+    const out = await r.current.close(baseInput)
+
+    expect(signTypedData).not.toHaveBeenCalled()
+    expect(writeContract).toHaveBeenCalledTimes(1)
+    expect(out.status).toBe('success')
+    expect(out.hash).toBe('0xhash')
+  })
+
+  it('clears the held signatures once the close lands — the nonce is spent', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    await r.current.close(baseInput)
+    signTypedData.mockClear()
+
+    // A third close has nothing to reuse, so it must ask again.
+    const out = await r.current.close(baseInput)
+    expect(signTypedData).toHaveBeenCalledTimes(2)
+    expect(out.status).toBe('signed')
+  })
+
+  it('keeps the held signatures when the transaction reverts — that nonce was not spent', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    waitForTransactionReceipt.mockResolvedValue({ status: 'reverted' })
+
+    const reverted = await r.current.close(baseInput)
+    expect(reverted.status).toBe('reverted')
+
+    // Still reusable: a revert leaves the aToken nonce untouched.
+    signTypedData.mockClear()
+    waitForTransactionReceipt.mockResolvedValue({ status: 'success' })
+    const retry = await r.current.close(baseInput)
+
+    expect(signTypedData).not.toHaveBeenCalled()
+    expect(retry.status).toBe('success')
+  })
+
+  it('re-signs when the on-chain nonce has moved under the held signature', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    signTypedData.mockClear()
+
+    // Someone consumed the nonce — a front-run, or the user's own earlier attempt landing.
+    nonce = 8n
+
+    const out = await r.current.close(baseInput)
+
+    expect(signTypedData).toHaveBeenCalledTimes(2)
+    expect(out.status).toBe('signed')
+    expect(writeContract).not.toHaveBeenCalled()
+  })
+
+  it('clearSignatures drops them, so the next press prompts again', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    r.current.clearSignatures()
+    signTypedData.mockClear()
+
+    const out = await r.current.close(baseInput)
+    expect(signTypedData).toHaveBeenCalledTimes(2)
+    expect(out.status).toBe('signed')
+  })
+
+  it('measures degradation against the REVIEWED output, not this press re-quote', async () => {
+    // The regression F-1 fixed. Press 1 reviews 21,000. While the user reads it the price
+    // moves: press 2 re-quotes at 20,520 and the build lands at 20,500.
+    //
+    //   vs the re-quote (20,520): -0.10%  → inside the 1% tolerance, would submit
+    //   vs the reviewed (21,000): -2.38%  → outside it, must not
+    //
+    // The build still clears the debt-plus-buffer floor (20,500 x 0.995 = 20,397 >= 20,100), so
+    // nothing else catches it — which is exactly why this guard exists.
+    const r = mount()
+    await r.current.close(baseInput)
+
+    const REQUOTED = parseUnits('20520', 6)
+    const BUILT = parseUnits('20500', 6)
+    mocks.sizeSwap.mockResolvedValue({ ...SIZED, expectedOut: REQUOTED, best: quote(REQUOTED) })
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
+    ])
+    selectRoute.mockResolvedValue(route(BUILT))
+
+    let out
+    await act(async () => {
+      out = await r.current.close(baseInput)
+    })
+
+    expect(out!.status).toBe('error')
+    expect(writeContract).not.toHaveBeenCalled()
+    expect(r.current.logs.join(' ')).toContain('worse than the quote you reviewed')
+  })
+
+  it('submits when the built route is within tolerance of the reviewed output', async () => {
+    // Same shape, 0.5% worse instead of 2.38% — inside the tolerance, so it goes.
+    const r = mount()
+    await r.current.close(baseInput)
+
+    const BUILT = parseUnits('20900', 6) // 21000 -> 20900 is -0.48%
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
+    ])
+    selectRoute.mockResolvedValue(route(BUILT))
+
+    const out = await r.current.close(baseInput)
+
+    expect(out.status).toBe('success')
+    expect(writeContract).toHaveBeenCalledTimes(1)
   })
 })
