@@ -1,7 +1,7 @@
 import { useState, useEffect, type CSSProperties } from 'react'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
-import { getChainConfig, getDeleveragerAddress } from '../config/chains'
+import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { aavePoolAbi } from '../config/aavev3Abi'
 import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
@@ -172,13 +172,13 @@ export function ClosePositionModal({
 
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
-  const deleveragerAvailable = getDeleveragerAddress(chainId) !== null
+  const closeAvailable = getStrategiesAddress(chainId) !== null
 
   // Fetch the sized-swap preview (real router numbers) whenever the inputs change.
   // The reset is done inside the async body so we never call setState synchronously
   // in the effect (avoids cascading renders).
   useEffect(() => {
-    const shouldQuote = !isSameAsset && deleveragerAvailable && !!selectedCollateral
+    const shouldQuote = !isSameAsset && closeAvailable && !!selectedCollateral
 
     let isMounted = true
     // Superseded quotes are aborted, not merely ignored. A route at size takes several seconds
@@ -215,7 +215,7 @@ export function ClosePositionModal({
       clearTimeout(timeout)
       controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, isSameAsset, deleveragerAvailable, quotePreview, refreshTick])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, isSameAsset, closeAvailable, quotePreview, refreshTick])
 
   // Ticks only while an approval is held. Everything it writes happens inside the interval
   // callback, so the countdown never sets state as a render side effect.
@@ -240,9 +240,9 @@ export function ClosePositionModal({
   // Resolve Aave's immutable wiring as soon as the modal opens, so the first preview is one
   // batch rather than a three-deep waterfall. Runs ahead of the preview's 300ms debounce.
   useEffect(() => {
-    if (isSameAsset || !deleveragerAvailable || !selectedCollateral) return
+    if (isSameAsset || !closeAvailable || !selectedCollateral) return
     void warmup({ collateral: selectedCollateral, debtAsset: borrowedAsset })
-  }, [selectedCollateral, borrowedAsset, isSameAsset, deleveragerAvailable, warmup])
+  }, [selectedCollateral, borrowedAsset, isSameAsset, closeAvailable, warmup])
 
   // Only estimate once there's something to act on: an entered amount for the
   // same-asset repay, or an available one-click close for the cross-asset path.
@@ -263,7 +263,7 @@ export function ClosePositionModal({
   const { maxFee: uiMaxFee, maxPriority: uiMaxPriority, estimatedFeeUsd } = useAdjustedGas(
     isSameAsset ? SAME_ASSET_REPAY_GAS_LIMIT : CLOSE_OVERHEAD_GAS + swapGas,
     ethPriceUsd,
-    isSameAsset ? parseFloat(amountStr) > 0 : deleveragerAvailable,
+    isSameAsset ? parseFloat(amountStr) > 0 : closeAvailable,
     isSameAsset ? 1n : CLOSE_PRIORITY_MULTIPLIER,
   )
 
@@ -322,7 +322,7 @@ export function ClosePositionModal({
     }
 
     // Cross-asset: one-transaction close via the deleverager contract.
-    if (!deleveragerAvailable) return
+    if (!closeAvailable) return
     const result = await closePosition({
       collateral: selectedCollateral,
       debtAsset: borrowedAsset,
@@ -370,19 +370,19 @@ export function ClosePositionModal({
   // Paused while a close is running: a re-quote landing mid-flow would move the figures under
   // the user and spend rate-limit budget the execution path needs.
   useEffect(() => {
-    if (isSameAsset || !deleveragerAvailable || !selectedCollateral) return
+    if (isSameAsset || !closeAvailable || !selectedCollateral) return
     if (isProcessing || isQuoting) return
     const id = setTimeout(() => {
       clearQuoteCache()
       setRefreshTick((t) => t + 1)
     }, QUOTE_REFRESH_MS)
     return () => clearTimeout(id)
-  }, [isSameAsset, deleveragerAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
+  }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
   const canExecute = isSameAsset
     ? !!amountStr && parseFloat(amountStr) > 0
     // `guaranteed` gates execution too: close() refuses a route whose guaranteed
     // output falls below the debt, so the button must not invite the click.
-    : deleveragerAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
+    : closeAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
 
   return (
     <div className="modal-overlay">
@@ -547,14 +547,14 @@ export function ClosePositionModal({
             </>
           )}
 
-          <div className={isSameAsset || deleveragerAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: 'var(--space-5)' }}>
+          <div className={isSameAsset || closeAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: 'var(--space-5)' }}>
             <h4 style={{ margin: '0 0 8px 0', fontSize: 'var(--text-sm)', color: 'inherit' }}>Execution Path</h4>
             {isSameAsset ? (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                 <span>✅</span>
                 <span style={{ fontSize: 'var(--text-sm)' }}>Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)</span>
               </div>
-            ) : deleveragerAvailable ? (
+            ) : closeAvailable ? (
               <div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                   {isQuoting ? <span>⏳</span> : <span>✅</span>}
@@ -641,7 +641,7 @@ export function ClosePositionModal({
             </div>
           )}
 
-          {!isSameAsset && deleveragerAvailable && !isComplete && (
+          {!isSameAsset && closeAvailable && !isComplete && (
             <div style={{ marginBottom: 'var(--space-5)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <h4 style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Estimated Output</h4>

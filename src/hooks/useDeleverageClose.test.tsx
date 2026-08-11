@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   useWalletClient: vi.fn(),
   useConfig: vi.fn(),
   getChainConfig: vi.fn(),
-  getDeleveragerAddress: vi.fn(),
+  getStrategiesAddress: vi.fn(),
   getPoolDataProvider: vi.fn(),
   getReserveTokens: vi.fn(),
   getATokenName: vi.fn(),
@@ -42,7 +42,7 @@ vi.mock('wagmi/actions', () => ({
 vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getChainConfig: mocks.getChainConfig,
-  getDeleveragerAddress: mocks.getDeleveragerAddress,
+  getStrategiesAddress: mocks.getStrategiesAddress,
 }))
 vi.mock('../lib/aaveStatics', () => ({
   getPoolDataProvider: mocks.getPoolDataProvider,
@@ -134,7 +134,7 @@ beforeEach(() => {
   mocks.useWalletClient.mockReturnValue({ data: { signTypedData: vi.fn() } })
   mocks.useConfig.mockReturnValue({})
   mocks.usePublicClient.mockReturnValue({ readContract: defaultReads() })
-  mocks.getDeleveragerAddress.mockReturnValue(DELEVERAGER)
+  mocks.getStrategiesAddress.mockReturnValue(DELEVERAGER)
   mocks.getChainConfig.mockReturnValue({
     name: 'Ethereum',
     aave: { poolAddressesProvider: '0x6666666666666666666666666666666666666666' },
@@ -204,7 +204,7 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(mocks.sizeSwap).toHaveBeenCalledWith(expect.objectContaining({ fixedIn: COLL_AMOUNT }))
   })
 
-  it('refuses when the deleverager is paused', async () => {
+  it('refuses when the contract is paused', async () => {
     mocks.usePublicClient.mockReturnValue({ readContract: defaultReads({ paused: 1n }) })
     const { error } = await previewWith()
 
@@ -243,8 +243,8 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(error?.message).toContain('Native ETH is not an Aave reserve')
   })
 
-  it('refuses on a chain with no deleverager deployed', async () => {
-    mocks.getDeleveragerAddress.mockReturnValue(undefined)
+  it('refuses on a chain with no deployment', async () => {
+    mocks.getStrategiesAddress.mockReturnValue(undefined)
     const { error } = await previewWith()
 
     expect(error?.kind).toBe('deployment')

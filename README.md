@@ -40,9 +40,9 @@ A comprehensive decentralized finance (DeFi) dashboard built with React and Vite
 
 ### Environment Variables
 
-- `VITE_DELEVERAGER_ADDRESS_<chainId>` — deployed `AaveV3Deleverager` address for a given network, one per chain (e.g. `VITE_DELEVERAGER_ADDRESS_1` for Ethereum, `_42161` for Arbitrum, `_10` Optimism, `_137` Polygon, `_8453` Base, `_43114` Avalanche, `_56` BNB Chain). Leave empty until deployed on that network; the one-click close button is hidden per-chain while its address is unset.
+- `VITE_DELEVERAGER_ADDRESS_<chainId>` — **no longer read by the frontend.** The one-click close used to run against a separate `AaveV3Deleverager`; it now runs against `AaveV3Strategies`, which carries `closePositionWithPermit` alongside the open entry points. `contract/src/AaveV3Deleverager.sol` is retained and its Ethereum deployment stays live, but nothing in `src/` references it — one address per chain now drives both open and close. These variables can be dropped from `.env`.
 
-- `VITE_STRATEGIES_ADDRESS_1` — AaveV3Strategies router on Ethereum mainnet. Unset until the contract is deployed; while unset, the leveraged-open UI stays hidden.
+- `VITE_STRATEGIES_ADDRESS_<chainId>` — deployed `AaveV3Strategies` address, one per chain, and read only for the chains that have one: `_1` (Ethereum), `_8453` (Base), `_42161` (Arbitrum). Because the contract is deployed through CreateX/CREATE3 from a single salt, the address is the SAME on every chain — so these all take one value. While a chain's is unset the leverage panel still renders (that is how the feature is found) but says the contract is not deployed there, and Open stays disabled. Vite reads `.env` once at startup: restart the dev server after setting it.
 
 - `VITE_DEFILLAMA_API_KEY` — optional but recommended. Powers the Odos aggregator, which is routed through DefiLlama's swap API (`dexAggregatorQuote?protocol=Odos`) so **no separate Odos key is needed**. Without it the endpoint is rate-limited. Public frontend value.
 

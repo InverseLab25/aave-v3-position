@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   useConfig: vi.fn(),
   useWriteContract: vi.fn(),
   getChainConfig: vi.fn(),
-  getDeleveragerAddress: vi.fn(),
+  getStrategiesAddress: vi.fn(),
   useAdjustedGas: vi.fn(),
   useDeleverageClose: vi.fn(),
   simulateAndWrite: vi.fn(),
@@ -34,7 +34,7 @@ vi.mock('wagmi', () => ({
 vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getChainConfig: mocks.getChainConfig,
-  getDeleveragerAddress: mocks.getDeleveragerAddress,
+  getStrategiesAddress: mocks.getStrategiesAddress,
 }))
 vi.mock('../hooks/useAdjustedGas', () => ({ useAdjustedGas: mocks.useAdjustedGas }))
 vi.mock('../hooks/useDeleverageClose', () => ({ useDeleverageClose: mocks.useDeleverageClose }))
@@ -121,7 +121,7 @@ beforeEach(() => {
     name: 'Ethereum',
     aave: { poolAddress: '0x8787878787878787878787878787878787878787' },
   })
-  mocks.getDeleveragerAddress.mockReturnValue('0x2222222222222222222222222222222222222222')
+  mocks.getStrategiesAddress.mockReturnValue('0x2222222222222222222222222222222222222222')
   mocks.useAdjustedGas.mockReturnValue({
     maxFee: 30_000_000_000n,
     maxPriority: 1_000_000_000n,

@@ -3,13 +3,12 @@ import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig 
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
 import { erc20Abi, formatUnits, parseSignature, parseUnits, type Address } from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
-import { getChainConfig, getDeleveragerAddress } from '../config/chains'
+import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
 import { clearQuoteCache } from '../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../adapters/native'
 import type { Adapter, Asset, QuoteResponse } from '../adapters/types'
 import {
-  DELEVERAGER_ABI,
   COMPATIBLE_ADAPTERS,
   CloseError,
   toCloseError,
@@ -34,6 +33,7 @@ import {
   type RevokeArgs,
   type Withdrawal,
 } from '../lib/closePlan'
+import { aaveV3StrategiesAbi, planClose } from '../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../lib/aaveStatics'
 
@@ -52,6 +52,18 @@ const ACCRUAL_BUFFER_BPS = 50n
 
 /** Verification re-quotes allowed while converging on the collateral actually required. */
 const SIZING_ROUNDS = 3
+
+/**
+ * How long to wait for a submitted close to be mined before giving up on it (ms).
+ *
+ * There has to be a bound. On the public mempool a failing transaction still gets mined as a
+ * reverted one, so the wait always ends — but an MEV-protected RPC (which KyberSwap offers,
+ * and users are encouraged onto) only includes transactions that would SUCCEED. A close that
+ * would revert is then simply never included, no receipt ever arrives, and an unbounded wait
+ * leaves the UI claiming to be processing forever. A dropped or replaced transaction does the
+ * same thing on any RPC.
+ */
+const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * How long a permit signature stays valid (seconds).
@@ -100,7 +112,8 @@ export interface CloseInput {
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
 interface ClosePlan {
-  deleverager: Address
+  /** AaveV3Strategies — the contract the close executes against. */
+  strategies: Address
   collateralAddr: Address
   debtAddr: Address
   aToken: Address
@@ -314,8 +327,10 @@ export function useDeleverageClose() {
     ): Promise<ClosePlan> => {
       if (!address || !publicClient) throw new CloseError('wallet', 'Wallet not connected')
 
-      const deleverager = getDeleveragerAddress(chainId)
-      if (!deleverager) {
+      // AaveV3Strategies, which carries `closePositionWithPermit` alongside the open entry
+      // points. The separate AaveV3Deleverager it replaced was a strict subset of this contract.
+      const strategies = getStrategiesAddress(chainId)
+      if (!strategies) {
         throw new CloseError('deployment', 'One-click close is not available on this network')
       }
       const chainConfig = getChainConfig(chainId)
@@ -336,7 +351,7 @@ export function useDeleverageClose() {
 
       // 1. Immutable wiring. Memoised, so warm this costs nothing and cold it is the only
       //    waterfall — resolving it first is what lets everything live share one batch.
-      logFn('Reading deleverager state and Aave reserve addresses…')
+      logFn('Reading contract state and Aave reserve addresses…')
       const dataProvider = await getPoolDataProvider(
         publicClient,
         chainId,
@@ -354,10 +369,10 @@ export function useDeleverageClose() {
       //    nonce riding along here is what leaves close() with nothing to read before it can
       //    open the wallet prompt.
       const [isPaused, allowedRouterList, debt, collAmount, nonce] = await Promise.all([
-        publicClient.readContract({ address: deleverager, abi: DELEVERAGER_ABI, functionName: 'paused' }),
+        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'paused' }),
         // The whole allowlist in one read: the contract stores it in an enumerable set
         // precisely so integrators can filter routes up front rather than probing per route.
-        publicClient.readContract({ address: deleverager, abi: DELEVERAGER_ABI, functionName: 'getAllowedRouters' }),
+        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'getAllowedRouters' }),
         publicClient.readContract({ address: vDebt, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: NONCES_ABI, functionName: 'nonces', args: [address] }),
@@ -368,7 +383,7 @@ export function useDeleverageClose() {
       }
       const allowedRouters = new Set(allowedRouterList.map((r) => r.toLowerCase()))
       if (allowedRouters.size === 0) {
-        throw new CloseError('deployment', 'No swap routers are allowlisted on the deleverager yet')
+        throw new CloseError('deployment', 'No swap routers are allowlisted on this contract yet')
       }
       if (debt === 0n) throw new CloseError('pair', 'No debt to close')
       if (collAmount === 0n) throw new CloseError('pair', 'No collateral to withdraw')
@@ -420,7 +435,7 @@ export function useDeleverageClose() {
       })
 
       return {
-        deleverager,
+        strategies,
         collateralAddr,
         debtAddr,
         aToken,
@@ -508,7 +523,7 @@ export function useDeleverageClose() {
           chainId,
           owner: address,
           aToken: p.aToken,
-          spender: p.deleverager,
+          spender: p.strategies,
           nonce: p.nonce,
           // What is actually pulled, NOT the headroomed permit value — see canReuseSignature.
           value: w.pullAmount,
@@ -530,7 +545,7 @@ export function useDeleverageClose() {
         }
 
         const deadline = BigInt(Math.floor(Date.now() / 1000) + PERMIT_TTL_S)
-        const domain = { aToken: p.aToken, aTokenName: p.aTokenName, chainId, owner: address, spender: p.deleverager }
+        const domain = { aToken: p.aToken, aTokenName: p.aTokenName, chainId, owner: address, spender: p.strategies }
 
         log('Requesting permit signature (1 of 2)…')
         const grant = parseSignature(
@@ -559,7 +574,7 @@ export function useDeleverageClose() {
           chainId,
           owner: address,
           aToken: p.aToken,
-          spender: p.deleverager,
+          spender: p.strategies,
           nonce: p.nonce,
           value: w.permitValue,
           deadline,
@@ -587,7 +602,7 @@ export function useDeleverageClose() {
         const { router, swapData, chosen, tx, rejected } = await selectRoute({
           candidates,
           adapters: p.adapters,
-          deleverager: p.deleverager,
+          strategies: p.strategies,
           allowedRouters: p.allowedRouters,
           slippagePercent: input.slippagePercent,
           chainId,
@@ -598,7 +613,7 @@ export function useDeleverageClose() {
         if (!router || !swapData || !chosen || !tx) {
           throw new CloseError(
             'pair',
-            `No usable swap route for the deleverager. Tried: ${rejected.join('; ') || 'none'}`,
+            `No usable swap route for the close. Tried: ${rejected.join('; ') || 'none'}`,
           )
         }
         // A new quote at a new price has to re-clear what sizing cleared.
@@ -673,7 +688,7 @@ export function useDeleverageClose() {
         const preflight = await selectRoute({
           candidates: p.ranked,
           adapters: p.adapters,
-          deleverager: p.deleverager,
+          strategies: p.strategies,
           allowedRouters: p.allowedRouters,
           slippagePercent: input.slippagePercent,
           chainId,
@@ -683,7 +698,7 @@ export function useDeleverageClose() {
         if (!preflight.router) {
           throw new CloseError(
             'pair',
-            `No usable swap route for the deleverager. Tried: ${preflight.rejected.join('; ') || 'none'}`,
+            `No usable swap route for the close. Tried: ${preflight.rejected.join('; ') || 'none'}`,
           )
         }
 
@@ -704,16 +719,35 @@ export function useDeleverageClose() {
         // the user's slippage on the whole output rather than only on the part repaying the
         // flash loan. See computeMinOut.
         const minOut = computeMinOut({ debt: p.debt, quotedOut: builtOut, slipNum: p.slipNum })
-        const args = [
-          p.collateralAddr,
-          p.debtAddr,
-          withdrawal.collateralToWithdraw,
+        // Built by the SDK rather than by hand: AaveV3Strategies orders these differently from
+        // the AaveV3Deleverager this replaced (swapData moved last, `debtRepay` is new), and the
+        // permit structs differ in both field names and field order — `value`/`{v,r,s}` there
+        // against `amount`/`{r,s,v}` here. Positional args assembled locally would encode
+        // silently wrong.
+        const { args } = planClose({
+          collateral: p.collateralAddr,
+          debtAsset: p.debtAddr,
+          collateralToWithdraw: withdrawal.collateralToWithdraw,
+          // What this close repays. `p.debt` is already capped to the live debt for a partial
+          // close, and the contract caps it again against the balance it reads.
+          debtRepay: p.debt,
           minOut,
           router,
+          permit: {
+            amount: permits.permit.value,
+            deadline: permits.permit.deadline,
+            r: permits.permit.r,
+            s: permits.permit.s,
+            v: permits.permit.v,
+          },
+          revokePermit: {
+            deadline: permits.revoke.deadline,
+            r: permits.revoke.r,
+            s: permits.revoke.s,
+            v: permits.revoke.v,
+          },
           swapData,
-          permits.permit,
-          permits.revoke,
-        ] as const
+        })
 
         // Everything the transaction commits to, decoded, before it is simulated.
         //
@@ -798,8 +832,8 @@ export function useDeleverageClose() {
         let request
         try {
           ;({ request } = await simulateContract(config, {
-            address: p.deleverager,
-            abi: DELEVERAGER_ABI,
+            address: p.strategies,
+            abi: aaveV3StrategiesAbi,
             functionName: 'closePositionWithPermit',
             args,
             account: address,
@@ -838,8 +872,8 @@ export function useDeleverageClose() {
         try {
           gas = bufferedGasLimit(
             await publicClient.estimateContractGas({
-              address: p.deleverager,
-              abi: DELEVERAGER_ABI,
+              address: p.strategies,
+              abi: aaveV3StrategiesAbi,
               functionName: 'closePositionWithPermit',
               args,
               account: address,
@@ -853,7 +887,22 @@ export function useDeleverageClose() {
         const hash = await walletClient.writeContract(gas ? { ...request, gas } : request)
         log(`Tx submitted: ${hash}`)
 
-        const receipt = await publicClient.waitForTransactionReceipt({ hash })
+        let receipt
+        try {
+          receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS })
+        } catch {
+          // Timed out, not failed: the transaction may still land later, or may never have been
+          // included at all. Reporting either as a revert would be a guess, so say exactly what
+          // is known and hand over the hash.
+          //
+          // Re-pressing is safe even if it eventually lands. Both attempts spend the same permit
+          // nonce, so whichever arrives second reverts inside the aToken's `permit` rather than
+          // closing the position twice.
+          log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
+          setStep('error')
+          return { hash, status: 'error' }
+        }
+
         if (receipt.status === 'success') {
           log('Position closed ✓')
           // Consumed: the nonce has advanced, so these can never authorise anything again.

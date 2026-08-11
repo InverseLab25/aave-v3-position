@@ -207,7 +207,7 @@ export function reuseBlocker(
   if (held.chainId !== need.chainId) return `chain ${held.chainId} → ${need.chainId}`
   if (held.owner.toLowerCase() !== need.owner.toLowerCase()) return 'owner changed'
   if (held.aToken.toLowerCase() !== need.aToken.toLowerCase()) return 'collateral changed'
-  if (held.spender.toLowerCase() !== need.spender.toLowerCase()) return 'deleverager changed'
+  if (held.spender.toLowerCase() !== need.spender.toLowerCase()) return 'spender changed'
   if (held.nonce !== need.nonce) return `nonce ${held.nonce} → ${need.nonce} (already spent)`
   if (held.value < need.value) {
     const overBy = Number(((need.value - held.value) * 10000n) / held.value) / 100
@@ -231,7 +231,7 @@ export interface RouteSelection {
 }
 
 /**
- * Pick the first quote the deleverager will actually accept.
+ * Pick the first quote the contract will actually accept.
  *
  * A router's address is only known after `buildTransaction`, so the on-chain allowlist cannot
  * filter candidates during sizing — it has to happen here. Every rejection caught at this
@@ -240,7 +240,7 @@ export interface RouteSelection {
 export async function selectRoute({
   candidates,
   adapters,
-  deleverager,
+  strategies,
   allowedRouters,
   slippagePercent,
   chainId,
@@ -249,7 +249,8 @@ export async function selectRoute({
 }: {
   candidates: QuoteResponse[]
   adapters: Adapter[]
-  deleverager: Address
+  /** The contract the swap output must land on — it is also the `buildTransaction` recipient. */
+  strategies: Address
   allowedRouters: Set<string>
   slippagePercent: number
   chainId: number
@@ -264,7 +265,7 @@ export async function selectRoute({
     build: (c) => {
       const adapter = adapters.find((a) => a.name === c.aggregator)
       if (!adapter) throw new Error('no adapter for this quote')
-      return adapter.buildTransaction(c, slippagePercent, deleverager, chainId)
+      return adapter.buildTransaction(c, slippagePercent, strategies, chainId)
     },
     isAllowlisted: (router) => allowedRouters.has(router.toLowerCase()),
     reject: (c) =>

@@ -24,9 +24,11 @@ it('returns null for an undefined chain id', () => {
   expect(getStrategiesAddress(undefined)).toBeNull();
 });
 
-it('reads the strategies field, not the deleverager field', () => {
+// This used to assert it read `strategies` rather than the sibling `deleverager` field. That
+// field is gone — AaveV3Strategies carries the close entry point too — so there is only one
+// address per chain to get wrong now.
+it('reads the strategies field', () => {
   CHAIN_CONFIGS[1].aave.strategies = '0x1111111111111111111111111111111111111111';
-  CHAIN_CONFIGS[1].aave.deleverager = '0x2222222222222222222222222222222222222222';
   expect(getStrategiesAddress(1)).toBe('0x1111111111111111111111111111111111111111');
 });
 
