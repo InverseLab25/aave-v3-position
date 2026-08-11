@@ -30,6 +30,8 @@ dist-ssr
 
 # Downloaded API schemas
 *.yaml
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
 aave-schema.graphql
 
 
