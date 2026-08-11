@@ -6,8 +6,9 @@ import { getChainConfig } from '../config/chains'
 const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
 
 const GET_USER_TRANSACTIONS = `
-  query GetUserTransactions($user: EvmAddress!, $chainId: ChainId!, $market: EvmAddress!) {
-    userTransactionHistory(request: { user: $user, chainId: $chainId, market: $market }) {
+  query GetUserTransactions($user: EvmAddress!, $chainId: ChainId!, $market: EvmAddress!, $cursor: Cursor) {
+    userTransactionHistory(request: { user: $user, chainId: $chainId, market: $market, cursor: $cursor }) {
+      pageInfo { next }
       items {
         __typename
         ... on UserSupplyTransaction {
@@ -62,23 +63,45 @@ interface TxItem {
   debtRepaid?: { amount: TxAmount; reserve: TxReserve }
 }
 interface TxResponse {
-  userTransactionHistory?: { items?: TxItem[] }
+  userTransactionHistory?: { items?: TxItem[]; pageInfo?: { next?: string | null } }
 }
+
+/**
+ * Pages to follow before giving up.
+ *
+ * `userTransactionHistory` is a paginated endpoint, so a single request returns only the newest
+ * page — and a partial replay produces a plausible-looking average entry price computed from an
+ * incomplete ledger, with nothing to indicate anything is missing. Following the cursor fixes
+ * that; the cap is here because an unbounded loop against a remote API is a worse failure than
+ * a truncated basis, and a history longer than this is pathological.
+ */
+const MAX_HISTORY_PAGES = 20
 
 async function fetchUserTransactions(variables: {
   user: string
   chainId: number
   market: string
-}): Promise<TxResponse> {
-  const res = await fetch(AAVE_GRAPHQL_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: GET_USER_TRANSACTIONS, variables }),
-  })
-  if (!res.ok) throw new Error(`Aave GraphQL ${res.status}`)
-  const json = await res.json()
-  if (json.errors?.length) throw new Error(json.errors[0]?.message ?? 'Aave GraphQL error')
-  return json.data as TxResponse
+}): Promise<TxItem[]> {
+  const items: TxItem[] = []
+  let cursor: string | null = null
+
+  for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+    const res = await fetch(AAVE_GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: GET_USER_TRANSACTIONS, variables: { ...variables, cursor } }),
+    })
+    if (!res.ok) throw new Error(`Aave GraphQL ${res.status}`)
+    const json = await res.json()
+    if (json.errors?.length) throw new Error(json.errors[0]?.message ?? 'Aave GraphQL error')
+
+    const history = (json.data as TxResponse)?.userTransactionHistory
+    items.push(...(history?.items ?? []))
+    cursor = history?.pageInfo?.next ?? null
+    if (!cursor) break
+  }
+
+  return items
 }
 
 export type CostBasis = {
@@ -89,12 +112,33 @@ export type CostBasis = {
 }
 
 type Accumulator = {
+  /** Every unit acquired, priced or not. This is the net principal. */
   totalUnits: number
+  /**
+   * Units whose execution price the indexer actually reported — the denominator for the average
+   * entry price, and deliberately NOT `totalUnits`.
+   *
+   * Kept separate because the two questions have different answers. An entry the indexer prices
+   * at 0 (very old, or unknown) still moved tokens, so it belongs in the principal; but folding
+   * it into the average at a cost of nothing drags that average toward zero, which inflates
+   * apparent unrealized gain. Excluding it from `totalUnits` instead would understate the
+   * principal and overstate interest earned. Only splitting them gets both right.
+   */
+  pricedUnits: number
   totalCostUsd: number
   realizedPnlUsd: number
 }
 
-const newAcc = (): Accumulator => ({ totalUnits: 0, totalCostUsd: 0, realizedPnlUsd: 0 })
+const newAcc = (): Accumulator => ({
+  totalUnits: 0,
+  pricedUnits: 0,
+  totalCostUsd: 0,
+  realizedPnlUsd: 0,
+})
+
+/** Weighted-average USD entry price over the units we have a price for. */
+const avgEntryOf = (acc: Accumulator): number =>
+  acc.pricedUnits > 0 ? acc.totalCostUsd / acc.pricedUnits : 0
 
 /**
  * Increase basis: user acquires more of an asset (supply for lenders, borrow for borrowers).
@@ -103,9 +147,11 @@ const newAcc = (): Accumulator => ({ totalUnits: 0, totalCostUsd: 0, realizedPnl
 function addEntry(acc: Accumulator, units: number, usdPerToken: number) {
   if (units <= 0) return
   acc.totalUnits += units
-  // Skip cost contribution when the indexer returns 0 (unknown / very old tx) —
-  // otherwise the avg entry price collapses to 0 and P&L blows up.
+  // An entry the indexer could not price contributes to the principal but not to the average:
+  // it goes into `totalUnits` only, leaving `pricedUnits` and the cost untouched so the average
+  // stays a true average of the entries we can actually see. See {@link Accumulator}.
   if (usdPerToken > 0) {
+    acc.pricedUnits += units
     acc.totalCostUsd += units * usdPerToken
   }
 }
@@ -122,14 +168,19 @@ function realizeExit(
   direction: 'sell' | 'cover'
 ) {
   if (units <= 0 || acc.totalUnits <= 0) return
-  const avgEntry = acc.totalCostUsd / acc.totalUnits
+  const avgEntry = avgEntryOf(acc)
+  const consumed = Math.min(units, acc.totalUnits)
   if (usdPerToken > 0 && avgEntry > 0) {
     const delta = direction === 'sell' ? usdPerToken - avgEntry : avgEntry - usdPerToken
-    acc.realizedPnlUsd += Math.min(units, acc.totalUnits) * delta
+    acc.realizedPnlUsd += consumed * delta
   }
-  const remainingUnits = Math.max(0, acc.totalUnits - units)
-  acc.totalCostUsd = remainingUnits * avgEntry
-  acc.totalUnits = remainingUnits
+  // Scale the priced basis by the share of the position that remains, so the average entry
+  // price is unchanged by an exit — which is what weighted-average cost means. Scaling
+  // `pricedUnits` and `totalCostUsd` by the same factor is what preserves it.
+  const remainingShare = (acc.totalUnits - consumed) / acc.totalUnits
+  acc.totalUnits -= consumed
+  acc.pricedUnits *= remainingShare
+  acc.totalCostUsd *= remainingShare
 }
 
 export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?: number) {
@@ -159,7 +210,7 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   const supplyAcc: Record<string, Accumulator> = {}
   const borrowAcc: Record<string, Accumulator> = {}
 
-  const items = data?.userTransactionHistory?.items
+  const items = data
   if (items) {
     for (const tx of items) {
       switch (tx.__typename) {
@@ -230,7 +281,7 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   for (const [asset, acc] of Object.entries(supplyAcc)) {
     netPrincipals.supply[asset] = acc.totalUnits
     costBasis.supply[asset] = {
-      avgEntryPriceUsd: acc.totalUnits > 0 ? acc.totalCostUsd / acc.totalUnits : 0,
+      avgEntryPriceUsd: avgEntryOf(acc),
       realizedPnlUsd: acc.realizedPnlUsd
     }
   }
@@ -240,7 +291,7 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
     // weighted-average price of the open borrow, and realized P&L from repaid (closed)
     // amounts is intentionally excluded.
     costBasis.borrow[asset] = {
-      avgEntryPriceUsd: acc.totalUnits > 0 ? acc.totalCostUsd / acc.totalUnits : 0,
+      avgEntryPriceUsd: avgEntryOf(acc),
       realizedPnlUsd: 0
     }
   }

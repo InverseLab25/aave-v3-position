@@ -15,9 +15,11 @@ import { useAavePositions } from './hooks/useAavePositions'
 
 function App() {
   const { viewAddress, viewChainId } = useViewMode()
-  const apiEthPrice = useEthPrice()
   const connectedChainId = useChainId()
   const chainId = viewChainId ?? connectedChainId
+  // Pinned to the chain being viewed: the poll is mainnet-ETH-only, so it returns null on a
+  // chain whose native currency is not ether and the wrapped-native fallback below takes over.
+  const apiEthPrice = useEthPrice(chainId)
   const chainConfig = getChainConfig(chainId)
   const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
 

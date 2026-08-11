@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { useChainId } from 'wagmi';
 import { fetchQuoteJson } from '../adapters/http';
+import { getChainConfig } from '../config/chains';
 
 const POLL_MS = 10_000;
 
@@ -15,10 +17,34 @@ interface KyberRoutesResponse {
   data?: { routeSummary?: { amountOut: string } };
 }
 
-export function useEthPrice() {
+/**
+ * Spot price of the chain's native currency in USD, or null when it cannot be priced here.
+ *
+ * The quote below is hardcoded to MAINNET ETH, so it is only the right answer on chains whose
+ * native currency is ether. On BNB Chain, Polygon and Avalanche it is not — and since callers
+ * multiply this by a gas amount denominated in the native token, returning it there prices a
+ * sub-cent Polygon transaction at ETH rates. Null is the honest answer on those chains, and it
+ * routes callers to their existing fallback: the chain's own wrapped-native reserve, priced by
+ * Aave's oracle.
+ *
+ * `chainId` is a parameter rather than read from wagmi alone so view-mode (which resolves a
+ * different chain than the connected one) prices the chain being VIEWED.
+ */
+export function useEthPrice(chainId?: number) {
+  const connectedChainId = useChainId();
+  const resolvedChainId = chainId ?? connectedChainId;
+  // Same convention the rest of the app uses for "the chain's wrapped native": the first
+  // default token. WETH means the native currency is ether.
+  const nativeIsEth =
+    getChainConfig(resolvedChainId)?.defaultTokens?.[0]?.symbol?.toUpperCase() === 'WETH';
+
   const [price, setPrice] = useState<number | null>(null);
 
   useEffect(() => {
+    // Don't poll at all for a chain this quote cannot price. The stale value is not cleared
+    // here — setting state from an effect is what `react-hooks/set-state-in-effect` forbids,
+    // and it is unnecessary: the return below gates the value rather than the store.
+    if (!nativeIsEth) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -68,7 +94,9 @@ export function useEthPrice() {
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, []);
+  }, [nativeIsEth]);
 
-  return price;
+  // Derived, not stored: switching to a non-ETH chain must not leave the previous chain's
+  // price readable, and gating here does that without a state write.
+  return nativeIsEth ? price : null;
 }
