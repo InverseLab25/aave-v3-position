@@ -204,6 +204,31 @@ it('hands the account totals to the actions panel on the populated dashboard too
   expect(input?.existingDebtUsd).toBe(ODD_TOTALS.debtBase)
 })
 
+// The panel deliberately renders on a chain with no deployment — that is how the feature is
+// discovered. But `getStrategiesAddress` returning null gates `input` to null, so no quote is
+// ever requested, `preview` stays null and Open is disabled forever. Every OTHER disabling
+// condition puts a reason on screen; this one used to put nothing there, leaving a form that
+// looks ready and a button that silently does nothing.
+it('says why Open is dead when the contract is not deployed on this chain', async () => {
+  mocks.getStrategiesAddress.mockReturnValue(null)
+
+  render(<AavePosition />)
+
+  expect(await screen.findByText(/not deployed on this network/i)).toBeTruthy()
+  expect(screen.getByRole('button', { name: /Open long/i }).hasAttribute('disabled')).toBe(true)
+})
+
+// The mirror of the above: with a deployment present, the notice must be gone. Asserting only
+// the presence would pass just as well on a banner that is always rendered.
+it('shows no undeployed notice once the contract address resolves', async () => {
+  mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
+
+  render(<AavePosition />)
+
+  expect(await screen.findByText('Long')).toBeTruthy()
+  expect(screen.queryByText(/not deployed on this network/i)).toBeNull()
+})
+
 it('shows a read failure as a failure, not as an empty portfolio', async () => {
   // A failed read zeroes every total and empties both asset lists, which is indistinguishable
   // from a fresh account. Falling through to "Start your Aave position" would invite someone

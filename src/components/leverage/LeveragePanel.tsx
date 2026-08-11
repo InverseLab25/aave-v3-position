@@ -27,6 +27,13 @@ import { AmountField } from './AmountField'
 import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
+import { RouteDetails } from './RouteDetails'
+import {
+  DEFAULT_SLIPPAGE_PERCENT,
+  MAX_SLIPPAGE_PERCENT,
+  SLIPPAGE_PRESETS,
+  toSlippageBps,
+} from './slippage'
 import { T } from '../../styles/theme'
 
 interface LeveragePanelProps {
@@ -47,8 +54,6 @@ interface LeveragePanelProps {
   existingLtvBps: bigint
   existingLiquidationThresholdBps: bigint
 }
-
-const DEFAULT_SLIPPAGE_BPS = 50n
 
 /** Parse a typed amount. Total by construction — the field only ever emits digits and one dot. */
 function parseAmount(str: string, decimals: number): bigint {
@@ -95,6 +100,12 @@ export function LeveragePanel({
   const [marginStr, setMarginStr] = useState('')
   const [supplyStr, setSupplyStr] = useState('')
   const [danger, setDanger] = useState(false)
+  /**
+   * Held as the percent the field shows rather than as bps, so a half-typed "0." survives the
+   * round trip. `toSlippageBps` is the only thing that reads it, and it clamps.
+   */
+  const [slippagePercent, setSlippagePercent] = useState(DEFAULT_SLIPPAGE_PERCENT)
+  const slippageBps = toSlippageBps(slippagePercent)
 
   const reserveFor = (asset: string) =>
     availableReserves.find((r) => r.underlyingAsset.toLowerCase() === asset.toLowerCase())
@@ -265,7 +276,7 @@ export function LeveragePanel({
   const { flashAmount: supplyFlash } = deriveOpen({ marginAsset, marginAmount, supplyAmount })
   const estimatedSwapOut = collateralReserve && debtReserve && borrowAmount > 0n
     ? (borrowAmount * debtReserve.raw.priceUsd * 10n ** BigInt(collateralReserve.raw.decimals)
-        * (BPS - DEFAULT_SLIPPAGE_BPS))
+        * (BPS - slippageBps))
       / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals) * BPS)
     : 0n
   const flashAmount = sizedBy === 'borrow' ? estimatedSwapOut : supplyFlash
@@ -278,7 +289,7 @@ export function LeveragePanel({
     ? seedBorrow({
         flashAmount,
         debtMargin: marginAsset === 'debt' ? marginAmount : 0n,
-        slipNum: BPS - DEFAULT_SLIPPAGE_BPS,
+        slipNum: BPS - slippageBps,
         collateralPriceUsd: collateralReserve.raw.priceUsd,
         debtPriceUsd: debtReserve.raw.priceUsd,
         collateralDecimals: collateralReserve.raw.decimals,
@@ -343,10 +354,12 @@ export function LeveragePanel({
   })
 
   /**
-   * Not wrapped in `useMemo`: the React Compiler memoizes it, and a manual memo here makes it
-   * skip the whole component (`react-hooks/preserve-manual-memoization`) — which would leave
-   * nothing memoized at all. `useLeverageOpen` compares by VALUE via its own `inputKey`, so a
-   * changed identity costs a debounce at worst, never a wrong quote.
+   * Rebuilt on every render, and not memoized. That is safe ONLY because `useLeverageOpen` keys
+   * its quoting effect on `inputKey(input)` — the values — rather than on this object's identity.
+   *
+   * It was not always: the effect depended on the object, so every render re-quoted, and each
+   * finished quote re-rendered this component, which re-quoted. Do not hand this object to
+   * anything that compares by identity without checking what that does.
    */
   const input = (() => {
     if (!contract || !subject || !quote || !collateralReserve || !debtReserve) return null
@@ -363,7 +376,7 @@ export function LeveragePanel({
       supplyAmount,
       borrowAmount,
       maxSupply,
-      slippageBps: DEFAULT_SLIPPAGE_BPS,
+      slippageBps,
       marginBalance,
       existingCollateralUsd,
       existingDebtUsd,
@@ -481,6 +494,15 @@ export function LeveragePanel({
             </div>
           )}
 
+          {/* `contract` null gates `input` to null, which keeps `preview` null, which leaves Open
+              disabled no matter what is typed. Every other disabling condition says why — this one
+              said nothing, so the panel read as ready and the button read as broken. */}
+          {!contract && (
+            <div style={{ padding: T.space[2], borderRadius: T.radius.md, background: T.warningBg, color: T.warning, fontSize: T.fontSize.sm }}>
+              Leverage is not deployed on this network yet.
+            </div>
+          )}
+
           {/* Boost posts no margin by design — the contract's ratchet path takes none, and the
               ceiling comes from the account's own borrow power instead. */}
           {!boosting && (
@@ -515,6 +537,57 @@ export function LeveragePanel({
                 ? 'No borrow power left to boost with'
                 : 'Enter a margin to see how much you can supply'}
           />
+
+          {/* The gap between the route's expected output and the floor the contract enforces —
+              so it belongs next to the amounts that determine both, not behind a settings menu.
+              Widening it accepts a worse fill; tightening it risks the open reverting outright. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: T.space[2] }}>
+            <label style={{ fontSize: T.fontSize.xs, color: T.textMuted, textTransform: 'uppercase' }}>
+              Max slippage
+            </label>
+            <div style={{ display: 'flex', gap: T.space[2], alignItems: 'center' }}>
+              {SLIPPAGE_PRESETS.map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setSlippagePercent(p)}
+                  style={{
+                    padding: `${T.space[1]} ${T.space[3]}`,
+                    border: `1px solid ${T.border}`,
+                    borderRadius: T.radius.md,
+                    background: slippagePercent === p ? T.primary : 'transparent',
+                    color: slippagePercent === p ? '#fff' : T.text,
+                    fontWeight: slippagePercent === p ? 600 : 400,
+                    cursor: 'pointer',
+                    fontSize: T.fontSize.sm,
+                  }}
+                >
+                  {p}%
+                </button>
+              ))}
+              <input
+                type="number"
+                step="any"
+                min={0}
+                max={MAX_SLIPPAGE_PERCENT}
+                aria-label="Max slippage percent"
+                value={slippagePercent}
+                onChange={(e) => setSlippagePercent(parseFloat(e.target.value))}
+                style={{
+                  flex: 1, minWidth: 0, padding: T.space[2],
+                  border: `1px solid ${T.border}`, borderRadius: T.radius.md,
+                  background: 'transparent', color: T.text, fontSize: T.fontSize.sm,
+                }}
+              />
+            </div>
+            {/* A cleared or nonsensical field reads as 0%, which means "no tolerance" and reverts
+                on any move at all. Say so rather than letting an empty box look like a default. */}
+            {slippageBps === 0n && (
+              <div style={{ fontSize: T.fontSize.xs, color: T.warning }}>
+                0% leaves no room for the price to move — the open will revert unless the route
+                fills exactly.
+              </div>
+            )}
+          </div>
 
           {dangerMax > safeMax && (
             <label style={{ display: 'flex', alignItems: 'center', gap: T.space[2], fontSize: T.fontSize.sm, color: T.textMuted, cursor: 'pointer' }}>
@@ -554,6 +627,21 @@ export function LeveragePanel({
             existingCollateralAmount={existingCollateralAmount}
             existingDebtAmount={existingDebtAmount}
           />
+
+          {/* Only once a route has answered: every figure here comes from the BUILT transaction,
+              and there is no honest way to estimate its floor beforehand. */}
+          {preview && collateralReserve && debtReserve && (
+            <RouteDetails
+              expectedOut={preview.expectedOut}
+              minOut={preview.minOut}
+              swapIn={preview.swapIn}
+              collateralSymbol={collateralReserve.symbol}
+              debtSymbol={debtReserve.symbol}
+              collateralDecimals={collateralReserve.raw.decimals}
+              debtDecimals={debtReserve.raw.decimals}
+              slippageBps={slippageBps}
+            />
+          )}
 
           {priceImpactBlocked && (
             <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>

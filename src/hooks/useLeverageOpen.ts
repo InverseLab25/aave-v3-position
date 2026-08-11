@@ -101,6 +101,19 @@ export interface OpenPreview {
   marginAsset: Address
   flashAmount: bigint
   borrowAmount: bigint
+  /**
+   * What the router is actually handed: `borrowAmount` PLUS the margin when that margin is posted
+   * in the debt asset, which goes into the same swap (AaveV3Strategies.sol:491). Distinct from
+   * `borrowAmount` on purpose — quoting a rate against the borrow alone understates the input by
+   * the whole margin, which reads as a rate far better than the market's.
+   */
+  swapIn: bigint
+  /**
+   * What the built route says it will return, BEFORE the slippage floor is applied — the
+   * aggregator's own `amountOut`. `minOut` is this times `(1 - slippage)`, so the pair of them is
+   * "what we expect" against "what the transaction will still accept".
+   */
+  expectedOut: bigint
   minOut: bigint
   /** What the account becomes, verified against the built route rather than the oracle. */
   projection: OpenProjection
@@ -198,14 +211,38 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
 
   const refresh = useCallback(() => setTick((t) => t + 1), [])
 
+  /**
+   * The quoting effect is keyed on this string, NOT on `input`'s identity.
+   *
+   * Callers build `input` inline on every render — LeveragePanel does, deliberately — so its
+   * identity changes constantly while its values do not. Keying the effect on the object made
+   * every render re-quote, and a finished quote calls `setPreview` with a fresh object, which
+   * renders, which re-quotes: a self-sustaining loop roughly one debounce plus one round-trip
+   * long. `isQuoting` was then true nearly continuously, leaving the Open button perpetually
+   * disabled and showing "Pricing…".
+   *
+   * (A comment here used to claim the React Compiler memoized the caller's object. It is not
+   * installed and not configured in vite.config.ts, so nothing was memoizing anything.)
+   */
+  const key = input ? inputKey(input) : null
+  // Carries the live object into an effect that must not depend on its identity. Every value the
+  // effect reads is folded into `key`, so a run always sees an object matching the key it fired
+  // for. Synced in its own effect, declared FIRST: effects run in declaration order within a
+  // commit, so the quoting effect below always observes the object from this same render.
+  const inputRef = useRef(input)
   useEffect(() => {
+    inputRef.current = input
+  })
+
+  useEffect(() => {
+    const input = inputRef.current
     // Frozen: a held signature commits to an exact borrowAmount, so the plan must not move
     // underneath it. Nothing goes stale — `previewFor` still matches `input`, which has not
     // changed either.
-    if (!input || frozen.current) return
+    if (!input || !key || frozen.current) return
 
     let cancelled = false
-    const forInput = inputKey(input)
+    const forInput = key
 
     const timer = setTimeout(async () => {
       setIsQuoting(true)
@@ -422,6 +459,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           marginAsset: input.marginAsset === 'debt' ? debtAsset : collateral,
           flashAmount,
           borrowAmount,
+          swapIn,
+          expectedOut: builtOut,
           minOut: guaranteedOut > flashAmount ? guaranteedOut : flashAmount,
           projection,
           router: build.built.to as Address,
@@ -443,12 +482,12 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       cancelled = true
       clearTimeout(timer)
     }
-  }, [input, client, chainId, owner, tick])
+  }, [key, client, chainId, owner, tick])
 
   // Masks preview/previewError the instant `input` no longer matches what they were computed
   // for. `execute` and the return value both use these, never the raw state, so nothing
   // downstream can observe a preview belonging to a different input than the one live.
-  const stale = (input ? inputKey(input) : null) !== previewFor
+  const stale = key !== previewFor
   const effectivePreview = stale ? null : preview
   const effectivePreviewError = stale ? null : previewError
   const effectiveIsQuoting = stale || isQuoting
