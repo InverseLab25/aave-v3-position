@@ -347,12 +347,13 @@ export function ClosePositionModal({
       // the user looking at numbers that have just been disproved. Its log line says which case
       // this was, and whether there is a hash worth checking on an explorer.
       //
-      // The held signature survives here, but that does NOT always mean the next press skips the
-      // wallet prompt. A permit is reusable only while more than MIN_SIGNATURE_REMAINING_S of its
-      // PERMIT_TTL_S is left — a window measured from SIGNING — so a failure that surfaces after
-      // the receipt timeout (five minutes from submission, hence strictly later) will always ask
-      // for a fresh signature. Re-signing is safe: the on-chain nonce has not advanced, so
-      // whichever transaction lands first consumes it and the other reverts inside `permit`.
+      // The held signature survives, so the next press needs no wallet prompt — including after
+      // a receipt timeout, which PERMIT_TTL_S is explicitly sized to outlast. What decides it is
+      // the aToken nonce, and a transaction that never landed did not spend it.
+      //
+      // Should the permit expire anyway, re-signing is safe for the same reason: the nonce has
+      // not advanced, so whichever transaction lands first consumes it and the other reverts
+      // inside `permit` rather than closing the position twice.
       setStep(0)
       setSlippageTooTight(result.slippageTooTight === true)
       setRefreshTick((t) => t + 1)

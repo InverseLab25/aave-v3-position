@@ -66,18 +66,35 @@ const SIZING_ROUNDS = 3
  * leaves the UI claiming to be processing forever. A dropped or replaced transaction does the
  * same thing on any RPC.
  */
-const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
+export const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
 
 /**
  * How long a permit signature stays valid (seconds).
  *
- * Sized so the USABLE window is the 5 minutes it appears to be. A signature stops being
- * reusable `MIN_SIGNATURE_REMAINING_S` before it expires — that margin has to outlast the
- * re-quote, the simulation and block inclusion — so a 300 s deadline gave only 180 s of
- * actual life, and a user who spent three minutes reviewing was asked to sign again. The
- * deadline is the margin plus the window we want, not the window itself.
+ * What actually decides whether a permit is spent is the aToken NONCE, and a transaction that
+ * never landed did not spend it — so a retry after an unresolved close should reuse the
+ * signature rather than ask for a new one. The deadline cannot be dropped in favour of that
+ * check, though: it is signed into the EIP-712 payload and `permit()` reverts once
+ * `block.timestamp` passes it, so a permit that outlives its deadline burns gas on-chain
+ * instead of failing here. The deadline is therefore sized to make the nonce the decider in
+ * practice, by outlasting the longest wait this flow can impose on itself.
+ *
+ * Three terms, and every one of them is load-bearing:
+ *   - 300 s   the review window between the two presses, which is the point of banking a
+ *             signature at all;
+ *   - the receipt timeout, so a close that is submitted and never mined still leaves a
+ *             reusable permit behind. Without this term the permit was ALWAYS dead by the time
+ *             the timeout fired — the window is measured from signing and the timeout from the
+ *             later submission — so every unresolved close re-prompted needlessly;
+ *   - MIN_SIGNATURE_REMAINING_S, the margin before expiry that has to outlast the re-quote,
+ *             the simulation and block inclusion. A signature stops being reusable that far
+ *             out, so the deadline is the margin PLUS the window we want, not the window.
+ *
+ * The cost of a longer deadline is a longer window in which a leaked signature is live. It is
+ * bounded: the grant only ever sets an allowance for this contract, which acts solely on
+ * `msg.sender`'s behalf, and spending the nonce early only invalidates our own transaction.
  */
-const PERMIT_TTL_S = 300 + Number(MIN_SIGNATURE_REMAINING_S)
+const PERMIT_TTL_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
 
 /** Integer precision the oracle seed carries prices at. Only the ratio matters. */
 const PRICE_SCALE_DECIMALS = 8

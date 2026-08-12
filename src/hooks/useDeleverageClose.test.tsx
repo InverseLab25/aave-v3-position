@@ -60,7 +60,7 @@ vi.mock('../lib/closePlan', async (orig) => ({
   selectRoute: vi.fn(),
 }))
 
-import { useDeleverageClose } from './useDeleverageClose'
+import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
 
 const USER = '0x1111111111111111111111111111111111111111' as const
 const DELEVERAGER = '0x2222222222222222222222222222222222222222' as const
@@ -463,6 +463,30 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
 
     expect(signTypedData).not.toHaveBeenCalled()
     expect(retry.status).toBe('success')
+  })
+
+  it('still reuses the held signature after a full receipt timeout has elapsed', async () => {
+    // The nonce is what decides whether a permit is spent, and a transaction that never landed
+    // did not spend it. The permit deadline must therefore outlast the longest wait the flow can
+    // impose on itself — a receipt timeout — or every unresolved close re-prompts for a signature
+    // that was still perfectly good. It used to: PERMIT_TTL_S was shorter than the timeout.
+    const r = mount()
+    await r.current.close(baseInput)
+    signTypedData.mockClear()
+
+    // Past the whole receipt timeout, plus slack for the re-quote and simulation around it.
+    const elapsedMs = RECEIPT_TIMEOUT_MS + 30_000
+    const start = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => start + elapsedMs)
+
+    try {
+      const out = await r.current.close(baseInput)
+
+      expect(signTypedData).not.toHaveBeenCalled()
+      expect(out.status).toBe('success')
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it('re-signs when the on-chain nonce has moved under the held signature', async () => {
