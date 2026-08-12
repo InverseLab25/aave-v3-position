@@ -24,6 +24,7 @@ import { getStrategiesAddress } from '../../config/chains'
 import { isVolatilePrice, toCollateralInputs } from '../../utils/liquidation'
 import { ExplorerLink } from '../ExplorerLink'
 import { AmountField } from './AmountField'
+import { ConfirmLeverageModal } from './ConfirmLeverageModal'
 import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
@@ -398,7 +399,18 @@ export function LeveragePanel({
 
   const {
     preview, previewError, isQuoting, execute, step, execError, execRemedy, txHash, refresh,
+    reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
+
+  /**
+   * Whether the confirmation modal is up.
+   *
+   * The Open button no longer needs a live preview to be pressable, which is half the fix: the
+   * panel's quote goes stale on every background refresh of prices and balances, so gating the
+   * button on one left it disabled at exactly the moments a user reaches for it. Pressing it now
+   * opens the modal, and the modal is what waits for a route.
+   */
+  const [confirming, setConfirming] = useState(false)
 
   // Someone else's portfolio is read-only. An undeployed contract does NOT hide the panel: it is
   // how the feature is discovered, and hiding it makes it look absent rather than unavailable.
@@ -659,19 +671,27 @@ export function LeveragePanel({
             ))}
           </div>
 
+          {/* Gated on the FORM being openable, not on a quote having landed. A stale or in-flight
+              quote is the modal's problem, and it re-prices before anything is signed. */}
           <button
-            onClick={() => void execute()}
-            disabled={!preview || isQuoting || paused || busy || priceImpactBlocked}
+            onClick={() => {
+              // The previous attempt's hash and error belong to the previous attempt.
+              reset()
+              setConfirming(true)
+            }}
+            disabled={!input || paused || busy}
             style={{
               padding: T.space[3], borderRadius: T.radius.md, border: 'none', cursor: 'pointer',
-              background: !preview || isQuoting || paused || busy || priceImpactBlocked ? T.border : T.primary,
+              background: !input || paused || busy ? T.border : T.primary,
               color: '#fff', fontWeight: 600,
             }}
           >
-            {isQuoting ? 'Pricing…' : actionLabel}
+            {actionLabel}
           </button>
 
-          {execError && (
+          {/* Errors from an attempt made in the modal stay visible after it closes — the modal is
+              where they are raised, but the panel is where the user ends up. */}
+          {!confirming && execError && (
             <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>
               {execError}
               {remedyHint && <span style={{ color: T.textMuted }}> {remedyHint}</span>}
@@ -688,9 +708,50 @@ export function LeveragePanel({
             </div>
           )}
 
-          {step === 'done' && txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
+          {!confirming && step === 'done' && txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
         </div>
       </div>
+
+      {confirming && collateralReserve && debtReserve && (
+        <ConfirmLeverageModal
+          title={actionLabel}
+          marginLine={boosting || !marginReserve
+            ? null
+            : `${display(marginAmount, marginReserve.raw.decimals, 6)} ${marginReserve.symbol}`}
+          // What the position gains, taken from the route when there is one and from the typed
+          // figure until then, so the line never reads as zero while a quote is in flight.
+          supplyLine={`${display(
+            preview?.projection.expectedCollateral ?? estimate?.expectedCollateral ?? supplyAmount,
+            collateralReserve.raw.decimals, 6,
+          )} ${collateralReserve.symbol}`}
+          borrowLine={`${display(
+            preview?.borrowAmount ?? seededBorrow ?? 0n, debtReserve.raw.decimals, 6,
+          )} ${debtReserve.symbol}`}
+          preview={preview}
+          projection={preview?.projection ?? estimate}
+          isQuoting={isQuoting}
+          previewMessage={message}
+          // A moved route can only be waited out when the borrow is free to re-solve; pinned, it
+          // is the held signature that has to give.
+          showResign={pinnedBorrow !== null && previewError === 'QUOTE_MOVED'}
+          priceImpactBlocked={priceImpactBlocked}
+          slippageBps={slippageBps}
+          collateralSymbol={collateralReserve.symbol}
+          debtSymbol={debtReserve.symbol}
+          collateralDecimals={collateralReserve.raw.decimals}
+          debtDecimals={debtReserve.raw.decimals}
+          step={step}
+          execError={execError}
+          remedyHint={remedyHint}
+          txHash={txHash}
+          chainId={chainId}
+          reusableSignature={reusableSignature}
+          onRefresh={refresh}
+          onResign={forgetSignature}
+          onConfirm={() => void execute()}
+          onClose={() => setConfirming(false)}
+        />
+      )}
     </div>
   )
 }

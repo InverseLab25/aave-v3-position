@@ -5,7 +5,7 @@
  * the swap to repay the flash, the winning route is built, and the built figures — not the
  * quote's — are what the projection and `minOut` are taken from.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useChainId, useConnection, usePublicClient, useSignTypedData, useWriteContract } from 'wagmi'
 import { parseAbi, type Address, type Hex } from 'viem'
 import {
@@ -32,7 +32,18 @@ import {
   type MarginLocation,
   type OpenProjection,
 } from '../lib/leverage'
-import { solveBorrow } from '../lib/solveBorrow'
+import { seedBorrow, solveBorrow } from '../lib/solveBorrow'
+import {
+  browserStorage,
+  canReuseDelegation,
+  clearDelegation,
+  delegationKey,
+  loadDelegation,
+  MIN_DELEGATION_REMAINING_S,
+  saveDelegation,
+  withinAdoptionBand,
+  type HeldDelegation,
+} from '../lib/delegationCache'
 import { routeCostPercent } from '../lib/swapRoute'
 import { getAdaptersForChain } from '../adapters'
 import type { Adapter, QuoteResponse } from '../adapters/types'
@@ -206,10 +217,108 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const [execError, setExecError] = useState<string | null>(null)
   const [execRemedy, setExecRemedy] = useState<StrategiesRemedy | null>(null)
 
-  /** Set while a signature is held, to stop the preview moving underneath it. */
+  /** Set while a signature is being spent, to stop the preview moving underneath it. */
   const frozen = useRef(false)
 
   const refresh = useCallback(() => setTick((t) => t + 1), [])
+
+  /**
+   * Clears the record of the last attempt.
+   *
+   * `step` and `txHash` outlive the modal they were produced in, so without this a second open
+   * starts already showing the previous one's receipt — and its Confirm button hidden behind a
+   * "done" that belongs to a transaction the user has already seen.
+   */
+  const reset = useCallback(() => {
+    setStep('idle')
+    setTxHash(undefined)
+    setExecError(null)
+    setExecRemedy(null)
+  }, [])
+
+  /**
+   * What a held signature would be filed under — chain, owner and the UNDERLYING debt asset.
+   *
+   * Keyed on the underlying rather than the variable-debt token because the underlying is known
+   * from the form alone, while the vDebt address takes two on-chain reads that only `execute`
+   * performs. The vDebt address is stored inside the entry instead and verified before reuse.
+   */
+  const storageKey = (() => {
+    if (!input || !owner) return null
+    const mode = resolveOpenMode(input.direction, input.marginAsset)
+    const { debtAsset } = resolveMode({ mode, volatile: input.subject, stable: input.quote })
+    return delegationKey({ chainId, owner, debtAsset })
+  })()
+
+  /**
+   * Storage is the single copy, re-read rather than mirrored into state.
+   *
+   * Every write below bumps `storageTick`, which is what makes the read re-run — so there is no
+   * second copy to drift, and no effect setting state from a load. It also means a signature
+   * taken in another tab is picked up by the next thing that renders here.
+   */
+  const [storageTick, setStorageTick] = useState(0)
+  const held = useMemo(() => {
+    // The dependency that does the work: nothing about the READ changes when a signature is taken
+    // or dropped, only the bytes behind it, so the tick is what re-runs this.
+    void storageTick
+    return storageKey ? loadDelegation(browserStorage(), storageKey) : null
+  }, [storageKey, storageTick])
+
+  const forget = useCallback(() => {
+    if (storageKey) clearDelegation(browserStorage(), storageKey)
+    setStorageTick((t) => t + 1)
+  }, [storageKey])
+
+  /**
+   * Drops the signature the moment it stops being usable.
+   *
+   * The clock lives HERE rather than in the reuse checks below, which is what keeps those pure:
+   * asking `Date.now()` during render makes the pin flip on whichever render happens to straddle
+   * the deadline. A timeout fires once, at the deadline, and everything downstream can then treat
+   * whatever is held as live. An already-lapsed entry schedules at zero and is gone next tick.
+   */
+  useEffect(() => {
+    if (!held) return
+    const now = BigInt(Math.floor(Date.now() / 1000))
+    const msLeft = Number(held.deadline - MIN_DELEGATION_REMAINING_S - now) * 1000
+    const id = setTimeout(forget, msLeft > 0 ? msLeft : 0)
+    return () => clearTimeout(id)
+  }, [held, forget])
+
+  /**
+   * The borrow the quote must hit, when a held signature is worth keeping.
+   *
+   * A delegation authorises ONE exact borrow (AaveV3Strategies.sol:287,343), so reusing a
+   * signature means pinning the position to the figure it was signed over and re-pricing only the
+   * route around it. Without that, every refresh re-solves the borrow, moves it by a wei or more,
+   * and invalidates the very signature this cache exists to preserve.
+   *
+   * Only on the supply path: when the user typed the BORROW there is nothing to solve, so the
+   * figure already is whatever they asked for and a pin would be a no-op.
+   *
+   * The adoption band is measured against the SEEDED borrow — what `solveBorrow` itself starts
+   * from — because this decision has to be made before the solve it replaces.
+   */
+  const pinnedBorrow = (() => {
+    if (!input || !held || input.sizedBy !== 'supply') return null
+    const { flashAmount, debtMargin } = deriveOpen({
+      marginAsset: input.marginAsset,
+      marginAmount: input.marginAmount,
+      supplyAmount: input.supplyAmount,
+    })
+    const seed = seedBorrow({
+      flashAmount,
+      debtMargin,
+      slipNum: BPS - input.slippageBps,
+      collateralPriceUsd: input.reserves.collateral.priceUsd,
+      debtPriceUsd: input.reserves.debt.priceUsd,
+      collateralDecimals: input.reserves.collateral.decimals,
+      debtDecimals: input.reserves.debt.decimals,
+    })
+    if (seed === null || !withinAdoptionBand(held.value, seed)) return null
+    return held.value
+  })()
 
   /**
    * The quoting effect is keyed on this string, NOT on `input`'s identity.
@@ -224,18 +333,23 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
    * (A comment here used to claim the React Compiler memoized the caller's object. It is not
    * installed and not configured in vite.config.ts, so nothing was memoizing anything.)
    */
-  const key = input ? inputKey(input) : null
+  // The pin is folded in because it changes what the quote is FOR: a preview solved freely and
+  // one priced at a pinned borrow are different plans, and switching between them must re-quote.
+  const key = input ? `${inputKey(input)}|pin:${pinnedBorrow ?? '-'}` : null
   // Carries the live object into an effect that must not depend on its identity. Every value the
   // effect reads is folded into `key`, so a run always sees an object matching the key it fired
   // for. Synced in its own effect, declared FIRST: effects run in declaration order within a
   // commit, so the quoting effect below always observes the object from this same render.
   const inputRef = useRef(input)
+  const pinRef = useRef(pinnedBorrow)
   useEffect(() => {
     inputRef.current = input
+    pinRef.current = pinnedBorrow
   })
 
   useEffect(() => {
     const input = inputRef.current
+    const pinned = pinRef.current
     // Frozen: a held signature commits to an exact borrowAmount, so the plan must not move
     // underneath it. Nothing goes stale — `previewFor` still matches `input`, which has not
     // changed either.
@@ -333,6 +447,25 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           // flash is derived from the route afterwards.
           borrowAmount = input.borrowAmount
           candidates = await quoteAll(borrowAmount)
+          if (cancelled) return
+          if (candidates.length === 0) {
+            setPreviewError('NO_ROUTE')
+            return
+          }
+        } else if (pinned !== null) {
+          // A signature is held for exactly this borrow, so the solve is skipped and the route is
+          // re-priced around the signed figure instead. Whether it still repays the flash is NOT
+          // assumed — the shared `guaranteedOut < flashAmount` check below judges that, and
+          // reports QUOTE_MOVED once the market has left the signed size behind.
+          const derived = deriveOpen({
+            marginAsset: input.marginAsset,
+            marginAmount: input.marginAmount,
+            supplyAmount: input.supplyAmount,
+          })
+          flashAmount = derived.flashAmount
+          debtMargin = derived.debtMargin
+          borrowAmount = pinned
+          candidates = await quoteAll(borrowAmount + debtMargin)
           if (cancelled) return
           if (candidates.length === 0) {
             setPreviewError('NO_ROUTE')
@@ -534,16 +667,49 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       const standing = await getDelegationAllowance(client, variableDebtToken, owner, input.contract)
       let delegation = ZERO_STRATEGIES_SIG
       if (standing < effectivePreview.borrowAmount) {
+        // Read either way: the nonce is what proves a held signature was never spent, so it is
+        // needed to decide on reuse just as much as it is needed to take a fresh signature.
         const ctx = await getPermitContext(client, variableDebtToken, owner)
-        const deadline = BigInt(Math.floor(Date.now() / 1000)) + SIGNATURE_TTL_S
-        const signature = await deps.signTypedData(
-          buildCreditDelegation({
-            chainId, debtToken: variableDebtToken, debtTokenName: ctx.name,
-            delegatee: input.contract, value: effectivePreview.borrowAmount,
-            nonce: ctx.nonce, deadline,
-          }),
-        )
-        delegation = toStrategiesSig(signature, deadline)
+        const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+        const need = {
+          chainId, owner,
+          debtAsset: effectivePreview.debtAsset,
+          debtToken: variableDebtToken,
+          delegatee: input.contract,
+          nonce: ctx.nonce,
+          value: effectivePreview.borrowAmount,
+          nowSeconds,
+        }
+
+        if (held && canReuseDelegation(held, need)) {
+          // Nothing to prompt for. This is the retry after a revert or a stale route: the
+          // signature was never consumed, so the same one authorises this attempt.
+          delegation = toStrategiesSig(held.signature, held.deadline)
+        } else {
+          const deadline = nowSeconds + SIGNATURE_TTL_S
+          const signature = await deps.signTypedData(
+            buildCreditDelegation({
+              chainId, debtToken: variableDebtToken, debtTokenName: ctx.name,
+              delegatee: input.contract, value: effectivePreview.borrowAmount,
+              nonce: ctx.nonce, deadline,
+            }),
+          )
+          // Banked BEFORE the send, which is the only ordering that helps: what has to survive is
+          // precisely the attempt that fails after this point.
+          const fresh: HeldDelegation = {
+            chainId, owner,
+            debtAsset: need.debtAsset,
+            debtToken: need.debtToken,
+            delegatee: need.delegatee,
+            nonce: need.nonce,
+            value: need.value,
+            deadline,
+            signature,
+          }
+          saveDelegation(browserStorage(), fresh)
+          setStorageTick((t) => t + 1)
+          delegation = toStrategiesSig(signature, deadline)
+        }
       }
 
       // 3. Send.
@@ -561,6 +727,10 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       })
       setTxHash(hash)
       setStep('done')
+      // Submitted, so this signature has done its job. Holding it past that would leave a live
+      // grant in storage for a flow that has nothing left to retry, and would let a second
+      // transaction be built against a nonce the first one is already spending.
+      forget()
     } catch (err) {
       const decoded = decodeStrategiesError(err)
       setExecError(decoded?.message ?? extractRevertMessage(err))
@@ -573,12 +743,36 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       // stale forever with no input change to prompt a refresh.
       refresh()
     }
-  }, [input, effectivePreview, client, owner, chainId, injected, writeContractAsync, signTypedDataAsync, refresh])
+  }, [input, effectivePreview, client, owner, chainId, injected, writeContractAsync, signTypedDataAsync, refresh, held, forget])
+
+  /**
+   * A held signature that authorises exactly the borrow now on screen — what the modal reports as
+   * "no wallet prompt needed".
+   *
+   * Advisory rather than a promise: the nonce is only read inside `execute`, so a delegation that
+   * landed from another tab still costs a prompt. It cannot be wrong in the dangerous direction —
+   * a signature shown here and then re-prompted for is a mild surprise, whereas one silently
+   * reused for a different borrow would not recover the signer at all.
+   */
+  const reusableSignature =
+    held !== null &&
+    effectivePreview !== null &&
+    held.value === effectivePreview.borrowAmount
+      ? { value: held.value, deadline: held.deadline }
+      : null
 
   return {
     preview: effectivePreview,
     previewError: effectivePreviewError,
     isQuoting: effectiveIsQuoting,
     refresh, step, txHash, execError, execRemedy, execute,
+    /** Forgets the last attempt's step, hash and error — call when a fresh confirmation opens. */
+    reset,
+    /** Non-null when the next open would spend a signature already taken. */
+    reusableSignature,
+    /** The borrow the quote is currently pinned to, or null when it is solved freely. */
+    pinnedBorrow,
+    /** Drop the held signature, unpinning the borrow so the next quote sizes itself again. */
+    forgetSignature: forget,
   }
 }
