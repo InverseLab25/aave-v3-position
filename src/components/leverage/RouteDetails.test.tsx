@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { RouteDetails } from './RouteDetails'
 
 /**
@@ -23,6 +23,18 @@ const BASE = {
   slippageBps: 50n,
 }
 
+/** The inverse pair — a short, where collateral is USDC and debt is WETH. */
+const INVERSE = {
+  ...BASE,
+  collateralSymbol: 'USDC',
+  debtSymbol: 'WETH',
+  collateralDecimals: 6,
+  debtDecimals: 18,
+  expectedOut: 3_100_000_000n,
+  minOut: 3_084_500_000n,
+  swapIn: 10n ** 18n,
+}
+
 it('quotes the expected rate from the route own amountOut', () => {
   render(<RouteDetails {...BASE} />)
 
@@ -35,9 +47,10 @@ it('quotes the guaranteed rate from the same route after slippage', () => {
 
   // The same 3,100 USDC against the 0.995 WETH floor — worse by exactly the tolerance, which is
   // the only thing that should separate the two rows now that both come off one route.
-  expect(screen.getByText(/1 WETH = 3,115\.58 USDC/)).toBeTruthy()
-  // The row names the tolerance that produced it, so the gap is self-explaining.
-  expect(screen.getByText('Guaranteed rate (-0.5%)')).toBeTruthy()
+  expect(screen.getByText(/1 WETH = 3,115\.5779 USDC/)).toBeTruthy()
+  // The row names the tolerance that produced it. Quoted debt-per-collateral the floor sits ABOVE
+  // the expectation, so the label has to say so rather than claim a decrease.
+  expect(screen.getByText('Guaranteed rate (+0.5%)')).toBeTruthy()
 })
 
 it('shows both legs of the swap with the floor alongside the expectation', () => {
@@ -46,24 +59,37 @@ it('shows both legs of the swap with the floor alongside the expectation', () =>
   expect(screen.getByText(/3,100\.0000 USDC → 1\.0000 WETH \(min 0\.9950\)/)).toBeTruthy()
 })
 
-it('keeps precision on a sub-1 rate instead of rounding it to zero', () => {
-  // The inverse pair — a short, where collateral is USDC and debt is WETH. At 2dp both rates
-  // would print "1 USDC = 0.00 WETH", which is worse than showing nothing.
-  render(
-    <RouteDetails
-      {...BASE}
-      collateralSymbol="USDC"
-      debtSymbol="WETH"
-      collateralDecimals={6}
-      debtDecimals={18}
-      expectedOut={3_100_000_000n}
-      minOut={3_084_500_000n}
-      swapIn={10n ** 18n}
-    />,
-  )
+it('picks whichever orientation puts the rate above 1, on either side of the pair', () => {
+  // Quoted the way the props are shaped this is 1 USDC = 0.000322 WETH, which is unreadable; the
+  // legible end of the same rate is the one that gets shown.
+  render(<RouteDetails {...INVERSE} />)
 
-  expect(screen.getByText(/1 USDC = 0\.000323 WETH/)).toBeTruthy()
-  expect(screen.getByText(/1 USDC = 0\.000324 WETH/)).toBeTruthy()
+  expect(screen.getByText(/1 WETH = 3,100\.00 USDC/)).toBeTruthy()
+  expect(screen.getByText(/1 WETH = 3,084\.50 USDC/)).toBeTruthy()
+  // This end of the pair falls with slippage, so here the minus sign is the literal one.
+  expect(screen.getByText('Guaranteed rate (-0.5%)')).toBeTruthy()
+})
+
+it('keeps precision on a sub-1 rate instead of collapsing both rows onto one string', () => {
+  render(<RouteDetails {...INVERSE} />)
+
+  fireEvent.click(screen.getByLabelText('Flip rate direction'))
+
+  // Four decimals would print both of these as "0.0003", which is the two rows agreeing on a
+  // number neither of them holds. Significant digits keep the tolerance visible.
+  expect(screen.getByText(/1 USDC = 0\.000322581 WETH/)).toBeTruthy()
+  expect(screen.getByText(/1 USDC = 0\.000324202 WETH/)).toBeTruthy()
+  expect(screen.getByText('Guaranteed rate (+0.5%)')).toBeTruthy()
+})
+
+it('flips back to the natural orientation on a second click', () => {
+  render(<RouteDetails {...BASE} />)
+
+  fireEvent.click(screen.getByLabelText('Flip rate direction'))
+  expect(screen.getByText(/1 USDC = 0\.000322581 WETH/)).toBeTruthy()
+
+  fireEvent.click(screen.getByLabelText('Flip rate direction'))
+  expect(screen.getByText(/1 WETH = 3,100\.00 USDC/)).toBeTruthy()
 })
 
 it('renders no guaranteed rate rather than a divide-by-zero when the route guarantees nothing', () => {
