@@ -9,8 +9,8 @@
 /** The same three the close flow offers, so one habit works in both places. */
 export const SLIPPAGE_PRESETS = [0.1, 0.5, 1] as const
 
-/** What the leverage panel starts on. */
-export const DEFAULT_SLIPPAGE_PERCENT = 0.5
+/** What the leverage panel starts on — the close flow's default too, for the same reason. */
+export const DEFAULT_SLIPPAGE_PERCENT = 0.1
 
 /**
  * Beyond this a tolerance stops being a tolerance. `minOut` is the route's output less this, so
