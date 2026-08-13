@@ -86,7 +86,9 @@ export function ConfirmLeverageModal({
 }: ConfirmLeverageModalProps) {
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000))
 
-  const busy = step === 'approving' || step === 'signing' || step === 'sending'
+  // Only the send happens from here now: the approve and the delegation are taken by the panel's
+  // Open button, and this modal does not exist until both have been granted.
+  const busy = step === 'sending'
   const done = step === 'done'
 
   // Re-quote on a cadence so what is confirmed is what was just priced. Paused while the wallet
@@ -237,16 +239,13 @@ export function ConfirmLeverageModal({
             </div>
           )}
 
+          {/* The first two are already behind the user by the time this renders — shown ticked
+              rather than hidden, so it is clear what has been spent if they cancel here. */}
           <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.textMuted }}>
-            {(['approving', 'signing', 'sending'] as const).map((s, i) => (
-              <span
-                key={s}
-                style={{ fontWeight: step === s ? 700 : 400, color: step === s ? T.text : T.textMuted }}
-              >
-                {i > 0 && ' · '}
-                {s === 'approving' ? 'approve' : s === 'signing' ? 'sign' : 'send'}
-              </span>
-            ))}
+            <span style={{ color: T.text }}>✓ approved · ✓ signed · </span>
+            <span style={{ fontWeight: busy || done ? 700 : 400, color: busy || done ? T.text : T.textMuted }}>
+              send
+            </span>
           </div>
 
           {execError && (

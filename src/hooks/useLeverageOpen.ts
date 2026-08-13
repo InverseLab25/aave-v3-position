@@ -21,6 +21,7 @@ import {
   aaveV3StrategiesAbi,
   BPS,
 } from '../lib/strategies-sdk'
+import type { StrategiesSig } from '../lib/strategies-sdk'
 import {
   deriveOpen,
   projectOpen,
@@ -145,7 +146,20 @@ const DEBOUNCE_MS = 400
 /** Solve, then at most one correction. Pricing is non-linear; a third round buys nothing. */
 const MAX_REFINE_ROUNDS = 2
 
-export type OpenStep = 'idle' | 'approving' | 'signing' | 'sending' | 'done' | 'error'
+/**
+ * `ready` is the gate: approved and delegated, nothing sent. The user is looking at the position
+ * with the wallet work already behind them, and the send waits on a second press.
+ */
+export type OpenStep = 'idle' | 'approving' | 'signing' | 'ready' | 'sending' | 'done' | 'error'
+
+/** What the wallet has already granted, carried from `prepare` to `submit`. */
+interface PreparedOpen {
+  delegation: StrategiesSig
+  /** The exact borrow a fresh or reused SIGNATURE covers. Null when a standing allowance did. */
+  signedValue: bigint | null
+  /** The on-chain delegation allowance read at prepare time — the ceiling in the null case. */
+  standingAllowance: bigint
+}
 
 const ERC20_ABI = parseAbi([
   'function allowance(address owner, address spender) view returns (uint256)',
@@ -220,6 +234,14 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   /** Set while a signature is being spent, to stop the preview moving underneath it. */
   const frozen = useRef(false)
 
+  /**
+   * What {@link prepare} authorised, held for {@link submit} to spend.
+   *
+   * A ref rather than state because nothing renders from it and, more to the point, `submit` must
+   * read what was actually signed rather than whatever a re-render has since produced.
+   */
+  const prepared = useRef<PreparedOpen | null>(null)
+
   const refresh = useCallback(() => setTick((t) => t + 1), [])
 
   /**
@@ -234,6 +256,10 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     setTxHash(undefined)
     setExecError(null)
     setExecRemedy(null)
+    // The grant belongs to the attempt being forgotten. Carrying it into the next one would let a
+    // send go out against an authorisation the user took for a position they then walked away
+    // from — and `submit`'s coverage check is the only thing that would catch it.
+    prepared.current = null
   }, [])
 
   /**
@@ -634,23 +660,37 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const effectivePreviewError = stale ? null : previewError
   const effectiveIsQuoting = stale || isQuoting
 
-  const execute = useCallback(async () => {
-    if (!input || !effectivePreview || !client || !owner) return
+  const deps = useCallback(
+    (): OpenDeps => ({
+      writeContract:
+        injected?.writeContract ??
+        ((args) => writeContractAsync(args as Parameters<typeof writeContractAsync>[0])),
+      signTypedData:
+        injected?.signTypedData ??
+        ((payload) => signTypedDataAsync(payload as Parameters<typeof signTypedDataAsync>[0])),
+    }),
+    [injected, writeContractAsync, signTypedDataAsync],
+  )
+
+  /**
+   * Everything the wallet has to be asked for, before anything irreversible happens on-chain.
+   *
+   * Split out of the send so the user gets a last look at a position that is already authorised:
+   * the approve and the delegation are done, the modal opens, and nothing reaches the pool until
+   * they press again. The cost of that ordering is that a cancel at the modal has already spent
+   * an approve and a signature — deliberate, and the reason the signature is banked below.
+   *
+   * Returns whether the wallet granted everything, because the caller opens the confirmation on
+   * the strength of it — and `step` is state, which an awaiting caller cannot read back in time.
+   */
+  const prepare = useCallback(async (): Promise<boolean> => {
+    if (!input || !effectivePreview || !client || !owner) return false
 
     // The delegation signs an exact borrowAmount, so the plan must not move once we start.
     frozen.current = true
     setExecError(null)
     setExecRemedy(null)
     try {
-      const deps: OpenDeps = {
-        writeContract:
-          injected?.writeContract ??
-          ((args) => writeContractAsync(args as Parameters<typeof writeContractAsync>[0])),
-        signTypedData:
-          injected?.signTypedData ??
-          ((payload) => signTypedDataAsync(payload as Parameters<typeof signTypedDataAsync>[0])),
-      }
-
       const chainConfig = getChainConfig(chainId)
       if (!chainConfig) throw new Error('Unsupported chain')
       const dataProvider = await getPoolDataProvider(client, chainId, chainConfig.aave.poolAddressesProvider)
@@ -665,7 +705,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         args: [owner, input.contract],
       })) as bigint
       if (allowance < input.marginAmount) {
-        await deps.writeContract({
+        await deps().writeContract({
           address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
           args: [input.contract, input.marginAmount],
         })
@@ -696,7 +736,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           delegation = toStrategiesSig(held.signature, held.deadline)
         } else {
           const deadline = nowSeconds + SIGNATURE_TTL_S
-          const signature = await deps.signTypedData(
+          const signature = await deps().signTypedData(
             buildCreditDelegation({
               chainId, debtToken: variableDebtToken, debtTokenName: ctx.name,
               delegatee: input.contract, value: effectivePreview.borrowAmount,
@@ -721,16 +761,76 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         }
       }
 
-      // 3. Send.
+      // Authorised, not opened. What the borrow was authorised FOR is recorded alongside it,
+      // because the modal keeps re-pricing from here and `submit` has to know whether the route
+      // it ends up sending still falls inside this grant.
+      prepared.current = {
+        delegation,
+        signedValue: standing < effectivePreview.borrowAmount ? effectivePreview.borrowAmount : null,
+        standingAllowance: standing,
+      }
+      setStep('ready')
+      return true
+    } catch (err) {
+      const decoded = decodeStrategiesError(err)
+      setExecError(decoded?.message ?? extractRevertMessage(err))
+      setExecRemedy(decoded?.remedy ?? null)
+      setStep('error')
+      return false
+    } finally {
+      frozen.current = false
+      // Re-arm the preview effect now the freeze is lifting. `frozen` is a ref, so clearing it
+      // alone does not re-render — a preview left over from before signing could otherwise go
+      // stale forever with no input change to prompt a refresh.
+      refresh()
+    }
+  }, [input, effectivePreview, client, owner, chainId, deps, refresh, held])
+
+  /**
+   * The send, against whatever route is on screen at the moment it is pressed.
+   *
+   * The route is deliberately the CURRENT one rather than the one `prepare` saw: the modal
+   * re-prices while it is open precisely so the calldata is seconds old, and holding the older
+   * route would give that back. The borrow is the part that may not move, so it is checked.
+   */
+  const submit = useCallback(async () => {
+    const authorisation = prepared.current
+    // Nothing has been authorised, so a send would revert on the delegation check and cost the
+    // gas to find out. The caller is expected to have run `prepare` first.
+    if (!authorisation) return
+    if (!input || !effectivePreview || !client || !owner) return
+
+    // A delegation signature authorises ONE exact figure (AaveV3Strategies.sol:287,343); a
+    // standing allowance authorises anything up to its ceiling. Either way, a borrow outside what
+    // was granted reverts — and the pin only holds the figure still while the signature lives, so
+    // one timing out mid-modal lands exactly here.
+    const covered =
+      authorisation.signedValue !== null
+        ? effectivePreview.borrowAmount === authorisation.signedValue
+        : effectivePreview.borrowAmount <= authorisation.standingAllowance
+    if (!covered) {
+      setExecError(
+        'The route re-priced past the borrow you authorised. Nothing was submitted — re-sign at the new size to continue.',
+      )
+      setExecRemedy(null)
+      setStep('error')
+      return
+    }
+
+    frozen.current = true
+    setExecError(null)
+    setExecRemedy(null)
+    try {
       setStep('sending')
       const plan = planOpen({
         mode: resolveOpenMode(input.direction, input.marginAsset),
         volatile: input.subject, stable: input.quote,
         flashAmount: effectivePreview.flashAmount, borrowAmount: effectivePreview.borrowAmount,
         marginAmount: input.marginAmount, minOut: effectivePreview.minOut,
-        router: effectivePreview.router, swapData: effectivePreview.swapData, delegation,
+        router: effectivePreview.router, swapData: effectivePreview.swapData,
+        delegation: authorisation.delegation,
       })
-      const hash = await deps.writeContract({
+      const hash = await deps().writeContract({
         address: input.contract, abi: aaveV3StrategiesAbi,
         functionName: plan.functionName, args: plan.args,
       })
@@ -739,20 +839,20 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       // Submitted, so this signature has done its job. Holding it past that would leave a live
       // grant in storage for a flow that has nothing left to retry, and would let a second
       // transaction be built against a nonce the first one is already spending.
+      prepared.current = null
       forget()
     } catch (err) {
       const decoded = decodeStrategiesError(err)
       setExecError(decoded?.message ?? extractRevertMessage(err))
       setExecRemedy(decoded?.remedy ?? null)
+      // The authorisation SURVIVES a failed send: the nonce is unspent, so the retry is what the
+      // banked signature exists for. Clearing it here would re-prompt for nothing.
       setStep('error')
     } finally {
       frozen.current = false
-      // Re-arm the preview effect now the freeze is lifting. `frozen` is a ref, so clearing it
-      // alone does not re-render — a preview left over from before signing could otherwise go
-      // stale forever with no input change to prompt a refresh.
       refresh()
     }
-  }, [input, effectivePreview, client, owner, chainId, injected, writeContractAsync, signTypedDataAsync, refresh, held, forget])
+  }, [input, effectivePreview, client, owner, deps, refresh, forget])
 
   /**
    * A held signature that authorises exactly the borrow now on screen — what the modal reports as
@@ -774,7 +874,11 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     preview: effectivePreview,
     previewError: effectivePreviewError,
     isQuoting: effectiveIsQuoting,
-    refresh, step, txHash, execError, execRemedy, execute,
+    refresh, step, txHash, execError, execRemedy,
+    /** Approve and delegate. Prompts the wallet; opens nothing. */
+    prepare,
+    /** Send what `prepare` authorised, against the route currently on screen. */
+    submit,
     /** Forgets the last attempt's step, hash and error — call when a fresh confirmation opens. */
     reset,
     /** Non-null when the next open would spend a signature already taken. */

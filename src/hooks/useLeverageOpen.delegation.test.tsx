@@ -63,7 +63,13 @@ const NONCE = 7n
 const SIGNATURE = `0x${'ab'.repeat(32)}${'cd'.repeat(32)}1b` as const
 
 /**
- * Prices the pair at a flat 1 collateral = 3000 debt, so the borrow the solver lands on is a
+ * The pair's rate, in debt per collateral. Flat, so the borrow the solver lands on is a function
+ * of the supply alone — and moves only when a test moves this.
+ */
+let debtPerCollateral = 3000n
+
+/**
+ * Prices the pair at {@link debtPerCollateral}, so the borrow the solver lands on is a
  * function of the supply alone and moves only when the test moves it.
  */
 function fakeAdapter(): Adapter {
@@ -73,8 +79,8 @@ function fakeAdapter(): Adapter {
     getQuote: vi.fn(async (_from, _to, amountIn): Promise<QuoteResponse> => ({
       aggregator: 'KyberSwap',
       amountIn,
-      // debt (6dp) → collateral (18dp) at 3000 debt per collateral.
-      amountOut: ((BigInt(amountIn) * 10n ** 18n) / (3000n * 10n ** 6n)).toString(),
+      // debt (6dp) → collateral (18dp) at the current rate.
+      amountOut: ((BigInt(amountIn) * 10n ** 18n) / (debtPerCollateral * 10n ** 6n)).toString(),
       amountOutUsd: '0',
       gasUsd: '0',
       netReturnUsd: 0,
@@ -125,7 +131,10 @@ function makeInput(over: Partial<LeverageOpenInput> = {}): LeverageOpenInput {
 }
 
 const signTypedData = vi.fn<(payload: unknown) => Promise<typeof SIGNATURE>>(async () => SIGNATURE)
-const writeContract = vi.fn(async () => `0x${'11'.repeat(32)}` as const)
+/** Typed with its argument, so assertions can read WHICH call a write was. */
+const writeContract = vi.fn<(args: { functionName: string }) => Promise<`0x${string}`>>(
+  async () => `0x${'11'.repeat(32)}`,
+)
 
 /**
  * This repo's jsdom exposes no `localStorage` at all, so one is installed here.
@@ -167,16 +176,39 @@ async function mount(input: LeverageOpenInput = makeInput()) {
   await settle()
 }
 
-async function confirm() {
+/** The prerequisites: approve and delegate. What the panel's Open button now does on its own. */
+async function prepare() {
   await act(async () => {
-    await hook().execute()
+    await hook().prepare()
   })
+}
+
+/** The send, which is all the modal's Confirm is left holding. */
+async function submit() {
+  await act(async () => {
+    await hook().submit()
+  })
+}
+
+/**
+ * Both halves, with the pricing gap between them that the real flow always has.
+ *
+ * Banking a signature pins the borrow, and the pin is folded into the quoting effect's key — so
+ * the preview it was taken against is stale the moment it lands, and `submit` has nothing to send
+ * until a route priced AT the signed figure arrives. The modal shows that gap as "Pricing…" with
+ * Confirm disabled; here it is a settle.
+ */
+async function confirm() {
+  await prepare()
+  await settle()
+  await submit()
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers()
   installStorage()
+  debtPerCollateral = 3000n
   mocks.usePublicClient.mockReturnValue({
     // The only direct read `execute` makes: the margin allowance, already covering it.
     readContract: vi.fn(async () => 10n ** 30n),
@@ -314,6 +346,82 @@ it('skips the wallet entirely when a standing delegation already covers the borr
 
   expect(signTypedData).not.toHaveBeenCalled()
   expect(writeContract).toHaveBeenCalled()
+})
+
+it('prepare takes the approve and the signature, and sends nothing', async () => {
+  // The gate the split exists for: the wallet work is done, the position is not opened, and the
+  // user still gets a look at what they are about to submit.
+  mocks.usePublicClient.mockReturnValue({ readContract: vi.fn(async () => 0n) })
+  await mount()
+  const borrow = hook().preview!.borrowAmount
+
+  await prepare()
+
+  expect(hook().step).toBe('ready')
+  expect(signTypedData).toHaveBeenCalledTimes(1)
+  // One write, and it is the approve — not the open.
+  expect(writeContract).toHaveBeenCalledTimes(1)
+  expect(writeContract.mock.calls[0][0]).toMatchObject({ functionName: 'approve' })
+  expect(hook().txHash).toBeUndefined()
+  // Banked, because everything after this point may fail and must not cost a second prompt.
+  expect(loadDelegation(localStorage, KEY)?.value).toBe(borrow)
+})
+
+it('submit spends what prepare took, with no second prompt', async () => {
+  await mount()
+  await prepare()
+  expect(signTypedData).toHaveBeenCalledTimes(1)
+
+  // The pinned re-quote the modal waits on before Confirm is pressable.
+  await settle()
+  await submit()
+
+  expect(hook().step).toBe('done')
+  expect(signTypedData).toHaveBeenCalledTimes(1)
+  expect(writeContract).toHaveBeenCalledTimes(1) // allowance already covers it, so send only
+  expect(loadDelegation(localStorage, KEY)).toBeNull()
+})
+
+it('submit does nothing until prepare has run', async () => {
+  // Nothing is authorised yet, so a send here would revert on the delegation check and cost gas.
+  await mount()
+  await submit()
+
+  expect(writeContract).not.toHaveBeenCalled()
+  expect(hook().step).toBe('idle')
+})
+
+it('a rejected signature leaves nothing prepared and nothing sent', async () => {
+  signTypedData.mockRejectedValueOnce(new Error('User rejected the request'))
+  await mount()
+
+  await prepare()
+
+  expect(hook().step).toBe('error')
+  expect(writeContract).not.toHaveBeenCalled()
+  expect(loadDelegation(localStorage, KEY)).toBeNull()
+})
+
+it('refuses to submit a route whose borrow has left the signature behind', async () => {
+  // The signature authorises ONE exact figure (AaveV3Strategies.sol:287,343). Sending against a
+  // preview that has moved off it burns gas on a revert the hook can see coming. Reachable
+  // whenever the pin lapses while the modal is open — a signature timing out does exactly that.
+  await mount()
+  await prepare()
+  const signedFor = loadDelegation(localStorage, KEY)!.value
+
+  // The pin lapses, and the market moves, so the free re-solve lands somewhere else.
+  await act(async () => {
+    hook().forgetSignature()
+  })
+  debtPerCollateral = 3300n
+  await settle()
+  expect(hook().preview!.borrowAmount).not.toBe(signedFor)
+
+  await submit()
+
+  expect(writeContract).not.toHaveBeenCalled()
+  expect(hook().step).toBe('error')
 })
 
 it('forgetSignature drops the pin so the borrow sizes itself again', async () => {

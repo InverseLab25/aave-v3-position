@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { erc20Abi, formatUnits, parseUnits } from 'viem'
 import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../../hooks/useAavePositions'
@@ -409,7 +409,7 @@ export function LeveragePanel({
   })()
 
   const {
-    preview, previewError, isQuoting, execute, step, execError, execRemedy, txHash, refresh,
+    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, txHash, refresh,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
 
@@ -422,6 +422,46 @@ export function LeveragePanel({
    * opens the modal, and the modal is what waits for a route.
    */
   const [confirming, setConfirming] = useState(false)
+
+  /**
+   * A press of Open that is still waiting for a route before it can ask the wallet for anything.
+   *
+   * The delegation signs ONE exact borrow and the contract matches it exactly, so what gets
+   * signed has to be a figure the router agreed to — never the oracle seed, which is an estimate
+   * the solve then corrects. So the press arms this, and the effect below spends it once a
+   * preview lands.
+   */
+  const [pendingOpen, setPendingOpen] = useState(false)
+
+  /**
+   * Guards the effect against the identity churn of its own dependencies.
+   *
+   * `input` and `preview` are rebuilt on nearly every render, so the effect re-runs constantly
+   * while armed — and without this, each run would fire another `prepare`, i.e. another wallet
+   * prompt. A ref rather than state because it must take effect within the same tick.
+   */
+  const preparing = useRef(false)
+
+  useEffect(() => {
+    if (!pendingOpen || preparing.current) return
+    // A press that lands before the route does is HELD rather than refused — this is the whole
+    // reason the button does not gate on a live preview.
+    const routable = Boolean(input) && !previewError
+    if (routable && (isQuoting || !preview)) return
+
+    preparing.current = true
+    void (async () => {
+      // The press is spent either way, so a form with no route to price cannot leave the button
+      // reading "Pricing…" forever. Awaited on both branches: a synchronous setState from inside
+      // an effect cascades renders, and the lint rule that says so is right.
+      const authorised = await (routable && preview ? prepare() : Promise.resolve(false))
+      preparing.current = false
+      setPendingOpen(false)
+      // Only on success. A rejected approve or signature leaves the user on the form, where the
+      // error renders under the button they just pressed.
+      if (authorised) setConfirming(true)
+    })()
+  }, [pendingOpen, input, previewError, isQuoting, preview, prepare])
 
   // Someone else's portfolio is read-only. An undeployed contract does NOT hide the panel: it is
   // how the feature is discovered, and hiding it makes it look absent rather than unavailable.
@@ -694,22 +734,27 @@ export function LeveragePanel({
             ))}
           </div>
 
-          {/* Gated on the FORM being openable, not on a quote having landed. A stale or in-flight
-              quote is the modal's problem, and it re-prices before anything is signed. */}
+          {/* Gated on the FORM being openable, not on a quote having landed — a press that
+              arrives before the route does waits for it rather than being refused. */}
           <button
             onClick={() => {
-              // The previous attempt's hash and error belong to the previous attempt.
+              // The previous attempt's hash, error and authorisation belong to the previous
+              // attempt.
               reset()
-              setConfirming(true)
+              setPendingOpen(true)
             }}
-            disabled={!input || paused || busy}
+            disabled={!input || paused || busy || pendingOpen}
             style={{
               padding: T.space[3], borderRadius: T.radius.md, border: 'none', cursor: 'pointer',
-              background: !input || paused || busy ? T.border : T.primary,
+              background: !input || paused || busy || pendingOpen ? T.border : T.primary,
               color: '#fff', fontWeight: 600,
             }}
           >
-            {actionLabel}
+            {step === 'approving' || step === 'signing'
+              ? 'Check your wallet…'
+              : pendingOpen
+                ? 'Pricing…'
+                : actionLabel}
           </button>
 
           {/* Errors from an attempt made in the modal stay visible after it closes — the modal is
@@ -771,7 +816,7 @@ export function LeveragePanel({
           reusableSignature={reusableSignature}
           onRefresh={refresh}
           onResign={forgetSignature}
-          onConfirm={() => void execute()}
+          onConfirm={() => void submit()}
           onClose={() => setConfirming(false)}
         />
       )}
