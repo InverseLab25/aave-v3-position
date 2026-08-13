@@ -39,6 +39,9 @@ export type SeedBorrowInput = Pick<
   | 'collateralPriceUsd' | 'debtPriceUsd' | 'collateralDecimals' | 'debtDecimals'
 >
 
+/** The rate half alone, for callers that hold the prices but derive the amounts themselves. */
+export type SeedBorrowPricing = Omit<SeedBorrowInput, 'flashAmount' | 'debtMargin'>
+
 /**
  * The borrow implied by oracle prices alone, before any router is asked.
  *

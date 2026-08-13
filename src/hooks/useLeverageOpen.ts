@@ -384,6 +384,15 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           marginBalance: input.marginBalance,
           maxSupply: input.maxSupply,
           collateral: input.collateralEnablement,
+          // The same prices `solveBorrow` seeds from, so a debt margin the supply cannot absorb
+          // is named here rather than surfacing later as an unactionable quote failure.
+          pricing: {
+            slipNum: BPS - input.slippageBps,
+            collateralPriceUsd: coll.priceUsd,
+            debtPriceUsd: debt.priceUsd,
+            collateralDecimals: coll.decimals,
+            debtDecimals: debt.decimals,
+          },
         })
         if (sizingError) {
           setPreviewError(sizingError)

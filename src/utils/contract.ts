@@ -15,6 +15,12 @@
 import type { Config } from 'wagmi'
 import type { UseWriteContractReturnType } from 'wagmi'
 
+/**
+ * How long to wait for a prerequisite transaction to be mined before giving up (ms).
+ * Matches the close path's bound; see the note at its call site.
+ */
+const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
+
 /** The parameter bag `simulateContract` accepts, before per-ABI narrowing. */
 type SimulateParams = Parameters<typeof simulateContract>[1]
 import { extractDetailedError } from './errors'
@@ -199,8 +205,18 @@ export async function approveErc20(
         ...call,
         args: [spender, 0n],
       })
-      // The real approve must see an allowance of 0, so this has to land first.
-      await waitForTransactionReceipt(config, { hash: resetHash })
+      // The real approve must see an allowance of 0, so this has to land first. Bounded for
+      // the same reason as the close: an MEV-protected RPC never includes a transaction that
+      // would revert, and a dropped one never arrives on any RPC — either way an unbounded
+      // wait hangs the flow with no way out. Failing loudly beats waiting forever.
+      try {
+        await waitForTransactionReceipt(config, { hash: resetHash, timeout: RECEIPT_TIMEOUT_MS })
+      } catch {
+        throw new Error(
+          `The allowance reset (${resetHash}) has not been mined after ${RECEIPT_TIMEOUT_MS / 60000} minutes. ` +
+            'Check it on the explorer before retrying — the approval cannot proceed until it lands.',
+        )
+      }
     }
   }
 

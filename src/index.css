@@ -372,7 +372,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   padding: var(--space-1) 0;
 }
 .info-row-label { color: var(--color-text-muted); }
-.info-row-value { font-family: var(--font-mono); font-weight: 600; color: var(--color-text); }
+.info-row-value { font-family: var(--font-mono); font-weight: 500; color: var(--color-text); }
 
 /* ── 16. DexDiscovery specific ───────────────────────────────────────────── */
 .dex-grid {

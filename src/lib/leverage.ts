@@ -11,6 +11,8 @@
 import { BPS, LTV_CEILING_FACTOR_BPS } from "./strategies-sdk/sizing";
 import type { MarginIn, MarginLocation } from "./strategies-sdk/sizing";
 import type { OpenMode } from "./strategies-sdk/plan";
+import { seedBorrow } from "./solveBorrow";
+import type { SeedBorrowPricing } from "./solveBorrow";
 
 /** Which side of the pair the user is taking. Longs collateralize it; shorts borrow it. */
 export type Direction = "long" | "short";
@@ -377,6 +379,8 @@ export type LeverageError =
   | "MARGIN_EXCEEDS_BALANCE"
   | "NO_SUPPLY"
   | "SUPPLY_BELOW_MARGIN"
+  /** The debt-path twin of `SUPPLY_BELOW_MARGIN` — see {@link debtMarginFits}. */
+  | "MARGIN_EXCEEDS_SUPPLY"
   | "SUPPLY_ABOVE_MAX"
   | "BOOST_NO_HEADROOM"
   | "COLLATERAL_NOT_ENABLED"
@@ -486,6 +490,27 @@ export interface ValidateSizingInput extends DeriveOpenInput {
    * every open.
    */
   collateral?: CollateralEnablement | null;
+  /**
+   * Oracle prices and the slippage numerator, so a DEBT-asset margin can be measured against the
+   * supply it has to fit inside. Null skips that check, on the same grounds as `collateral`.
+   */
+  pricing?: SeedBorrowPricing | null;
+}
+
+/**
+ * Whether a debt-asset margin leaves anything to borrow.
+ *
+ * On the debt path the margin is swap INPUT (AaveV3Strategies.sol:491), and the swap only has to
+ * produce the supply. Bring more margin than the supply is worth and the borrow comes out
+ * negative — no combination of routes can price that, so it is a sizing error, not a quoting one.
+ *
+ * Delegated to {@link seedBorrow} rather than re-derived, so the form and the solve cannot
+ * disagree about where the boundary sits.
+ */
+function debtMarginFits(p: ValidateSizingInput): boolean {
+  if (p.marginAsset !== "debt" || !p.pricing) return true;
+  const { flashAmount, debtMargin } = deriveOpen(p);
+  return seedBorrow({ ...p.pricing, flashAmount, debtMargin }) !== null;
 }
 
 /**
@@ -508,6 +533,9 @@ export function validateSizing(p: ValidateSizingInput): LeverageError | null {
   // (AaveV3Strategies.sol:274, :331).
   if (deriveOpen(p).flashAmount <= 0n) return "SUPPLY_BELOW_MARGIN";
   if (p.supplyAmount > p.maxSupply) return "SUPPLY_ABOVE_MAX";
+  // AFTER the ceiling, deliberately. Both can be true at once, and this one's advice is "supply
+  // more" — which would be a contradiction to show while the supply is already over the max.
+  if (!debtMarginFits(p)) return "MARGIN_EXCEEDS_SUPPLY";
   // Last, because it is the only one the user cannot fix by retyping a number — showing it while
   // the amounts are still incomplete would be noise.
   if (p.collateral && !p.collateral.willCount) return "COLLATERAL_NOT_ENABLED";
@@ -522,6 +550,11 @@ export interface LeverageErrorContext {
   maxSupply: string;
   /** The ceiling the danger toggle would unlock, or null when it is already unlocked. */
   dangerMaxSupply: string | null;
+  /**
+   * The margin's worth in COLLATERAL units, pre-formatted — the floor the supply has to clear on
+   * the debt path. Null when the caller cannot price it, which costs only the number.
+   */
+  marginWorth?: string | null;
   /** From {@link collateralEnablement}, so `COLLATERAL_NOT_ENABLED` can say WHICH way it failed. */
   collateral?: CollateralEnablement | null;
 }
@@ -562,6 +595,12 @@ export function leverageErrorMessage(error: LeverageError, ctx: LeverageErrorCon
       return `Enter how much ${ctx.collateralSymbol} to supply`;
     case "SUPPLY_BELOW_MARGIN":
       return `Supply more ${ctx.collateralSymbol} than you post yourself — the difference is what gets levered`;
+    case "MARGIN_EXCEEDS_SUPPLY":
+      // Never "try a smaller supply", which is what the old QUOTE_FAILED said here and is the
+      // opposite of the fix: the supply is the thing the margin has to fit inside.
+      return ctx.marginWorth !== null && ctx.marginWorth !== undefined
+        ? `Your margin is worth about ${ctx.marginWorth} ${ctx.collateralSymbol} — supply more than that, or post less ${ctx.marginSymbol}`
+        : `Your ${ctx.marginSymbol} margin is worth more than the ${ctx.collateralSymbol} you're supplying — supply more, or post less margin`;
     case "SUPPLY_ABOVE_MAX":
       return ctx.dangerMaxSupply !== null
         ? `Max supply is ${ctx.maxSupply} ${ctx.collateralSymbol} — turn on the danger zone for ${ctx.dangerMaxSupply}`

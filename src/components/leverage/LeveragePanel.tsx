@@ -352,6 +352,17 @@ export function LeveragePanel({
   const sizingError = validateSizing({
     marginAsset, marginAmount, supplyAmount: typedAmount, marginBalance, maxSupply,
     collateral: enablement,
+    // Only the reserves are missing before the read lands, and a null degrades to "don't check"
+    // rather than to a blocked form.
+    pricing: collateralReserve && debtReserve
+      ? {
+          slipNum: BPS - slippageBps,
+          collateralPriceUsd: collateralReserve.raw.priceUsd,
+          debtPriceUsd: debtReserve.raw.priceUsd,
+          collateralDecimals: collateralReserve.raw.decimals,
+          debtDecimals: debtReserve.raw.decimals,
+        }
+      : null,
   })
 
   /**
@@ -419,6 +430,17 @@ export function LeveragePanel({
 
   const paused = previewError === 'PAUSED'
   const errorCode = sizingError ?? (paused ? null : previewError)
+  // The floor a debt-asset margin puts under the supply, said in the asset the supply is typed
+  // in. A collateral margin is already in those units, so there is nothing to convert.
+  const marginWorth =
+    marginAsset === 'debt' && collateralReserve && debtReserve && collateralReserve.raw.priceUsd > 0n
+      ? display(
+          (marginAmount * debtReserve.raw.priceUsd * 10n ** BigInt(collateralReserve.raw.decimals))
+            / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals)),
+          collateralReserve.raw.decimals,
+          4,
+        )
+      : null
   const message = errorCode && collateralReserve && marginReserve
     ? leverageErrorMessage(errorCode, {
         collateralSymbol: collateralReserve.symbol,
@@ -428,6 +450,7 @@ export function LeveragePanel({
         dangerMaxSupply: danger || dangerMax <= safeMax
           ? null
           : display(dangerMax, collateralReserve.raw.decimals, 4),
+        marginWorth,
         collateral: enablement,
       })
     : null

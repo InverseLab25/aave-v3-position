@@ -11,6 +11,7 @@ import {
   resolveRoles,
   validateSizing,
   collateralEnablement,
+  leverageErrorMessage,
 } from './leverage'
 
 /** The worked example this module was designed against: ETH at $2,000, WETH LTV 80%. */
@@ -260,6 +261,65 @@ describe('maxBorrowAmount — the same ceiling, named in the borrow asset', () =
     // There the borrow is the supply LESS the margin, so the supply ceiling would overstate it.
     expect(maxBorrowAmount({ ...boost, marginAsset: 'collateral', marginAmount: usdc('1000'), danger: true }))
       .toBe(0n)
+  })
+})
+
+describe('validateSizing measures a debt-asset margin against the supply it has to fit inside', () => {
+  // Long WETH against USDC: the margin joins the BORROW inside the swap, and that swap only has
+  // to produce the supply. So a margin worth more than the supply leaves a negative borrow —
+  // there is no position here, however the router prices it.
+  const longWeth = {
+    marginAsset: 'debt' as const,
+    marginAmount: usdc('1000'),
+    supplyAmount: weth('0.1'), // $200 of supply against $1,000 of margin
+    marginBalance: usdc('164861'),
+    maxSupply: weth('100'),
+    pricing: {
+      slipNum: 10_000n - 50n,
+      collateralPriceUsd: WETH.priceUsd,
+      debtPriceUsd: USDC.priceUsd,
+      collateralDecimals: WETH.decimals,
+      debtDecimals: USDC.decimals,
+    },
+  }
+
+  it('refuses a margin the supply cannot absorb', () => {
+    expect(validateSizing(longWeth)).toBe('MARGIN_EXCEEDS_SUPPLY')
+  })
+
+  it('accepts the same margin once the supply is worth more than it', () => {
+    // $1,000 of margin buys ~0.5 WETH, so 0.6 leaves ~0.1 WETH to lever.
+    expect(validateSizing({ ...longWeth, supplyAmount: weth('0.6') })).toBeNull()
+  })
+
+  it('names the ceiling first when the supply is also over it — fixing that reveals this', () => {
+    expect(validateSizing({ ...longWeth, supplyAmount: weth('101') })).toBe('SUPPLY_ABOVE_MAX')
+  })
+
+  it('leaves the collateral path to SUPPLY_BELOW_MARGIN, which is the same complaint', () => {
+    // There the margin is supplied alongside the flash rather than swapped, so it is a plain
+    // subtraction and needs no prices.
+    expect(validateSizing({
+      ...longWeth, marginAsset: 'collateral', marginAmount: weth('0.2'), marginBalance: weth('1'),
+    })).toBe('SUPPLY_BELOW_MARGIN')
+  })
+
+  it('does not block when prices are missing — an unresolved read must never gate the form', () => {
+    expect(validateSizing({ ...longWeth, pricing: null })).toBeNull()
+  })
+
+  it('tells the user to supply MORE — the old copy told them to supply less', () => {
+    const message = leverageErrorMessage('MARGIN_EXCEEDS_SUPPLY', {
+      collateralSymbol: 'WETH',
+      marginSymbol: 'USDC',
+      marginBalance: '164,861.1796',
+      maxSupply: '100',
+      dangerMaxSupply: null,
+      marginWorth: '0.5000', // $1,000 of margin at $2,000/WETH
+    })
+    expect(message).toContain('0.5000 WETH')
+    expect(message).toContain('supply more')
+    expect(message).not.toContain('smaller')
   })
 })
 
