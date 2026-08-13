@@ -50,7 +50,13 @@ vi.mock('../lib/aaveStatics', () => ({
   getATokenName: mocks.getATokenName,
 }))
 vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
-vi.mock('../adapters/http', () => ({ clearQuoteCache: vi.fn(), fetchQuoteJson: vi.fn() }))
+// Partial: `AggregatorHttpError` has to be the real class, because the hook branches on
+// `instanceof` to tell a throttled aggregator from a pair with no route.
+vi.mock('../adapters/http', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  clearQuoteCache: vi.fn(),
+  fetchQuoteJson: vi.fn(),
+}))
 vi.mock('../lib/sizing', () => ({ sizeSwap: mocks.sizeSwap, oracleSeed: mocks.oracleSeed }))
 // Partial, deliberately: only `selectRoute` reaches the network (it builds router calldata).
 // planWithdrawal, reuseBlocker, computeMinOut and assertExecutable stay real, because those
@@ -60,6 +66,7 @@ vi.mock('../lib/closePlan', async (orig) => ({
   selectRoute: vi.fn(),
 }))
 
+import { AggregatorHttpError } from '../adapters/http'
 import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
 
 const USER = '0x1111111111111111111111111111111111111111' as const
@@ -166,6 +173,63 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(preview?.collateralKeptSupplied).toBe('3')
     // Surplus beyond the debt is what the contract forwards to the wallet.
     expect(preview?.debtReturned).toBe('1000')
+  })
+
+  /** Makes the mocked `sizeSwap` actually exercise the hook's `quoteAt`. */
+  const sizeSwapCallingQuoteAt = () =>
+    mocks.sizeSwap.mockImplementation(async ({ quoteAt }: { quoteAt: (n: bigint) => Promise<unknown[]> }) => {
+      await quoteAt(parseUnits('7', 18))
+      return SIZED
+    })
+
+  it('names a throttled aggregator rather than blaming the pair', async () => {
+    // The close used to swallow every quote failure into null, so being rate-limited arrived as
+    // "this pair cannot be closed" — which is both wrong and unactionable.
+    mocks.getAdaptersForChain.mockReturnValue([
+      {
+        name: 'KyberSwap',
+        getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(429, 'https://kyber/routes')),
+      },
+    ])
+    sizeSwapCallingQuoteAt()
+
+    const { preview, error } = await previewWith()
+
+    expect(preview).toBeNull()
+    expect(error?.kind).toBe('aggregator')
+    expect(error?.message).toMatch(/rate-limiting|down/i)
+  })
+
+  it('leaves an answered-but-empty quote to the ordinary no-route path', async () => {
+    // A refusal is not a verdict on the pair; an actual empty answer is.
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(null) },
+    ])
+    let ranked: unknown[] | null = null
+    mocks.sizeSwap.mockImplementation(async ({ quoteAt }: { quoteAt: (n: bigint) => Promise<unknown[]> }) => {
+      ranked = await quoteAt(parseUnits('7', 18))
+      return SIZED
+    })
+
+    const { error } = await previewWith()
+
+    expect(ranked).toEqual([])
+    expect(error).toBeNull() // no throw from quoteAt — sizeSwap is what judges an empty ranking
+  })
+
+  it('proceeds when one adapter is throttled but another still prices it', async () => {
+    mocks.getAdaptersForChain.mockReturnValue([
+      {
+        name: 'OpenOcean',
+        getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(503, 'https://oo/quote')),
+      },
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+    ])
+    sizeSwapCallingQuoteAt()
+
+    const { error } = await previewWith()
+
+    expect(error).toBeNull()
   })
 
   it('rejects a NaN slippage instead of dying in BigInt()', async () => {

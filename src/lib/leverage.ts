@@ -387,6 +387,11 @@ export type LeverageError =
   | "ZERO_BORROW"
   | "LTV_EXCEEDED"
   | "NO_ROUTE"
+  /**
+   * An aggregator refused to answer — throttled or down — rather than answering with no route.
+   * Distinct because waiting fixes this one and nothing else.
+   */
+  | "AGGREGATOR_UNAVAILABLE"
   | "QUOTE_FAILED"
   | "QUOTE_MOVED"
   | "PAUSED"
@@ -621,6 +626,8 @@ export function leverageErrorMessage(error: LeverageError, ctx: LeverageErrorCon
       return `Too much debt against this much ${ctx.collateralSymbol} — Aave would reject the borrow`;
     case "NO_ROUTE":
       return "No allowlisted router can price this pair";
+    case "AGGREGATOR_UNAVAILABLE":
+      return "The price aggregator is rate-limiting us or is down — wait a moment and refresh";
     case "QUOTE_FAILED":
       return "Could not price this position — try a smaller supply";
     case "QUOTE_MOVED":

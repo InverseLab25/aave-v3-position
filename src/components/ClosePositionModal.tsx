@@ -784,7 +784,9 @@ export function ClosePositionModal({
                           ? 'One-click close is unavailable right now'
                           : previewError.kind === 'wallet'
                             ? 'Wallet not connected'
-                            : 'This pair cannot be closed'}
+                            : previewError.kind === 'aggregator'
+                              ? 'Could not reach the price aggregator'
+                              : 'This pair cannot be closed'}
                       </strong>
                       {previewError.message}
                       {previewError.kind === 'deployment' && (

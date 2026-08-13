@@ -47,6 +47,7 @@ import {
 } from '../lib/delegationCache'
 import { routeCostPercent } from '../lib/swapRoute'
 import { getAdaptersForChain } from '../adapters'
+import { AggregatorHttpError } from '../adapters/http'
 import type { Adapter, QuoteResponse } from '../adapters/types'
 import { getChainConfig } from '../config/chains'
 import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
@@ -449,6 +450,15 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
 
         type Candidate = { a: Adapter; q: QuoteResponse }
 
+        /**
+         * Whether an aggregator refused to answer, as opposed to answering with nothing.
+         *
+         * Sticky for the whole attempt: a route that fails to price after a 429 has not been
+         * shown to be unpriceable, and saying so would send the user hunting for liquidity that
+         * is very likely there.
+         */
+        let throttled = false
+
         /** Every adapter's quote for a given debt-asset input, best output first. */
         const quoteAll = async (swapIn: bigint): Promise<Candidate[]> => {
           const results = await Promise.all(
@@ -458,7 +468,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
                   fromAsset, toAsset, swapIn.toString(), slippagePercent, chainId,
                 )
                 return q ? { a, q } : null
-              } catch {
+              } catch (e) {
+                if (e instanceof AggregatorHttpError && e.retryable) throttled = true
                 return null
               }
             }),
@@ -467,6 +478,13 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
             .filter((r): r is Candidate => r !== null)
             .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
         }
+
+        /**
+         * "Nothing priced" in the user's terms — which is only NO_ROUTE when the aggregators
+         * actually answered.
+         */
+        const nothingPriced = (): LeverageError =>
+          throttled ? 'AGGREGATOR_UNAVAILABLE' : 'NO_ROUTE'
 
         // Kept as a list so route selection can fall through a candidate that fails to build or
         // fails `validateSwapTx`, instead of erroring out on the first pick.
@@ -484,7 +502,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           candidates = await quoteAll(borrowAmount)
           if (cancelled) return
           if (candidates.length === 0) {
-            setPreviewError('NO_ROUTE')
+            setPreviewError(nothingPriced())
             return
           }
         } else if (pinned !== null) {
@@ -503,7 +521,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           candidates = await quoteAll(borrowAmount + debtMargin)
           if (cancelled) return
           if (candidates.length === 0) {
-            setPreviewError('NO_ROUTE')
+            setPreviewError(nothingPriced())
             return
           }
         } else {
@@ -531,7 +549,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           })
           if (cancelled) return
           if (!solution.ok) {
-            setPreviewError(solution.error === 'NO_ROUTE' ? 'NO_ROUTE' : 'QUOTE_FAILED')
+            setPreviewError(solution.error === 'NO_ROUTE' ? nothingPriced() : 'QUOTE_FAILED')
             return
           }
           borrowAmount = solution.solved.borrowAmount
@@ -550,7 +568,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         // superseded attempt writes a no-route error that a reverted input would make current.
         if (cancelled) return
         if (!selected) {
-          setPreviewError('NO_ROUTE')
+          setPreviewError(nothingPriced())
           return
         }
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }

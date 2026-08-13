@@ -14,7 +14,11 @@ import type { QuoteResponse, TransactionPayload } from '../adapters/types'
  * Reporting a `deployment` failure as if it were a `pair` failure is what sends users
  * round in circles trying every collateral they hold.
  */
-export type CloseErrorKind = 'wallet' | 'deployment' | 'pair'
+/**
+ * `aggregator` is deliberately not `pair`: the price source refused to answer, so nothing has
+ * been learned about this pair and picking a different one will not help. Waiting will.
+ */
+export type CloseErrorKind = 'wallet' | 'deployment' | 'pair' | 'aggregator'
 
 export class CloseError extends Error {
   readonly kind: CloseErrorKind

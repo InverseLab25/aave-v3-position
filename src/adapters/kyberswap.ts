@@ -1,6 +1,6 @@
 import type { Adapter, Asset, KyberHop, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
-import { fetchQuoteJson, limitedFetch } from './http';
+import { AggregatorHttpError, fetchQuoteJson, limitedFetch } from './http';
 
 // KyberSwap requires an x-client-id header on both /routes and /route/build.
 const KYBER_CLIENT_ID = 'defi-route';
@@ -98,6 +98,10 @@ export const kyberSwapAdapter: Adapter = {
       // An abort is the caller withdrawing interest in the answer — a superseded preview,
       // or a closed modal. Routine, and not something to report as a fault.
       if ((e as Error)?.name === 'AbortError' || signal?.aborted) return null;
+      // Rethrown rather than flattened to null: null means "no route for this pair", and a
+      // caller that cannot tell the two apart tells the user to go looking for liquidity when
+      // the actual problem is that we are being throttled.
+      if (e instanceof AggregatorHttpError) throw e;
       console.error('KyberSwap fetch error', e);
       return null;
     }
@@ -132,6 +136,9 @@ export const kyberSwapAdapter: Adapter = {
         skipSimulateTx: true,
       })
     });
+    // Checked before parsing, for the same reason as the quote: a 429 body is not calldata, and
+    // reading it as one turns "slow down" into an unexplained build failure.
+    if (!res.ok) throw new AggregatorHttpError(res.status, url);
     const json: KyberBuildResponse = await res.json();
     if (json.code !== 0 || !json.data) throw new Error(json.message ?? 'KyberSwap: route build failed');
 

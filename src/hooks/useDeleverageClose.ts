@@ -8,7 +8,7 @@ import {
 import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
-import { clearQuoteCache } from '../adapters/http'
+import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../adapters/native'
 import type { Adapter, Asset, QuoteResponse } from '../adapters/types'
 import {
@@ -422,16 +422,33 @@ export function useDeleverageClose() {
       const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
         (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
       )
-      const quoteAt = async (amountIn: bigint) =>
-        rankRoutes(
+      const quoteAt = async (amountIn: bigint) => {
+        // An aggregator that refused to answer is not evidence about the pair. Tracked per call
+        // rather than per plan, because the sizing loop quotes several times and only the round
+        // that came back empty needs explaining.
+        let throttled = false
+        const ranked = rankRoutes(
           await Promise.all(
             adapters.map((a) =>
               a
                 .getQuote(collateral, debtAsset, amountIn.toString(), slippagePercent, chainId, signal)
-                .catch(() => null),
+                .catch((e: unknown) => {
+                  if (e instanceof AggregatorHttpError && e.retryable) throttled = true
+                  return null
+                }),
             ),
           ),
         )
+        // Only when NOTHING priced: one throttled adapter alongside one that answered is a
+        // complete answer, and `sizeSwap` should get on with it.
+        if (ranked.length === 0 && throttled) {
+          throw new CloseError(
+            'aggregator',
+            'The price aggregator is rate-limiting us or is down — wait a moment and try again',
+          )
+        }
+        return ranked
+      }
 
       const needed = (debt * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
       const sized = await sizeSwap({

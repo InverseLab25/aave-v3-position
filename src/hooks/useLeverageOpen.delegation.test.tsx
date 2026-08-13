@@ -53,6 +53,7 @@ vi.mock('wagmi', () => ({
   useSignTypedData: mocks.useSignTypedData,
 }))
 
+import { AggregatorHttpError } from '../adapters/http'
 import { delegationKey, loadDelegation, MIN_DELEGATION_REMAINING_S } from '../lib/delegationCache'
 import { useLeverageOpen, type LeverageOpenInput } from './useLeverageOpen'
 
@@ -346,6 +347,32 @@ it('skips the wallet entirely when a standing delegation already covers the borr
 
   expect(signTypedData).not.toHaveBeenCalled()
   expect(writeContract).toHaveBeenCalled()
+})
+
+it('separates an aggregator that is refusing to answer from a pair that has no route', async () => {
+  // Being rate-limited is not the same as there being no liquidity, and telling the user the
+  // latter sends them looking for the wrong problem. KyberSwap is the only compatible adapter,
+  // so one 429 takes the whole flow down.
+  const adapter = fakeAdapter()
+  adapter.getQuote = vi.fn(async () => {
+    throw new AggregatorHttpError(429, 'https://aggregator-api.kyberswap.com/base/api/v1/routes')
+  })
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+
+  await mount()
+
+  expect(hook().preview).toBeNull()
+  expect(hook().previewError).toBe('AGGREGATOR_UNAVAILABLE')
+})
+
+it('still says NO_ROUTE when the aggregator answers and simply has nothing', async () => {
+  const adapter = fakeAdapter()
+  adapter.getQuote = vi.fn(async () => null)
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+
+  await mount()
+
+  expect(hook().previewError).toBe('NO_ROUTE')
 })
 
 it('prepare takes the approve and the signature, and sends nothing', async () => {

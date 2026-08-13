@@ -12,12 +12,16 @@ const mocks = vi.hoisted(() => ({
   limitedFetch: vi.fn(),
 }))
 
-vi.mock('./http', () => ({
+vi.mock('./http', async (orig) => ({
+  // The error type is real: the adapter branches on `instanceof`, so a stub would make every
+  // transport failure look like an ordinary one.
+  ...(await orig<Record<string, unknown>>()),
   fetchQuoteJson: mocks.fetchQuoteJson,
   limitedFetch: mocks.limitedFetch,
   clearQuoteCache: vi.fn(),
 }))
 
+import { AggregatorHttpError } from './http'
 import { isNativeAddress, NATIVE_ADDRESS, NATIVE_ZERO_ADDRESS } from './native'
 import { allAdapters, getAdaptersForChain } from './index'
 import { kyberSwapAdapter } from './kyberswap'
@@ -187,6 +191,25 @@ describe('KyberSwap — getQuote', () => {
 
     spy.mockRestore()
   })
+
+  it('lets a transport failure through instead of dressing it as "no route"', async () => {
+    // null is the adapter's word for "this pair has nowhere to trade". A 429 means the opposite:
+    // we never got to ask. Callers can only tell them apart if this one escapes.
+    mocks.fetchQuoteJson.mockRejectedValue(new AggregatorHttpError(429, 'https://kyber/routes'))
+
+    await expect(kyberSwapAdapter.getQuote(WETH, USDC, '1', 0.5, 1)).rejects.toThrow(
+      AggregatorHttpError,
+    )
+  })
+
+  it('still swallows an abort that arrives as a transport-shaped failure', async () => {
+    const abort = new Error('aborted')
+    abort.name = 'AbortError'
+    mocks.fetchQuoteJson.mockRejectedValue(abort)
+
+    expect(await kyberSwapAdapter.getQuote(WETH, USDC, '1', 0.5, 1, new AbortController().signal))
+      .toBeNull()
+  })
 })
 
 describe('KyberSwap — buildTransaction', () => {
@@ -194,6 +217,8 @@ describe('KyberSwap — buildTransaction', () => {
   const WALLET = '0x1111111111111111111111111111111111111111'
 
   const buildOk = (over: Record<string, unknown> = {}) => ({
+    ok: true,
+    status: 200,
     json: async () => ({
       code: 0,
       data: {
@@ -281,10 +306,20 @@ describe('KyberSwap — buildTransaction', () => {
     expect(mocks.limitedFetch).not.toHaveBeenCalled()
   })
 
+  it('names a throttled build as such rather than reading the body as calldata', async () => {
+    mocks.limitedFetch.mockResolvedValue({ ok: false, status: 429, json: async () => ({}) })
+
+    await expect(kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)).rejects.toThrow(
+      AggregatorHttpError,
+    )
+  })
+
   it("surfaces the API's own message when the build is refused", async () => {
     // Build failures are actionable — 4227 means the simulation could not transfer from the
     // sender — so the message has to survive rather than becoming a generic failure.
     mocks.limitedFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
       json: async () => ({ code: 4227, message: 'TRANSFER_FROM_FAILED' }),
     })
 
@@ -294,7 +329,7 @@ describe('KyberSwap — buildTransaction', () => {
   })
 
   it('throws even when the API returns code 0 with no data', async () => {
-    mocks.limitedFetch.mockResolvedValue({ json: async () => ({ code: 0 }) })
+    mocks.limitedFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 0 }) })
 
     await expect(kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)).rejects.toThrow()
   })
