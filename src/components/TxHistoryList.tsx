@@ -4,21 +4,16 @@
  * Collapsed by default. The rows answer one question — what did that swap actually cost me — and
  * that is a question asked occasionally, not one worth a permanent block of screen.
  */
-import { useMemo, useState } from 'react'
-import { formatUnits, type Address, type Hex } from 'viem'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import { formatUnits, type Address } from 'viem'
 import { browserStorage } from '../lib/delegationCache'
-import { loadHistory, type TxHistoryEntry } from '../lib/txHistory'
+import { historyVersion, loadHistory, subscribeHistory, type TxHistoryEntry } from '../lib/txHistory'
 import { ExplorerLink } from './ExplorerLink'
 import { T } from '../styles/theme'
 
 interface TxHistoryListProps {
   wallet: Address | undefined
   chainId: number
-  /**
-   * Anything that changes when a new transaction has been filed — a hash will do. History is read
-   * on mount, and a row written after that would otherwise not appear until the next one.
-   */
-  refreshToken?: Hex | string
 }
 
 /** Rates carry their own precision from `quoteRate`; this only groups the thousands. */
@@ -82,18 +77,27 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   )
 }
 
-export function TxHistoryList({ wallet, chainId, refreshToken }: TxHistoryListProps) {
+export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
   const [open, setOpen] = useState(false)
 
-  // Derived during render rather than pushed into state from an effect — the same shape
-  // `useLeverageOpen` uses to read a held delegation, and the reason it can be: `browserStorage`
-  // answers null for a store that is absent or refuses to be read, and `loadHistory` never throws.
+  /**
+   * Subscribed, not read once.
+   *
+   * A row is written from an effect, which runs AFTER the render that would have displayed it,
+   * and nothing renders again afterwards — so reading storage once left the transaction just
+   * settled invisible until a reload. The store announces its writes instead. The snapshot is a
+   * number, which React can compare by identity; the rows are rebuilt only when it moves.
+   *
+   * Still derived during render rather than pushed into state from an effect: `browserStorage`
+   * answers null for a store that is absent or refuses to be read, and `loadHistory` never throws.
+   */
+  const version = useSyncExternalStore(subscribeHistory, historyVersion, historyVersion)
   const entries = useMemo(() => {
     // The dependency that does the work, as in `useLeverageOpen`'s `storageTick`: nothing about
-    // the READ changes when a transaction is filed, only the bytes behind it.
-    void refreshToken
+    // the READ changes when a row is written, only the bytes behind it.
+    void version
     return wallet ? loadHistory(browserStorage(), { wallet, chainId }) : []
-  }, [wallet, chainId, refreshToken])
+  }, [wallet, chainId, version])
 
   if (entries.length === 0) return null
 

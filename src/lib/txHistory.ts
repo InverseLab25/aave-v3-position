@@ -59,6 +59,32 @@ export interface TxHistoryEntry {
   deltas: HistoryDelta[]
 }
 
+/**
+ * Readers of this store, and a counter they can compare.
+ *
+ * The list renders from storage during render while the recorder writes from an effect, which
+ * runs afterwards — so a row written for the transaction just settled was invisible until a
+ * reload. Storage does not announce itself, so the store does: a version any reader can watch.
+ */
+const listeners = new Set<() => void>()
+let version = 0
+
+function announce(): void {
+  version += 1
+  for (const listener of listeners) listener()
+}
+
+/** Subscribes to writes; returns the unsubscribe. Shaped for React's `useSyncExternalStore`. */
+export function subscribeHistory(onChange: () => void): () => void {
+  listeners.add(onChange)
+  return () => void listeners.delete(onChange)
+}
+
+/** Moves on every write. A stable value, so it can be a snapshot React compares by identity. */
+export function historyVersion(): number {
+  return version
+}
+
 /** JSON has no bigint, so every one of them crosses as a decimal string. */
 const encode = (entry: TxHistoryEntry): unknown =>
   JSON.parse(JSON.stringify(entry, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)))
@@ -170,6 +196,7 @@ export function appendHistory(storage: DelegationStorage | null, entry: TxHistor
     const existing = readAll(storage).filter((e) => !sameTx(e, entry))
     const next = [entry, ...existing].slice(0, HISTORY_LIMIT)
     storage.setItem(HISTORY_KEY, JSON.stringify(next.map(encode)))
+    announce()
   } catch {
     // A full or blocked quota costs a row of history, nothing more.
   }
@@ -193,6 +220,7 @@ export function clearHistory(storage: DelegationStorage | null): void {
   if (!storage) return
   try {
     storage.removeItem(HISTORY_KEY)
+    announce()
   } catch {
     // Same as above: unable to forget it is not a reason to fail anything.
   }

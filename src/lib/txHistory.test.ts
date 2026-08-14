@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Address } from 'viem'
 import {
   HISTORY_KEY,
+  historyVersion,
+  subscribeHistory,
   HISTORY_LIMIT,
   appendHistory,
   clearHistory,
@@ -165,6 +167,48 @@ describe('txHistory', () => {
     }
 
     expect(() => appendHistory(full, entry())).not.toThrow()
+  })
+
+  it('tells subscribers when something has been recorded', () => {
+    // The list reads storage during render and the recorder writes in an effect, which runs
+    // afterwards — so without a notification the row it just wrote is invisible until a reload.
+    const storage = memoryStorage()
+    let notified = 0
+    const unsubscribe = subscribeHistory(() => notified++)
+
+    appendHistory(storage, entry())
+
+    expect(notified).toBe(1)
+    unsubscribe()
+  })
+
+  it('moves the version on every write, so a reader can tell it changed', () => {
+    const storage = memoryStorage()
+    const before = historyVersion()
+
+    appendHistory(storage, entry({ hash: hash(1) }))
+    appendHistory(storage, entry({ hash: hash(2) }))
+
+    expect(historyVersion()).toBe(before + 2)
+  })
+
+  it('tells subscribers when history is cleared', () => {
+    let notified = 0
+    const unsubscribe = subscribeHistory(() => notified++)
+
+    clearHistory(memoryStorage())
+
+    expect(notified).toBe(1)
+    unsubscribe()
+  })
+
+  it('stops telling a subscriber that has unsubscribed', () => {
+    let notified = 0
+    subscribeHistory(() => notified++)()
+
+    appendHistory(memoryStorage(), entry())
+
+    expect(notified).toBe(0)
   })
 
   it('treats an absent store as no history', () => {

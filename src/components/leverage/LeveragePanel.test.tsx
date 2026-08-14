@@ -276,3 +276,48 @@ it('leaves the position tokens out of the settled wallet changes', async () => {
   expect(screen.getByText('−2.000000 WETH')).toBeTruthy()
   expect(screen.queryByText(/raw units/)).toBeNull()
 })
+
+it('shows the transaction it just recorded, without waiting for a reload', async () => {
+  const map = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    },
+    configurable: true,
+  })
+
+  setHook({
+    preview: PREVIEW,
+    step: 'done',
+    txHash: `0x${'11'.repeat(32)}`,
+    outcome: { swap: null, fill: null, deltas: [{ token: WETH, delta: -(2n * 10n ** 18n) }] },
+  })
+  mount()
+
+  // Written by an effect that runs after the render which would have shown it — the list has to
+  // hear about the write rather than read once and stop.
+  expect(map.get('defi-route.txhistory.v1')).toBeDefined()
+  expect(screen.queryByText(/Recent activity/)).toBeTruthy()
+
+})
+
+it('keeps the settled report on the panel after the confirmation is dismissed', () => {
+  // `step` reaches 'done' on the hash, a block or more before the receipt lands — so the natural
+  // sequence (Confirm, see Done, press Done) closed the only place the settled figures appeared.
+  setHook({
+    preview: PREVIEW,
+    step: 'done',
+    txHash: `0x${'11'.repeat(32)}`,
+    outcome: {
+      swap: null,
+      fill: null,
+      deltas: [{ token: WETH, delta: -(2n * 10n ** 18n) }],
+    },
+  })
+  mount()
+
+  expect(screen.getByText('Settled')).toBeTruthy()
+  expect(screen.getByText('−2.000000 WETH')).toBeTruthy()
+})

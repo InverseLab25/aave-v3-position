@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { Address, Hex } from 'viem'
 import { TxHistoryList } from './TxHistoryList'
 import { appendHistory, type TxHistoryEntry } from '../lib/txHistory'
@@ -112,5 +112,18 @@ describe('TxHistoryList', () => {
     fireEvent.click(screen.getByRole('button', { name: /recent activity/i }))
 
     expect(screen.getByText(/no swap recorded/i)).toBeTruthy()
+  })
+
+  it('appears when a transaction is recorded while it is already on screen', () => {
+    // The row is written from an effect — after the render that would have shown it — so a list
+    // that reads storage once shows nothing until a reload.
+    const { container } = show()
+    expect(container.firstChild).toBeNull()
+
+    act(() => {
+      appendHistory(localStorage, entry())
+    })
+
+    expect(screen.queryByText(/Recent activity/)).toBeTruthy()
   })
 })

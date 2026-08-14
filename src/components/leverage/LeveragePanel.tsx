@@ -27,6 +27,7 @@ import { AmountField } from './AmountField'
 import { ConfirmLeverageModal } from './ConfirmLeverageModal'
 import { SlippageField } from './SlippageField'
 import { TxHistoryList } from '../TxHistoryList'
+import { TxOutcomePanel } from '../TxOutcome'
 import { useRecordOutcome } from '../../hooks/useRecordOutcome'
 import { buildTokenMap, positionTokens, type TokenMetaSource } from '../../lib/tokenMeta'
 import { hideTokens } from '../../lib/txOutcome'
@@ -796,7 +797,12 @@ export function LeveragePanel({
 
           {!confirming && step === 'done' && txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
-          <TxHistoryList wallet={address} chainId={chainId} refreshToken={txHash} />
+          {/* Also here, not only in the modal. `step` reaches 'done' on the hash, which is a block
+              or more before the receipt that produces these figures — so the ordinary sequence
+              (Confirm, see Done, press Done) closed the only place they were shown. */}
+          {!confirming && <TxOutcomePanel outcome={settled} tokens={outcomeTokens} />}
+
+          <TxHistoryList wallet={address} chainId={chainId} />
         </div>
       </div>
 
