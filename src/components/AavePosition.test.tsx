@@ -1,6 +1,9 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import type { AvailableReserve } from '../hooks/useAavePositions'
+import { appendHistory } from '../lib/txHistory'
+
+const OWNER = '0x000000000000000000000000000000000000dEaD' as `0x${string}`
 
 // AavePosition composes a lot of hooks; only useAavePositions, wagmi's useChainId/useConnection/
 // useReadContract (LeveragePanel calls these directly — the latter for both pair legs' wallet
@@ -241,4 +244,75 @@ it('shows a read failure as a failure, not as an empty portfolio', async () => {
 
   expect(screen.getByText('Could not read your Aave position')).toBeTruthy()
   expect(screen.queryByText('Start your Aave position')).toBeNull()
+})
+
+it('lists recent activity under the borrowed assets', () => {
+  // Account-level, not flow-level: a close is recorded by the close modal and an open by the
+  // leverage panel, and someone looking for either goes to their position, not to a form.
+  const map = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    },
+    configurable: true,
+  })
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue({
+    ...EMPTY_PORTFOLIO,
+    collateralUsd: 1_234.5,
+    debtUsd: 500,
+    isUnsupportedChain: false,
+    chainName: 'Ethereum',
+  })
+  appendHistory(localStorage, {
+    hash: `0x${'11'.repeat(32)}`,
+    chainId: 1,
+    wallet: OWNER,
+    kind: 'close',
+    at: 1_800_000_000_000,
+    swap: null,
+    rate: null,
+    fill: null,
+    deltas: [],
+  })
+
+  render(<AavePosition />)
+
+  // Where it sits is the requirement: under the position, not inside the form that wrote it.
+  const borrowed = screen.getByText('Borrowed Assets')
+  const activity = screen.getByText(/Recent activity \(1\)/)
+  expect(borrowed.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
+it('still lists recent activity for an account that has closed everything', () => {
+  // The person most likely to look is the one who just closed their last position — and that
+  // lands on the empty state, which is a different tree entirely.
+  const map = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    },
+    configurable: true,
+  })
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(EMPTY_PORTFOLIO)
+  appendHistory(localStorage, {
+    hash: `0x${'22'.repeat(32)}`,
+    chainId: 1,
+    wallet: OWNER,
+    kind: 'close',
+    at: 1_800_000_000_000,
+    swap: null,
+    rate: null,
+    fill: null,
+    deltas: [],
+  })
+
+  render(<AavePosition />)
+
+  expect(screen.getByText(/Recent activity \(1\)/)).toBeTruthy()
 })

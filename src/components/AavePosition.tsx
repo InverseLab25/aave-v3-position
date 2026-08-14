@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense, type ComponentType } from 'react'
+import { useConnection } from 'wagmi'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
 
@@ -27,6 +28,7 @@ const BorrowRepayModal = lazyModal(() => import('./BorrowRepayModal').then((m) =
 import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
+import { TxHistoryList } from './TxHistoryList'
 import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
@@ -87,6 +89,9 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     hasReadError,
     chainId
   } = useAavePositions({ viewAddress, viewChainId })
+
+  /** Local history belongs to the wallet in this browser, never to an address being viewed. */
+  const { address: connectedAddress } = useConnection()
 
   const [closeTarget, setCloseTarget] = useState<BorrowedAsset | null>(null)
   const [withdrawTarget, setWithdrawTarget] = useState<{ asset: SuppliedAsset } | null>(null)
@@ -389,6 +394,10 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
             onClose={() => setIsAssetsToBorrowModalOpen(false)}
           />
         )}
+
+        {/* Reachable from here too: the account that just closed its last position lands on this
+            screen, and it is the one most likely to be looking for what that close settled at. */}
+        <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} />
       </div>
     )
   }
@@ -625,6 +634,10 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
         </div>
       </div>
 
+      {/* Account-level, not flow-level: an open is recorded by the leverage panel and a close by
+          the close modal, and someone looking for either goes to their position rather than to
+          whichever form produced it. */}
+      <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} />
 
       {editCtx && (
         <div className="modal-overlay" onClick={cancelDraft}>

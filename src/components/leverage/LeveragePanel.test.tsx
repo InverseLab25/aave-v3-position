@@ -277,7 +277,7 @@ it('leaves the position tokens out of the settled wallet changes', async () => {
   expect(screen.queryByText(/raw units/)).toBeNull()
 })
 
-it('shows the transaction it just recorded, without waiting for a reload', async () => {
+it('records the settled transaction, which the position screen is what displays', async () => {
   const map = new Map<string, string>()
   Object.defineProperty(globalThis, 'localStorage', {
     value: {
@@ -296,10 +296,12 @@ it('shows the transaction it just recorded, without waiting for a reload', async
   })
   mount()
 
-  // Written by an effect that runs after the render which would have shown it — the list has to
-  // hear about the write rather than read once and stop.
-  expect(map.get('defi-route.txhistory.v1')).toBeDefined()
-  expect(screen.queryByText(/Recent activity/)).toBeTruthy()
+  // The panel is where an open is WRITTEN down; AavePosition is where the list is read. Keeping
+  // the two apart is why this asserts storage rather than the screen.
+  const rows = JSON.parse(map.get('defi-route.txhistory.v1') ?? '[]')
+  expect(rows).toHaveLength(1)
+  expect(rows[0].kind).toBe('open')
+  expect(screen.queryByText(/Recent activity/)).toBeNull()
 
 })
 

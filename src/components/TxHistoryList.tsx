@@ -36,6 +36,28 @@ function amount(value: bigint, decimals: number | null): string {
 
 const shortAddress = (token: Address) => `${token.slice(0, 6)}…${token.slice(-4)}`
 
+/** Rows per page. Five is what fits under a panel without becoming a second screen. */
+const PAGE_SIZE = 5
+
+function PageButton({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        border: `1px solid ${T.border}`, borderRadius: T.radius.sm,
+        background: 'transparent', padding: '2px 8px',
+        color: disabled ? T.textMuted : T.primary,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1, fontSize: T.fontSize.xs,
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
 function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   const { swap } = entry
   return (
@@ -79,6 +101,7 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
 
 export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
   const [open, setOpen] = useState(false)
+  const [page, setPage] = useState(0)
 
   /**
    * Subscribed, not read once.
@@ -99,6 +122,13 @@ export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
     return wallet ? loadHistory(browserStorage(), { wallet, chainId }) : []
   }, [wallet, chainId, version])
 
+  // Clamped rather than reset: a row written while the list is open shifts everything down one,
+  // and a page that no longer exists would otherwise render empty.
+  const lastPage = Math.max(0, Math.ceil(entries.length / PAGE_SIZE) - 1)
+  const current = Math.min(page, lastPage)
+  const from = current * PAGE_SIZE
+  const shown = entries.slice(from, from + PAGE_SIZE)
+
   if (entries.length === 0) return null
 
   return (
@@ -116,9 +146,23 @@ export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
 
       {open && (
         <div style={{ marginTop: T.space[2] }}>
-          {entries.map((e) => (
+          {shown.map((e) => (
             <Row key={`${e.chainId}:${e.hash}`} entry={e} chainId={chainId} />
           ))}
+
+          {/* Only when there is somewhere to page TO. One page of history needs no controls. */}
+          {entries.length > PAGE_SIZE && (
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: T.space[3], marginTop: T.space[2], color: T.textMuted, fontSize: T.fontSize.xs,
+            }}>
+              <span>{`${from + 1}–${from + shown.length} of ${entries.length}`}</span>
+              <span style={{ display: 'flex', gap: T.space[2] }}>
+                <PageButton label="Previous" disabled={current === 0} onClick={() => setPage(current - 1)} />
+                <PageButton label="Next" disabled={current === lastPage} onClick={() => setPage(current + 1)} />
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

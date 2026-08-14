@@ -114,6 +114,64 @@ describe('TxHistoryList', () => {
     expect(screen.getByText(/no swap recorded/i)).toBeTruthy()
   })
 
+  /** `n` recorded transactions, newest first — hash(0) is the newest. */
+  const seed = (n: number) => {
+    for (let i = n - 1; i >= 0; i--) appendHistory(localStorage, entry({ hash: hash(i), at: 1000 - i }))
+  }
+
+  const expand = () => fireEvent.click(screen.getByRole('button', { name: /recent activity/i }))
+
+  it('shows only the newest five at a time', () => {
+    seed(12)
+    show()
+
+    expand()
+
+    expect(screen.getAllByText(/^(Open|Close)$/)).toHaveLength(5)
+    expect(screen.getByText(/1–5 of 12/)).toBeTruthy()
+  })
+
+  it('pages on to the next five', () => {
+    seed(12)
+    show()
+    expand()
+
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+
+    expect(screen.getByText(/6–10 of 12/)).toBeTruthy()
+    expect(screen.getAllByText(/^(Open|Close)$/)).toHaveLength(5)
+  })
+
+  it('shows the remainder on the last page and stops there', () => {
+    seed(12)
+    show()
+    expand()
+
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+    fireEvent.click(screen.getByRole('button', { name: /next/i }))
+
+    expect(screen.getByText(/11–12 of 12/)).toBeTruthy()
+    expect(screen.getAllByText(/^(Open|Close)$/)).toHaveLength(2)
+    expect((screen.getByRole('button', { name: /next/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('cannot page back from the first page', () => {
+    seed(12)
+    show()
+    expand()
+
+    expect((screen.getByRole('button', { name: /previous/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('offers no paging when everything fits on one page', () => {
+    seed(3)
+    show()
+    expand()
+
+    expect(screen.queryByRole('button', { name: /next/i })).toBeNull()
+    expect(screen.queryByText(/of 3/)).toBeNull()
+  })
+
   it('appears when a transaction is recorded while it is already on screen', () => {
     // The row is written from an effect — after the render that would have shown it — so a list
     // that reads storage once shows nothing until a reload.

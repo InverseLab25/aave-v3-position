@@ -26,7 +26,6 @@ import { ExplorerLink } from '../ExplorerLink'
 import { AmountField } from './AmountField'
 import { ConfirmLeverageModal } from './ConfirmLeverageModal'
 import { SlippageField } from './SlippageField'
-import { TxHistoryList } from '../TxHistoryList'
 import { TxOutcomePanel } from '../TxOutcome'
 import { useRecordOutcome } from '../../hooks/useRecordOutcome'
 import { buildTokenMap, positionTokens, type TokenMetaSource } from '../../lib/tokenMeta'
@@ -802,7 +801,6 @@ export function LeveragePanel({
               (Confirm, see Done, press Done) closed the only place they were shown. */}
           {!confirming && <TxOutcomePanel outcome={settled} tokens={outcomeTokens} />}
 
-          <TxHistoryList wallet={address} chainId={chainId} />
         </div>
       </div>
 
