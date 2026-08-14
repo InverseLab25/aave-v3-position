@@ -1,4 +1,4 @@
-import { useState, useEffect, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, type CSSProperties } from 'react'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256, formatGwei } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
@@ -12,6 +12,10 @@ import type { CloseErrorKind } from '../lib/deleverage'
 import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
 import { ExplorerLink } from './ExplorerLink'
+import { TxOutcomePanel } from './TxOutcome'
+import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
+import { hideTokens } from '../lib/txOutcome'
+import { useRecordOutcome } from '../hooks/useRecordOutcome'
 import { useDeleverageClose, type ClosePreview } from '../hooks/useDeleverageClose'
 
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1]
@@ -147,6 +151,8 @@ export function ClosePositionModal({
     close: closePosition,
     logs: closeLogs,
     step: closeStep,
+    outcome: closeOutcome,
+    clearOutcome,
     clearSignatures,
     warmup,
   } = useDeleverageClose()
@@ -169,6 +175,26 @@ export function ClosePositionModal({
       : undefined
 
   const secondsLeft = signedUntil === null ? 0 : Math.max(0, signedUntil - nowSeconds)
+
+  /** How to format the tokens a receipt can name: the two underlyings this screen is about. */
+  const outcomeTokens = useMemo(
+    () => buildTokenMap([borrowedAsset, selectedCollateral]),
+    [borrowedAsset, selectedCollateral],
+  )
+
+  /** The aToken and variable-debt rows, which belong to the position rather than to the wallet. */
+  const hiddenTokens = useMemo(
+    () => positionTokens([borrowedAsset, selectedCollateral]),
+    [borrowedAsset, selectedCollateral],
+  )
+
+  // Filtered once, so the panel and the history row report the same thing.
+  const settled = useMemo(() => hideTokens(closeOutcome, hiddenTokens), [closeOutcome, hiddenTokens])
+
+  // Same history the leverage panel writes to: one wallet, one list, whichever flow produced it.
+  useRecordOutcome({
+    outcome: settled, tokens: outcomeTokens, hash: txHash, chainId, wallet: address, kind: 'close',
+  })
 
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
@@ -427,9 +453,12 @@ export function ClosePositionModal({
             <select
               className="input"
               value={selectedCollateral?.underlyingAsset || ''}
-              onChange={(e) =>
+              onChange={(e) => {
+                // The settled panel belongs to the pair it was produced for. Carried across a
+                // change of collateral it captions the new pair with the old one's numbers.
+                clearOutcome()
                 setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null)
-              }
+              }}
               style={{ appearance: 'none', backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2364748b%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px top 50%', backgroundSize: '10px auto' }}
             >
               {suppliedAssets.map((asset, i) => (
@@ -833,6 +862,10 @@ export function ClosePositionModal({
               ))}
             </div>
           )}
+
+          {/* What the close settled at, read off its own receipt — the only figures on this
+              screen that are not forecasts. */}
+          <TxOutcomePanel outcome={settled} tokens={outcomeTokens} />
 
           {txHash && (
             <div style={{ marginTop: 'var(--space-5)' }}>

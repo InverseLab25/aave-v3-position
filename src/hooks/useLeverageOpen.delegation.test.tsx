@@ -9,6 +9,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import type { Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
+import { swappedLog, transferLog, ZERO_ADDRESS } from '../test/receiptLogs'
 
 const ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'
 const STRATEGIES = '0x000000000000000000000000000000000000bEEF' as Address
@@ -19,6 +20,7 @@ const V_DEBT = '0x5555555555555555555555555555555555555555' as Address
 const CHAIN_ID = 8453
 
 const mocks = vi.hoisted(() => ({
+  clearQuoteCache: vi.fn(),
   getPauseState: vi.fn(),
   getAllowedRouters: vi.fn(),
   getDelegationAllowance: vi.fn(),
@@ -45,6 +47,12 @@ vi.mock('../lib/aaveStatics', () => ({
   getReserveTokens: mocks.getReserveTokens,
 }))
 vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
+// Partial: `AggregatorHttpError` has to stay the real class — the throttling tests branch on
+// `instanceof` — while the cache drop needs to be observable.
+vi.mock('../adapters/http', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  clearQuoteCache: mocks.clearQuoteCache,
+}))
 vi.mock('wagmi', () => ({
   usePublicClient: mocks.usePublicClient,
   useChainId: mocks.useChainId,
@@ -131,6 +139,11 @@ function makeInput(over: Partial<LeverageOpenInput> = {}): LeverageOpenInput {
   }
 }
 
+/** The collateral's aToken and the pair's variable-debt token, as the receipt names them. */
+const A_COLLATERAL = '0x00000000000000000000000000000000000000a1' as Address
+
+let waitForTransactionReceipt: ReturnType<typeof vi.fn>
+
 const signTypedData = vi.fn<(payload: unknown) => Promise<typeof SIGNATURE>>(async () => SIGNATURE)
 /** Typed with its argument, so assertions can read WHICH call a write was. */
 const writeContract = vi.fn<(args: { functionName: string }) => Promise<`0x${string}`>>(
@@ -172,8 +185,24 @@ async function settle() {
   }
 }
 
+/** Re-renders the mounted hook with new inputs, the way the panel does when the form changes. */
+let repriceWith: (input: LeverageOpenInput) => void = () => {}
+
 async function mount(input: LeverageOpenInput = makeInput()) {
-  result = renderHook(() => useLeverageOpen(input, { signTypedData, writeContract })).result
+  const rendered = renderHook(
+    (props: LeverageOpenInput) => useLeverageOpen(props, { signTypedData, writeContract }),
+    { initialProps: input },
+  )
+  result = rendered.result
+  repriceWith = rendered.rerender
+  await settle()
+}
+
+/** A change to the form on the SAME mount — which is where a stale preview can survive. */
+async function reprice(input: LeverageOpenInput) {
+  await act(async () => {
+    repriceWith(input)
+  })
   await settle()
 }
 
@@ -210,9 +239,11 @@ beforeEach(() => {
   vi.useFakeTimers()
   installStorage()
   debtPerCollateral = 3000n
+  waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success', logs: [] })
   mocks.usePublicClient.mockReturnValue({
     // The only direct read `execute` makes: the margin allowance, already covering it.
     readContract: vi.fn(async () => 10n ** 30n),
+    waitForTransactionReceipt,
   })
   mocks.useChainId.mockReturnValue(CHAIN_ID)
   mocks.useConnection.mockReturnValue({ address: OWNER })
@@ -228,6 +259,56 @@ beforeEach(() => {
   mocks.getPermitContext.mockResolvedValue({ name: 'Aave Variable Debt USDC', nonce: NONCE })
   signTypedData.mockResolvedValue(SIGNATURE)
   writeContract.mockResolvedValue(`0x${'11'.repeat(32)}`)
+})
+
+it('reads the settled swap and the wallet changes off the open receipt', async () => {
+  await mount()
+  await prepare()
+  await settle()
+
+  // What the route promised, captured before the send re-prices it.
+  const expectedOut = hook().preview!.expectedOut
+  const borrowed = hook().preview!.borrowAmount
+  const filled = expectedOut - 10n ** 15n // the price moved a thousandth of a token in flight
+  waitForTransactionReceipt.mockResolvedValue({
+    status: 'success',
+    logs: [
+      transferLog(COLLATERAL, OWNER, STRATEGIES, 1n * 10n ** 18n),
+      swappedLog({
+        router: ROUTER as Address,
+        srcToken: DEBT,
+        dstToken: COLLATERAL,
+        dstReceiver: STRATEGIES,
+        spentAmount: borrowed,
+        returnAmount: filled,
+      }),
+      transferLog(A_COLLATERAL, ZERO_ADDRESS, OWNER, 3n * 10n ** 18n),
+      transferLog(V_DEBT, ZERO_ADDRESS, OWNER, borrowed),
+    ],
+  })
+
+  await submit()
+
+  expect(hook().outcome?.swap?.spentAmount).toBe(borrowed)
+  expect(hook().outcome?.fill?.delta).toBe(-(10n ** 15n))
+  expect(hook().outcome?.deltas).toEqual([
+    { token: COLLATERAL, delta: -(1n * 10n ** 18n) },
+    { token: A_COLLATERAL, delta: 3n * 10n ** 18n },
+    { token: V_DEBT, delta: borrowed },
+  ])
+})
+
+it('reports the open as sent even when the receipt never arrives', async () => {
+  // The transaction IS submitted. A receipt that times out says nothing about whether it landed,
+  // and turning that into a failure would send the user to re-open a position they may hold.
+  waitForTransactionReceipt.mockRejectedValue(new Error('timed out'))
+  await mount()
+  await confirm()
+
+  expect(hook().step).toBe('done')
+  expect(hook().txHash).toBeDefined()
+  expect(hook().outcome).toBeNull()
+  expect(hook().execError).toBeNull()
 })
 
 it('banks the signature it takes, over exactly the borrow being opened', async () => {
@@ -472,3 +553,133 @@ it('forgetSignature drops the pin so the borrow sizes itself again', async () =>
   expect(loadDelegation(localStorage, KEY)).toBeNull()
   expect(hook().preview!.borrowAmount).toBe(solved)
 })
+
+it('derives the floor from the tolerance, so editing it re-prices what the contract enforces', async () => {
+  // The claim the confirm modal's slippage control rests on: changing the tolerance does not
+  // adjust `minOut` in the UI, it re-quotes and the floor falls out of the route that comes back.
+  const floorFor = (p: { expectedOut: bigint; flashAmount: bigint }, bps: bigint) => {
+    const guaranteed = (p.expectedOut * (10000n - bps)) / 10000n
+    // Never below the flash repayment: that floor is the contract's, not the router's.
+    return guaranteed > p.flashAmount ? guaranteed : p.flashAmount
+  }
+
+  await mount(makeInput({ slippageBps: 50n }))
+  const tight = hook().preview!
+  expect(tight.minOut).toBe(floorFor(tight, 50n))
+
+  await mount(makeInput({ slippageBps: 200n }))
+  const wide = hook().preview!
+  expect(wide.minOut).toBe(floorFor(wide, 200n))
+
+  // A wider tolerance needs a bigger borrow to still guarantee repaying the same flash loan.
+  expect(wide.borrowAmount).toBeGreaterThan(tight.borrowAmount)
+})
+
+it('keeps the pin when only the tolerance changes, so re-pricing costs no signature', async () => {
+  // Editing slippage is the user re-pricing the position they already signed for, not re-sizing
+  // it. Judging the band at the NEW tolerance moved the seed by roughly the edit itself — 2% to
+  // 0.1% moves it ~1.9%, past the 1% band — and dropped a pin nobody asked to drop.
+  await mount(makeInput({ slippageBps: 200n }))
+  await prepare()
+  await settle()
+  const signed = hook().reusableSignature!.value
+
+  await mount(makeInput({ slippageBps: 10n }))
+
+  expect(hook().pinnedBorrow).toBe(signed)
+  expect(hook().preview!.borrowAmount).toBe(signed)
+  expect(hook().reusableSignature?.value).toBe(signed)
+})
+
+it('offers a re-sign rather than silently re-sizing when the new tolerance outruns the signed borrow', async () => {
+  // The one case the maths genuinely requires a new signature: the borrow was solved so the
+  // guarantee just clears the flash loan, so widening leaves it short. Holding the pin is what
+  // turns that into an explicit "re-sign at the new size" — dropping it re-solved the borrow
+  // behind the user's back, and the coverage check then refused the send after they pressed it.
+  await mount(makeInput({ slippageBps: 10n }))
+  await prepare()
+  await settle()
+  const signed = hook().reusableSignature!.value
+
+  await mount(makeInput({ slippageBps: 200n }))
+
+  expect(hook().pinnedBorrow).toBe(signed)
+  expect(hook().previewError).toBe('QUOTE_MOVED')
+})
+
+it('re-prices from the network when the user asks for a newer price', async () => {
+  // The panel quotes once per change to the form and then stops. An explicit refresh has to beat
+  // the 4s reuse window too — otherwise pressing it inside that window returns the same numbers
+  // the user pressed it to get away from.
+  const adapter = fakeAdapter()
+  mocks.getAdaptersForChain.mockReturnValue([adapter])
+  await mount()
+  const quotedBefore = vi.mocked(adapter.getQuote).mock.calls.length
+
+  await act(async () => {
+    hook().hardRefresh()
+  })
+  await settle()
+
+  expect(vi.mocked(adapter.getQuote).mock.calls.length).toBeGreaterThan(quotedBefore)
+  expect(mocks.clearQuoteCache).toHaveBeenCalled()
+})
+
+it('reports an open the chain reverted as an error, not as done', async () => {
+  // The receipt is in hand by this point. Reading its status is the difference between telling
+  // someone they hold a position and telling them the transaction was thrown away.
+  waitForTransactionReceipt.mockResolvedValue({ status: 'reverted', logs: [] })
+  await mount()
+  await confirm()
+
+  expect(hook().step).toBe('error')
+  expect(hook().execError).toMatch(/revert/i)
+  // Still the one thing worth having: where to go and look at it.
+  expect(hook().txHash).toBeDefined()
+})
+
+it('drops a receipt that arrives after its attempt has been abandoned', async () => {
+  // The await outlives `submit`. A slow receipt landing after the user has started a second open
+  // would otherwise fill THIS attempt's panel with the last one's numbers — and, since the
+  // history is filed by whatever hash is current, record the new hash against the old swap.
+  let land: (r: unknown) => void = () => {}
+  waitForTransactionReceipt.mockReturnValue(
+    new Promise((resolve) => {
+      land = resolve
+    }),
+  )
+  await mount()
+  await prepare()
+  await settle()
+
+  // Started, not awaited: the receipt is still in flight while the user moves on.
+  let sending: Promise<void> = Promise.resolve()
+  await act(async () => {
+    sending = hook().submit()
+  })
+  act(() => {
+    hook().reset()
+  })
+  await act(async () => {
+    land({ status: 'success', logs: [transferLog(COLLATERAL, OWNER, STRATEGIES, 1n)] })
+    await sending
+  })
+
+  expect(hook().outcome).toBeNull()
+})
+
+it('clears the route a failed re-quote replaces, so nothing stale can be confirmed', async () => {
+  // The effect only sets a preview on success, but it used to mark EVERY run as the answer for
+  // its inputs — so a failed re-quote left the previous route looking current, and Confirm would
+  // send calldata built for inputs the user had already changed.
+  await mount(makeInput({ slippageBps: 10n }))
+  await prepare()
+  await settle()
+  expect(hook().preview).not.toBeNull()
+
+  await reprice(makeInput({ slippageBps: 200n }))
+
+  expect(hook().previewError).toBe('QUOTE_MOVED')
+  expect(hook().preview).toBeNull()
+})
+

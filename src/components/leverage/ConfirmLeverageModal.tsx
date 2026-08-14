@@ -13,7 +13,10 @@ import type { OpenPreview, OpenStep } from '../../hooks/useLeverageOpen'
 import type { OpenProjection } from '../../lib/leverage'
 import { PRICE_IMPACT_HIGH_PERCENT } from '../../lib/swapRoute'
 import { ExplorerLink } from '../ExplorerLink'
+import { TxOutcomePanel, type TokenMeta } from '../TxOutcome'
+import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
+import { SlippageField } from './SlippageField'
 import { T } from '../../styles/theme'
 
 /**
@@ -48,6 +51,16 @@ interface ConfirmLeverageModalProps {
 
   priceImpactBlocked: boolean
   slippageBps: bigint
+  /**
+   * The tolerance, editable from here.
+   *
+   * Changing it does NOT recompute `minOut` locally — it re-keys the panel's quoting effect, and
+   * the route comes back rebuilt at the new tolerance with `minOut` derived from it. Anything
+   * computed here instead would disagree with the router's own floor, which is baked into the
+   * calldata at build time and cannot be adjusted after the fact.
+   */
+  slippagePercent: number
+  onSlippageChange: (percent: number) => void
   collateralSymbol: string
   debtSymbol: string
   collateralDecimals: number
@@ -59,11 +72,18 @@ interface ConfirmLeverageModalProps {
   remedyHint: string | null
   txHash: `0x${string}` | undefined
   chainId: number
+  /** What the open settled at, once its receipt is in. Null until then. */
+  outcome: TxOutcome | null
+  /** Symbol and decimals for the tokens a receipt can name, keyed by lower-cased address. */
+  outcomeTokens: Record<string, TokenMeta>
 
   /** Set when confirming would spend a signature already taken — so no wallet prompt is coming. */
   reusableSignature: { value: bigint; deadline: bigint } | null
 
+  /** The polled re-quote. Deliberately inside the quote reuse window — see the effect below. */
   onRefresh: () => void
+  /** What the Refresh BUTTON calls: the same re-quote with the reuse window dropped first. */
+  onHardRefresh: () => void
   onResign: () => void
   onConfirm: () => void
   onClose: () => void
@@ -79,10 +99,10 @@ function formatHealthFactor(bps: bigint): string {
 export function ConfirmLeverageModal({
   title, marginLine, supplyLine, borrowLine,
   preview, projection, isQuoting, previewMessage, showResign,
-  priceImpactBlocked, slippageBps,
+  priceImpactBlocked, slippageBps, slippagePercent, onSlippageChange,
   collateralSymbol, debtSymbol, collateralDecimals, debtDecimals,
-  step, execError, remedyHint, txHash, chainId,
-  reusableSignature, onRefresh, onResign, onConfirm, onClose,
+  step, execError, remedyHint, txHash, chainId, outcome, outcomeTokens,
+  reusableSignature, onRefresh, onHardRefresh, onResign, onConfirm, onClose,
 }: ConfirmLeverageModalProps) {
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000))
 
@@ -151,7 +171,7 @@ export function ConfirmLeverageModal({
           }}>
             <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Route</h4>
             <button
-              onClick={onRefresh}
+              onClick={onHardRefresh}
               disabled={isQuoting || busy}
               className="btn-ghost"
               title="Re-price this route now"
@@ -239,6 +259,27 @@ export function ConfirmLeverageModal({
             </div>
           )}
 
+          {/* Editable here, not only on the panel behind it: this is where a user finds out the
+              tolerance was too tight, and sending them back to the form to change it loses the
+              route they were looking at. */}
+          <div style={{ marginTop: T.space[4] }}>
+            <SlippageField
+              percent={slippagePercent}
+              onChange={onSlippageChange}
+              ariaLabel="Confirm max slippage percent"
+              disabled={busy || done}
+            />
+            {/* The borrow stays pinned to what was signed, so re-pricing is free. The one case it
+                cannot absorb is a tolerance the signed borrow no longer funds — that surfaces as
+                the re-sign prompt above, and saying so here stops it reading as random. */}
+            {reusableSignature && !done && (
+              <div style={{ marginTop: T.space[2], fontSize: T.fontSize.xs, color: T.textMuted }}>
+                Re-pricing keeps the signature you already gave. Only a tolerance the signed borrow
+                cannot cover asks you to re-sign.
+              </div>
+            )}
+          </div>
+
           {/* The first two are already behind the user by the time this renders — shown ticked
               rather than hidden, so it is clear what has been spent if they cancel here. */}
           <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.textMuted }}>
@@ -254,6 +295,10 @@ export function ConfirmLeverageModal({
               {remedyHint && <span style={{ color: T.textMuted }}> {remedyHint}</span>}
             </div>
           )}
+
+          {/* Fills in when the receipt lands, which is a block or two after `done`. Until then the
+              hash below is the whole report — the open is sent either way. */}
+          <TxOutcomePanel outcome={outcome} tokens={outcomeTokens} />
 
           {done && txHash && (
             <div style={{ marginTop: T.space[4] }}>

@@ -63,6 +63,19 @@ export interface HeldDelegation {
   value: bigint
   deadline: bigint
   signature: Hex
+  /**
+   * The slippage tolerance in force when this signature was taken.
+   *
+   * Carried so the adoption band can be judged against the seed AT THAT TOLERANCE rather than at
+   * whatever the form currently shows. `seedBorrow` divides by `1 − slippage`, so widening 0.1%
+   * to 2% moves the seed ~1.9% — past the band, dropping a pin the user never asked to drop. The
+   * band exists to catch the ORACLE drifting away from the signed size, not the user deliberately
+   * re-pricing the same one.
+   *
+   * Optional: entries written before this field existed are still perfectly good signatures, and
+   * fall back to the current tolerance.
+   */
+  slippageBps?: bigint
 }
 
 export interface DelegationNeed {
@@ -171,6 +184,9 @@ export function loadDelegation(
       value: BigInt(p.value),
       deadline: BigInt(p.deadline),
       signature: p.signature as Hex,
+      // Absent on entries written before it was recorded; `undefined` reads as "not known",
+      // which every caller already treats as "use the current tolerance".
+      ...(typeof p.slippageBps === 'string' ? { slippageBps: BigInt(p.slippageBps) } : {}),
     }
   } catch {
     // Corrupt entry, a bigint that will not parse, or storage refusing to be read. Either way
@@ -189,6 +205,7 @@ export function saveDelegation(storage: DelegationStorage | null, held: HeldDele
         nonce: held.nonce.toString(),
         value: held.value.toString(),
         deadline: held.deadline.toString(),
+        ...(held.slippageBps === undefined ? {} : { slippageBps: held.slippageBps.toString() }),
       }),
     )
   } catch {

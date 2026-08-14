@@ -46,8 +46,9 @@ import {
   type HeldDelegation,
 } from '../lib/delegationCache'
 import { routeCostPercent } from '../lib/swapRoute'
+import { readOutcome, type TxOutcome } from '../lib/txOutcome'
 import { getAdaptersForChain } from '../adapters'
-import { AggregatorHttpError } from '../adapters/http'
+import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
 import type { Adapter, QuoteResponse } from '../adapters/types'
 import { getChainConfig } from '../config/chains'
 import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
@@ -144,6 +145,15 @@ export interface OpenPreview {
 
 const DEBOUNCE_MS = 400
 
+/**
+ * How long to wait for the open's receipt before giving up on reporting what it settled at.
+ *
+ * The same five minutes the close flow waits, for the same reason — but with none of the same
+ * consequences: nothing here is retried or re-signed on the strength of it, so a wait that runs
+ * out costs only the settled figures, and the hash is already on screen.
+ */
+const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
+
 /** Solve, then at most one correction. Pricing is non-linear; a third round buys nothing. */
 const MAX_REFINE_ROUNDS = 2
 
@@ -215,8 +225,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const chainId = useChainId()
   const { address: owner } = useConnection()
 
-  const { writeContractAsync } = useWriteContract()
-  const { signTypedDataAsync } = useSignTypedData()
+  const { mutateAsync: writeContractAsync } = useWriteContract()
+  const { mutateAsync: signTypedDataAsync } = useSignTypedData()
 
   const [preview, setPreview] = useState<OpenPreview | null>(null)
   const [previewError, setPreviewError] = useState<LeverageError | null>(null)
@@ -230,6 +240,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const [step, setStep] = useState<OpenStep>('idle')
   const [txHash, setTxHash] = useState<Hex | undefined>()
   const [execError, setExecError] = useState<string | null>(null)
+  /** What the last open actually did, read off its receipt. Null until one lands. */
+  const [outcome, setOutcome] = useState<TxOutcome | null>(null)
   const [execRemedy, setExecRemedy] = useState<StrategiesRemedy | null>(null)
 
   /** Set while a signature is being spent, to stop the preview moving underneath it. */
@@ -243,7 +255,31 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
    */
   const prepared = useRef<PreparedOpen | null>(null)
 
+  /**
+   * The send this screen is currently about.
+   *
+   * The receipt read outlives `submit` by design, so by the time one resolves the user may have
+   * abandoned that attempt and started another. A receipt for anything but the current hash is
+   * not ours to report: it would caption this attempt with the last one's numbers, and the
+   * history — filed against whatever hash is on screen — would pair the two.
+   */
+  const currentSend = useRef<Hex | null>(null)
+
   const refresh = useCallback(() => setTick((t) => t + 1), [])
+
+  /**
+   * Refresh as a USER means it — the same re-quote, with the reuse window dropped first.
+   *
+   * Distinct from {@link refresh} because their callers want opposite things. The confirm modal
+   * polls every 3 seconds against a 4-second reuse window, and that overlap is deliberate: it
+   * keeps a modal left open from spending an aggregator's rate limit on prices that have not
+   * moved. Someone PRESSING refresh is asking for exactly what that window withholds, so for them
+   * the cache is dropped and the next pass goes to the network.
+   */
+  const hardRefresh = useCallback(() => {
+    clearQuoteCache()
+    setTick((t) => t + 1)
+  }, [])
 
   /**
    * Clears the record of the last attempt.
@@ -257,6 +293,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     setTxHash(undefined)
     setExecError(null)
     setExecRemedy(null)
+    setOutcome(null)
+    currentSend.current = null
     // The grant belongs to the attempt being forgotten. Carrying it into the next one would let a
     // send go out against an authorisation the user took for a position they then walked away
     // from — and `submit`'s coverage check is the only thing that would catch it.
@@ -337,7 +375,13 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     const seed = seedBorrow({
       flashAmount,
       debtMargin,
-      slipNum: BPS - input.slippageBps,
+      // The tolerance the SIGNATURE was taken at, not the one on screen. `seedBorrow` divides by
+      // `1 − slippage`, so re-seeding at a freshly widened tolerance moves the seed by roughly
+      // the change itself — 0.1% to 2% moves it ~1.9%, past the band — and drops the pin on the
+      // strength of an edit the user made precisely because they wanted to keep the position.
+      // The band is here to catch the ORACLE drifting away from a signed size, and the oracle is
+      // not what moved. Older entries recorded no tolerance and fall back to the current one.
+      slipNum: BPS - (held.slippageBps ?? input.slippageBps),
       collateralPriceUsd: input.reserves.collateral.priceUsd,
       debtPriceUsd: input.reserves.debt.priceUsd,
       collateralDecimals: input.reserves.collateral.decimals,
@@ -386,6 +430,15 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     const forInput = key
 
     const timer = setTimeout(async () => {
+      /**
+       * Whether this run produced a route.
+       *
+       * Every failure below returns early with only an error set, and `previewFor` is stamped in
+       * `finally` regardless — which used to leave the PREVIOUS run's preview looking like the
+       * answer for these inputs. Confirm stayed enabled on it, so a re-quote that failed after
+       * (say) a slippage edit would send calldata built for the tolerance before the edit.
+       */
+      let produced = false
       setIsQuoting(true)
       setPreviewError(null)
       try {
@@ -636,6 +689,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
 
         // Never below `flashAmount`: the contract enforces both floors, and an output short of
         // the flash repayment reverts the whole transaction rather than merely disappointing.
+        produced = true
         setPreview({
           collateral,
           debtAsset,
@@ -659,6 +713,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       } finally {
         if (!cancelled) {
           setIsQuoting(false)
+          // No route for these inputs is an answer too — and it is NOT the last one's route.
+          if (!produced) setPreview(null)
           setPreviewFor(forInput)
         }
       }
@@ -772,6 +828,9 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
             value: need.value,
             deadline,
             signature,
+            // The tolerance this was signed under, so a later edit to it is judged against the
+            // seed it was adopted at rather than against one the edit itself moved.
+            slippageBps: input.slippageBps,
           }
           saveDelegation(browserStorage(), fresh)
           setStorageTick((t) => t + 1)
@@ -838,6 +897,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     frozen.current = true
     setExecError(null)
     setExecRemedy(null)
+    /** The hash, once there is one — read outside the block so the receipt can be waited on. */
+    let sent: Hex | undefined
     try {
       setStep('sending')
       const plan = planOpen({
@@ -852,6 +913,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         address: input.contract, abi: aaveV3StrategiesAbi,
         functionName: plan.functionName, args: plan.args,
       })
+      sent = hash
+      currentSend.current = hash
       setTxHash(hash)
       setStep('done')
       // Submitted, so this signature has done its job. Holding it past that would leave a live
@@ -869,6 +932,41 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     } finally {
       frozen.current = false
       refresh()
+    }
+
+    // Read AFTER the block above, not inside it: `step` is already 'done' and the preview already
+    // unfrozen, so a receipt that takes a block — or never comes — holds nothing else up. A
+    // failure here is not a failed open, so it never reaches `execError`.
+    if (!sent || !client || !owner) return
+    try {
+      const receipt = await client.waitForTransactionReceipt({ hash: sent, timeout: RECEIPT_TIMEOUT_MS })
+      // Abandoned while this was in flight. Whatever it says belongs to a screen that is gone.
+      if (currentSend.current !== sent) return
+
+      // `step` went to 'done' on submission, which is all that was known then. The receipt knows
+      // better: an included-and-reverted open holds no position, and leaving "done" on screen
+      // tells the user the opposite of what the chain says. The close flow reads the same field
+      // for the same reason (useDeleverageClose.ts).
+      if (receipt.status !== 'success') {
+        setExecError('The open reverted on chain, so no position was opened. Nothing was spent but gas.')
+        setStep('error')
+        return
+      }
+
+      setOutcome(
+        readOutcome({
+          logs: receipt.logs ?? [],
+          wallet: owner,
+          // The swap funds the collateral leg: borrowed debt in, collateral out.
+          pair: { srcToken: effectivePreview.debtAsset, dstToken: effectivePreview.collateral },
+          expectedOut: effectivePreview.expectedOut,
+          minOut: effectivePreview.minOut,
+        }),
+      )
+    } catch {
+      // Timed out, or the receipt read itself failed. The transaction is submitted either way and
+      // `txHash` is on screen, so there is nothing to say here that the explorer would not say
+      // better — and calling it an error would send the user to re-open a position they may hold.
     }
   }, [input, effectivePreview, client, owner, deps, refresh, forget])
 
@@ -892,13 +990,18 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     preview: effectivePreview,
     previewError: effectivePreviewError,
     isQuoting: effectiveIsQuoting,
-    refresh, step, txHash, execError, execRemedy,
+    refresh,
+    /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */
+    hardRefresh,
+    step, txHash, execError, execRemedy,
     /** Approve and delegate. Prompts the wallet; opens nothing. */
     prepare,
     /** Send what `prepare` authorised, against the route currently on screen. */
     submit,
     /** Forgets the last attempt's step, hash and error — call when a fresh confirmation opens. */
     reset,
+    /** What the open settled at, once its receipt is in. Null until then, and after a reset. */
+    outcome,
     /** Non-null when the next open would spend a signature already taken. */
     reusableSignature,
     /** The borrow the quote is currently pinned to, or null when it is solved freely. */

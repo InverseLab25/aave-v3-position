@@ -145,6 +145,38 @@ describe('storage', () => {
     expect(loadDelegation(storage, delegationKey(original))).toEqual(original)
   })
 
+  it('round-trips the tolerance the signature was taken at', () => {
+    // The pin is judged against a seed computed at THIS tolerance, not at whatever the form
+    // currently shows — so it has to survive the reload that a fresh mount performs.
+    const storage = memoryStorage()
+    const original = held({ slippageBps: 10n })
+    saveDelegation(storage, original)
+
+    expect(loadDelegation(storage, delegationKey(original))?.slippageBps).toBe(10n)
+  })
+
+  it('reads an entry written before the tolerance was recorded', () => {
+    // Entries already in a user's browser have no `slippageBps`. Rejecting them would throw away
+    // a live signature and re-prompt for nothing.
+    const key = delegationKey(held())
+    const legacy = JSON.stringify({
+      chainId: 8453,
+      owner: OWNER,
+      debtAsset: DEBT_ASSET,
+      debtToken: V_DEBT,
+      delegatee: STRATEGIES,
+      nonce: '7',
+      value: (3000n * 10n ** 6n).toString(),
+      deadline: (NOW + 600n).toString(),
+      signature: `0x${'ab'.repeat(65)}`,
+    })
+
+    const loaded = loadDelegation(memoryStorage({ [key]: legacy }), key)
+
+    expect(loaded?.value).toBe(3000n * 10n ** 6n)
+    expect(loaded?.slippageBps).toBeUndefined()
+  })
+
   it('scopes entries by chain, owner and debt asset', () => {
     const storage = memoryStorage()
     saveDelegation(storage, held())

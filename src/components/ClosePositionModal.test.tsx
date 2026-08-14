@@ -109,6 +109,7 @@ const okPreview = (over: Record<string, unknown> = {}) => ({
 let previewFn: ReturnType<typeof vi.fn>
 let closeFn: ReturnType<typeof vi.fn>
 let clearSignatures: ReturnType<typeof vi.fn>
+let clearOutcome: ReturnType<typeof vi.fn>
 let warmup: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
@@ -131,6 +132,7 @@ beforeEach(() => {
   previewFn = vi.fn().mockResolvedValue({ preview: okPreview(), error: null })
   closeFn = vi.fn()
   clearSignatures = vi.fn()
+  clearOutcome = vi.fn()
   warmup = vi.fn().mockResolvedValue(undefined)
   mocks.useDeleverageClose.mockReturnValue({
     preview: previewFn,
@@ -138,9 +140,29 @@ beforeEach(() => {
     logs: [],
     step: 'idle',
     clearSignatures,
+    clearOutcome,
     warmup,
   })
 })
+
+/** A second supplied asset, so the collateral select has something to switch between. */
+const WBTC_SUPPLIED: SuppliedAsset = {
+  ...WETH_SUPPLIED,
+  symbol: 'WBTC',
+  underlyingAsset: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599',
+  decimals: 8,
+  aTokenAddress: '0x4444444444444444444444444444444444444444',
+}
+
+const mountWithBothCollaterals = () =>
+  render(
+    <ClosePositionModal
+      borrowedAsset={USDC_BORROWED}
+      suppliedAssets={[WETH_SUPPLIED, WBTC_SUPPLIED]}
+      ethPriceUsd={3000}
+      onClose={vi.fn()}
+    />,
+  )
 
 const mount = () =>
   render(
@@ -314,4 +336,17 @@ describe('ClosePositionModal — signature hygiene', () => {
     mount()
     await waitFor(() => expect(warmup).toHaveBeenCalled())
   })
+})
+
+it('forgets what the last close settled at when the collateral changes', () => {
+  // The panel describes the pair it was produced for. Left up across a switch it captions the
+  // new pair with the old one's numbers — and its position-token rows, filtered against the new
+  // pair's aToken and debt token, stop being filtered and read as wallet balance changes.
+  mountWithBothCollaterals()
+
+  fireEvent.change(screen.getByRole('combobox'), {
+    target: { value: WBTC_SUPPLIED.underlyingAsset },
+  })
+
+  expect(clearOutcome).toHaveBeenCalled()
 })

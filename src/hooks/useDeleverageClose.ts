@@ -38,6 +38,7 @@ import {
 } from '../lib/closePlan'
 import { aaveV3StrategiesAbi, planClose } from '../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../lib/sizing'
+import { readOutcome, type TxOutcome } from '../lib/txOutcome'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../lib/aaveStatics'
 
 /*//////////////////////////////////////////////////////////////
@@ -288,6 +289,8 @@ export function useDeleverageClose() {
 
   const [logs, setLogs] = useState<string[]>([])
   const [step, setStep] = useState<CloseStep>('idle')
+  /** What the last close actually did, read off its receipt. Null until one lands. */
+  const [outcome, setOutcome] = useState<TxOutcome | null>(null)
   const log = useCallback((m: string) => setLogs((prev) => [...prev, m]), [])
 
   /**
@@ -295,6 +298,15 @@ export function useDeleverageClose() {
    * `clearSignatures` exists so closing the modal drops them rather than leaving a live grant
    * in memory for the rest of its deadline.
    */
+  /**
+   * Forgets what the last close settled at.
+   *
+   * The modal outlives a close: the user can pick a different collateral and start another. The
+   * settled panel describes the pair it was produced for, and nothing about it is true of the
+   * next one — including which of its rows are position tokens rather than wallet balances.
+   */
+  const clearOutcome = useCallback(() => setOutcome(null), [])
+
   const signatures = useRef<HeldSignature | null>(null)
   const clearSignatures = useCallback(() => {
     signatures.current = null
@@ -540,6 +552,8 @@ export function useDeleverageClose() {
     async (input: CloseInput): Promise<CloseResult> => {
       setLogs([])
       setStep('running')
+      // Belongs to the previous attempt. Leaving it up would caption this one with it.
+      setOutcome(null)
 
       /**
        * Reuse the held permits, or take fresh ones and stop.
@@ -954,6 +968,18 @@ export function useDeleverageClose() {
         }
 
         if (receipt.status === 'success') {
+          // Everything shown until now was a forecast. The receipt is what happened, and it is
+          // already in hand — the fill is measured against `builtOut`, the figure `minOut` was
+          // derived from, so the comparison is against the route that actually executed.
+          setOutcome(
+            readOutcome({
+              logs: receipt.logs ?? [],
+              wallet: address,
+              pair: { srcToken: p.collateralAddr, dstToken: p.debtAddr },
+              expectedOut: builtOut,
+              minOut,
+            }),
+          )
           log('Position closed ✓')
           // Consumed: the nonce has advanced, so these can never authorise anything again.
           signatures.current = null
@@ -973,5 +999,5 @@ export function useDeleverageClose() {
     [address, chainId, publicClient, walletClient, log, config, buildPlan],
   )
 
-  return { preview, close, logs, step, clearSignatures, warmup }
+  return { preview, close, logs, step, outcome, clearOutcome, clearSignatures, warmup }
 }

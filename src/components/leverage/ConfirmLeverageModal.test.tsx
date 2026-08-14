@@ -55,8 +55,13 @@ function setup(over: Partial<Parameters<typeof ConfirmLeverageModal>[0]> = {}) {
     remedyHint: null,
     txHash: undefined,
     chainId: 8453,
+    outcome: null,
+    outcomeTokens: {},
+    slippagePercent: 0.5,
+    onSlippageChange: vi.fn(),
     reusableSignature: null,
     onRefresh: vi.fn(),
+    onHardRefresh: vi.fn(),
     onResign: vi.fn(),
     onConfirm: vi.fn(),
     onClose: vi.fn(),
@@ -159,4 +164,49 @@ it('replaces confirmation with a receipt once the open has landed', () => {
 
   expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull()
   expect(screen.getByRole('button', { name: 'Done' })).toBeDefined()
+})
+
+it('offers the slippage presets and reports a pick to the caller', () => {
+  const props = setup()
+
+  fireEvent.click(screen.getByRole('button', { name: '1%' }))
+
+  expect(props.onSlippageChange).toHaveBeenCalledWith(1)
+})
+
+it('accepts a typed slippage', () => {
+  const props = setup()
+
+  fireEvent.change(screen.getByLabelText('Confirm max slippage percent'), {
+    target: { value: '1.25' },
+  })
+
+  expect(props.onSlippageChange).toHaveBeenCalledWith(1.25)
+})
+
+it('locks the tolerance once the transaction is with the wallet', () => {
+  // Re-pricing mid-send moves `minOut` under a transaction already authorised at the old one.
+  setup({ step: 'sending' })
+
+  expect((screen.getByLabelText('Confirm max slippage percent') as HTMLInputElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: '1%' }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+it('warns that widening the tolerance can cost the held signature', () => {
+  // Slippage re-seeds the borrow, and a signature covers one exact figure — so a big enough
+  // change drops the pin and re-prompts. Saying so beforehand stops that looking random.
+  setup({ reusableSignature: { value: 6000n * 10n ** 6n, deadline: 9_999_999_999n } })
+
+  expect(screen.getByText(/re-sign/i)).toBeTruthy()
+})
+
+it('asks for a genuinely new price when the user presses Refresh', () => {
+  // The poll and the button share a name but not an intent: the poll lives inside the quote
+  // reuse window on purpose, and a press is a request to get out of it.
+  const props = setup()
+
+  fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
+
+  expect(props.onHardRefresh).toHaveBeenCalledTimes(1)
+  expect(props.onRefresh).not.toHaveBeenCalled()
 })

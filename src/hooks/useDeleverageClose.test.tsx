@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
+import { swappedLog, transferLog, ZERO_ADDRESS } from '../test/receiptLogs'
 import { parseUnits, WaitForTransactionReceiptTimeoutError } from 'viem'
 
 /**
@@ -469,6 +470,76 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
 
     expect(signTypedData).not.toHaveBeenCalled()
     expect(retry.status).toBe('success')
+  })
+
+  it('reads the settled swap and the wallet changes off the receipt', async () => {
+    // Everything the panel showed until now was a forecast. This is the transaction reporting
+    // what it actually did, and it is the only number the user can act on afterwards.
+    const FILLED = parseUnits('20950', 6) // 50 USDC under the 21,000 the route quoted
+    waitForTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      logs: [
+        transferLog(ATOKEN, USER, ZERO_ADDRESS, SIZED.requiredIn),
+        transferLog(VDEBT, USER, ZERO_ADDRESS, DEBT),
+        swappedLog({
+          router: ROUTER,
+          srcToken: WETH.underlyingAsset,
+          dstToken: USDC.underlyingAsset,
+          dstReceiver: DELEVERAGER,
+          spentAmount: SIZED.requiredIn,
+          returnAmount: FILLED,
+        }),
+        transferLog(USDC.underlyingAsset, DELEVERAGER, USER, parseUnits('950', 6)),
+      ],
+    })
+
+    const r = mount()
+    await r.current.close(baseInput)
+    await act(async () => {
+      await r.current.close(baseInput)
+    })
+
+    expect(r.current.outcome?.swap?.spentAmount).toBe(SIZED.requiredIn)
+    expect(r.current.outcome?.swap?.returnAmount).toBe(FILLED)
+    // Measured against the route that was built, not the one first quoted.
+    expect(r.current.outcome?.fill?.delta).toBe(-parseUnits('50', 6))
+    expect(r.current.outcome?.deltas).toEqual([
+      { token: ATOKEN, delta: -SIZED.requiredIn },
+      { token: VDEBT, delta: -DEBT },
+      { token: USDC.underlyingAsset, delta: parseUnits('950', 6) },
+    ])
+  })
+
+  it('drops the settled outcome on request, for when the position it describes is no longer the one on screen', async () => {
+    // The modal stays mounted while the user picks a different collateral. Left up, the old
+    // panel is captioned with the new pair — and its aToken and debt rows, filtered against the
+    // NEW pair's position tokens, stop being filtered and reappear as wallet changes.
+    waitForTransactionReceipt.mockResolvedValue({
+      status: 'success',
+      logs: [transferLog(ATOKEN, USER, ZERO_ADDRESS, SIZED.requiredIn)],
+    })
+    const r = mount()
+    await r.current.close(baseInput)
+    await act(async () => {
+      await r.current.close(baseInput)
+    })
+    expect(r.current.outcome).not.toBeNull()
+
+    act(() => {
+      r.current.clearOutcome()
+    })
+
+    expect(r.current.outcome).toBeNull()
+  })
+
+  it('leaves the outcome unset when the receipt carried no logs to read', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    await act(async () => {
+      await r.current.close(baseInput)
+    })
+
+    expect(r.current.outcome).toBeNull()
   })
 
   it('reports a receipt timeout as unresolved, not as a failure, and hands back the hash', async () => {

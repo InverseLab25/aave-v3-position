@@ -9,7 +9,7 @@
  *   1. estimateFeesPerGas  — fetch current EIP-1559 base + priority fees
  *   2. calculateAdjustedFees — apply multiplier to base fee (base ×1.2)
  *   3. simulateContract    — dry-run the call; throws with revert reason on failure
- *   4. writeContractAsync  — send the real transaction using the simulated request
+ *   4. the write mutation  — send the real transaction using the simulated request
  */
 
 import type { Config } from 'wagmi'
@@ -25,8 +25,8 @@ const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
 type SimulateParams = Parameters<typeof simulateContract>[1]
 import { extractDetailedError } from './errors'
 
-/** wagmi's async write, as returned by `useWriteContract().writeContractAsync`. */
-type WriteContract = UseWriteContractReturnType['writeContractAsync']
+/** wagmi's async write, as returned by `useWriteContract().mutateAsync`. */
+type WriteContract = UseWriteContractReturnType['mutateAsync']
 import { simulateContract, estimateFeesPerGas, estimateGas, waitForTransactionReceipt } from 'wagmi/actions'
 import { encodeFunctionData, type Abi } from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from './gas'

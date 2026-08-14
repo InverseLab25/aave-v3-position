@@ -25,17 +25,33 @@ import { isVolatilePrice, toCollateralInputs } from '../../utils/liquidation'
 import { ExplorerLink } from '../ExplorerLink'
 import { AmountField } from './AmountField'
 import { ConfirmLeverageModal } from './ConfirmLeverageModal'
+import { SlippageField } from './SlippageField'
+import { TxHistoryList } from '../TxHistoryList'
+import { useRecordOutcome } from '../../hooks/useRecordOutcome'
+import { buildTokenMap, positionTokens, type TokenMetaSource } from '../../lib/tokenMeta'
+import { hideTokens } from '../../lib/txOutcome'
 import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
 import { RouteDetails } from './RouteDetails'
-import {
-  DEFAULT_SLIPPAGE_PERCENT,
-  MAX_SLIPPAGE_PERCENT,
-  SLIPPAGE_PRESETS,
-  toSlippageBps,
-} from './slippage'
+import { DEFAULT_SLIPPAGE_PERCENT, toSlippageBps } from './slippage'
 import { T } from '../../styles/theme'
+
+/**
+ * A reserve as the token-metadata builders want it.
+ *
+ * Decimals come from `raw`, which is the on-chain value; the sibling field is a display Number.
+ */
+const toTokenSource = (r: AvailableReserve | undefined): TokenMetaSource | null =>
+  r
+    ? {
+        symbol: r.symbol,
+        decimals: r.raw.decimals,
+        underlyingAsset: r.underlyingAsset,
+        aTokenAddress: r.aTokenAddress,
+        variableDebtTokenAddress: r.variableDebtTokenAddress,
+      }
+    : null
 
 interface LeveragePanelProps {
   suppliedAssets: SuppliedAsset[]
@@ -227,6 +243,18 @@ export function LeveragePanel({
   const marginAsset: MarginLocation = boosting ? 'none' : marginAssetOverride ?? autoMarginAsset
 
   const marginReserve = marginAsset === 'debt' ? debtReserve : collateralReserve
+
+  /** How to format the tokens an open's receipt can name: the pair's two underlyings. */
+  const outcomeTokens = useMemo(
+    () => buildTokenMap([collateralReserve, debtReserve].map(toTokenSource)),
+    [collateralReserve, debtReserve],
+  )
+
+  /** The aToken and variable-debt rows, which belong to the position rather than to the wallet. */
+  const hiddenTokens = useMemo(
+    () => positionTokens([collateralReserve, debtReserve].map(toTokenSource)),
+    [collateralReserve, debtReserve],
+  )
   const marginBalance = boosting
     ? 0n
     : ((marginAsset === 'debt' ? debtBalance : collateralBalance) as bigint | undefined) ?? 0n
@@ -409,9 +437,18 @@ export function LeveragePanel({
   })()
 
   const {
-    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, txHash, refresh,
+    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
+
+  // Filed here rather than in the hook: this is the layer that knows the symbols and decimals,
+  // and an entry without those is unreadable by the time anyone comes back to look at it.
+  // Filtered once, so the panel and the history row report the same thing.
+  const settled = useMemo(() => hideTokens(outcome, hiddenTokens), [outcome, hiddenTokens])
+
+  useRecordOutcome({
+    outcome: settled, tokens: outcomeTokens, hash: txHash, chainId, wallet: address, kind: 'open',
+  })
 
   /**
    * Whether the confirmation modal is up.
@@ -616,53 +653,11 @@ export function LeveragePanel({
           {/* The gap between the route's expected output and the floor the contract enforces —
               so it belongs next to the amounts that determine both, not behind a settings menu.
               Widening it accepts a worse fill; tightening it risks the open reverting outright. */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: T.space[2] }}>
-            <label style={{ fontSize: T.fontSize.xs, color: T.textMuted, textTransform: 'uppercase' }}>
-              Max slippage
-            </label>
-            <div style={{ display: 'flex', gap: T.space[2], alignItems: 'center' }}>
-              {SLIPPAGE_PRESETS.map((p) => (
-                <button
-                  key={p}
-                  onClick={() => setSlippagePercent(p)}
-                  style={{
-                    padding: `${T.space[1]} ${T.space[3]}`,
-                    border: `1px solid ${T.border}`,
-                    borderRadius: T.radius.md,
-                    background: slippagePercent === p ? T.primary : 'transparent',
-                    color: slippagePercent === p ? '#fff' : T.text,
-                    fontWeight: slippagePercent === p ? 600 : 400,
-                    cursor: 'pointer',
-                    fontSize: T.fontSize.sm,
-                  }}
-                >
-                  {p}%
-                </button>
-              ))}
-              <input
-                type="number"
-                step="any"
-                min={0}
-                max={MAX_SLIPPAGE_PERCENT}
-                aria-label="Max slippage percent"
-                value={slippagePercent}
-                onChange={(e) => setSlippagePercent(parseFloat(e.target.value))}
-                style={{
-                  flex: 1, minWidth: 0, padding: T.space[2],
-                  border: `1px solid ${T.border}`, borderRadius: T.radius.md,
-                  background: 'transparent', color: T.text, fontSize: T.fontSize.sm,
-                }}
-              />
-            </div>
-            {/* A cleared or nonsensical field reads as 0%, which means "no tolerance" and reverts
-                on any move at all. Say so rather than letting an empty box look like a default. */}
-            {slippageBps === 0n && (
-              <div style={{ fontSize: T.fontSize.xs, color: T.warning }}>
-                0% leaves no room for the price to move — the open will revert unless the route
-                fills exactly.
-              </div>
-            )}
-          </div>
+          <SlippageField
+            percent={slippagePercent}
+            onChange={setSlippagePercent}
+            ariaLabel="Max slippage percent"
+          />
 
           {dangerMax > safeMax && (
             <label style={{ display: 'flex', alignItems: 'center', gap: T.space[2], fontSize: T.fontSize.sm, color: T.textMuted, cursor: 'pointer' }}>
@@ -702,6 +697,27 @@ export function LeveragePanel({
             existingCollateralAmount={existingCollateralAmount}
             existingDebtAmount={existingDebtAmount}
           />
+
+          {/* The panel prices once per change to the form and then stops, which is right for a
+              form and wrong for a price — so there is a way to ask for a newer one without
+              nudging an amount to provoke it. */}
+          {preview && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={hardRefresh}
+                disabled={isQuoting}
+                style={{
+                  border: 'none', background: 'none', padding: 0,
+                  cursor: isQuoting ? 'default' : 'pointer',
+                  color: isQuoting ? T.textMuted : T.primary,
+                  fontWeight: 600, fontSize: T.fontSize.sm,
+                }}
+              >
+                {isQuoting ? 'Pricing…' : '↻ Refresh'}
+              </button>
+            </div>
+          )}
 
           {/* Only once a route has answered: every figure here comes from the BUILT transaction,
               and there is no honest way to estimate its floor beforehand. */}
@@ -764,8 +780,10 @@ export function LeveragePanel({
               {execError}
               {remedyHint && <span style={{ color: T.textMuted }}> {remedyHint}</span>}
               {' '}
+              {/* Also a press, so also past the reuse window: retrying against the same cached
+                  quote that just failed is the one thing this button must not do. */}
               <button
-                onClick={refresh}
+                onClick={hardRefresh}
                 style={{
                   border: 'none', background: 'none', padding: 0, cursor: 'pointer',
                   color: T.primary, fontWeight: 600, fontSize: T.fontSize.sm,
@@ -777,6 +795,8 @@ export function LeveragePanel({
           )}
 
           {!confirming && step === 'done' && txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
+
+          <TxHistoryList wallet={address} chainId={chainId} refreshToken={txHash} />
         </div>
       </div>
 
@@ -804,6 +824,8 @@ export function LeveragePanel({
           showResign={pinnedBorrow !== null && previewError === 'QUOTE_MOVED'}
           priceImpactBlocked={priceImpactBlocked}
           slippageBps={slippageBps}
+          slippagePercent={slippagePercent}
+          onSlippageChange={setSlippagePercent}
           collateralSymbol={collateralReserve.symbol}
           debtSymbol={debtReserve.symbol}
           collateralDecimals={collateralReserve.raw.decimals}
@@ -813,8 +835,11 @@ export function LeveragePanel({
           remedyHint={remedyHint}
           txHash={txHash}
           chainId={chainId}
+          outcome={settled}
+          outcomeTokens={outcomeTokens}
           reusableSignature={reusableSignature}
           onRefresh={refresh}
+          onHardRefresh={hardRefresh}
           onResign={forgetSignature}
           onConfirm={() => void submit()}
           onClose={() => setConfirming(false)}

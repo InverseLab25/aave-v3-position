@@ -88,6 +88,7 @@ function setHook(over: Record<string, unknown> = {}) {
     prepare,
     submit,
     refresh: vi.fn(),
+    hardRefresh: vi.fn(),
     reset: vi.fn(),
     reusableSignature: null,
     pinnedBorrow: null,
@@ -227,4 +228,51 @@ it('gives the press back when the pair turns out to have no route', async () => 
 
   await waitFor(() => expect(screen.getByRole('button', { name: /Open long/i })).toBeTruthy())
   expect(prepare).not.toHaveBeenCalled()
+})
+
+it('re-prices on demand from the route area', async () => {
+  // The panel quotes once per change to the form and then stops, which is right for a form and
+  // wrong for a price. Without this the only way to ask for a newer one is to nudge an amount.
+  setHook({ preview: PREVIEW })
+  mount()
+
+  fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
+
+  expect(hookState.hardRefresh).toHaveBeenCalledTimes(1)
+})
+
+it('will not stack refreshes on top of a quote already in flight', async () => {
+  // Each press costs an aggregator round-trip against a 3/s ceiling shared with the auto-poll.
+  setHook({ preview: PREVIEW, isQuoting: true })
+  mount()
+
+  const button = screen.getByRole('button', { name: /pricing/i })
+
+  expect((button as HTMLButtonElement).disabled).toBe(true)
+})
+
+it('leaves the position tokens out of the settled wallet changes', async () => {
+  // Aave mints the aToken and the debt token to the wallet, so both net into the receipt's
+  // deltas — but they are the POSITION, which the projection in this very modal describes.
+  prepare.mockResolvedValue(true)
+  setHook({
+    preview: PREVIEW,
+    outcome: {
+      swap: null,
+      fill: null,
+      deltas: [
+        { token: '0x0000000000000000000000000000000000000002', delta: 5n * 10n ** 18n },
+        { token: '0x0000000000000000000000000000000000000001', delta: 9n * 10n ** 18n },
+        { token: WETH, delta: -(2n * 10n ** 18n) },
+      ],
+    },
+  })
+  mount()
+  fillForm()
+
+  fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
+  await screen.findByRole('button', { name: 'Confirm' })
+
+  expect(screen.getByText('−2.000000 WETH')).toBeTruthy()
+  expect(screen.queryByText(/raw units/)).toBeNull()
 })
