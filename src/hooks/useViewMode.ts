@@ -1,14 +1,27 @@
 import { useEffect, useState } from 'react'
+import { CHAIN_CONFIGS } from '../config/chains'
 
 /**
- * Chain-slug → chainId map for URL routing.
- * Extend as more chains are supported.
+ * Chain slug → chainId, derived from the app's own chain registry rather than restated here.
+ *
+ * It used to be a hand-written list, and it stopped at Ethereum while the app itself grew to
+ * eight chains — so `/base/address/0x…` matched no slug, fell through to "not a view URL", and
+ * silently showed the connected wallet instead of the account asked for. Deriving it means a
+ * chain is viewable exactly when the rest of the app can read it, and a chain added to
+ * CHAIN_CONFIGS needs nothing done here.
  */
-const URL_CHAIN_MAP: Record<string, number> = {
+const CHAIN_SLUGS: Record<string, number> = {
+  // Short forms already in circulation, and not derivable from a chain's display name.
   eth: 1,
-  ethereum: 1,
   mainnet: 1,
-  sepolia: 11155111,
+  ...Object.fromEntries(
+    Object.entries(CHAIN_CONFIGS).map(([id, config]) => [slugify(config.name), Number(id)]),
+  ),
+}
+
+/** 'BNB Chain' → 'bnb-chain'. Spaces become hyphens; the route pattern below allows them. */
+function slugify(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, '-')
 }
 
 export interface ViewMode {
@@ -17,9 +30,10 @@ export interface ViewMode {
 }
 
 function parse(pathname: string): ViewMode {
-  const m = pathname.match(/^\/(\w+)\/address\/(0x[a-fA-F0-9]{40})\/?$/)
+  // `[\w-]`, not `\w`: a two-word chain slugs with a hyphen, which `\w` cannot match.
+  const m = pathname.match(/^\/([\w-]+)\/address\/(0x[a-fA-F0-9]{40})\/?$/)
   if (!m) return {}
-  const chain = URL_CHAIN_MAP[m[1].toLowerCase()]
+  const chain = CHAIN_SLUGS[m[1].toLowerCase()]
   if (!chain) return {}
   return {
     viewAddress: m[2].toLowerCase() as `0x${string}`,
