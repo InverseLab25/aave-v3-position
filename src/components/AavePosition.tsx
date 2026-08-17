@@ -29,6 +29,7 @@ import { T, modalStyle, labelStyle, inputStyle } from '../styles/theme'
 import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { TxHistoryList } from './TxHistoryList'
+import { useHistorySync } from '../hooks/useHistorySync'
 import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
@@ -92,6 +93,15 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
 
   /** Local history belongs to the wallet in this browser, never to an address being viewed. */
   const { address: connectedAddress } = useConnection()
+
+  /**
+   * Reads the connected wallet's own history back off the chain, on every chain it could have one.
+   *
+   * Not scoped to the address being VIEWED: this fills in what this browser never saw — a position
+   * opened on another device, or before the storage was cleared — which is a fact about the wallet
+   * rather than about whichever address is on screen.
+   */
+  const historySync = useHistorySync()
 
   const [closeTarget, setCloseTarget] = useState<BorrowedAsset | null>(null)
   const [withdrawTarget, setWithdrawTarget] = useState<{ asset: SuppliedAsset } | null>(null)
@@ -397,7 +407,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
 
         {/* Reachable from here too: the account that just closed its last position lands on this
             screen, and it is the one most likely to be looking for what that close settled at. */}
-        <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} />
+        <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} sync={historySync} />
       </div>
     )
   }
@@ -637,7 +647,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
       {/* Account-level, not flow-level: an open is recorded by the leverage panel and a close by
           the close modal, and someone looking for either goes to their position rather than to
           whichever form produced it. */}
-      <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} />
+      <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} sync={historySync} />
 
       {editCtx && (
         <div className="modal-overlay" onClick={cancelDraft}>

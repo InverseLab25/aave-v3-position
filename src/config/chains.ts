@@ -10,9 +10,34 @@ export interface ChainConfig {
     poolAddressesProvider: `0x${string}`;
     wethGateway?: `0x${string}`;
     strategies?: `0x${string}`;
+    /**
+     * The block `strategies` was deployed in — where a history scan starts.
+     *
+     * Absent means the chain is not scannable. There is deliberately no fallback: scanning from
+     * genesis for a contract that may not even be there is an unbounded request loop against a
+     * public RPC, which is a worse outcome than showing no history.
+     */
+    strategiesFromBlock?: bigint;
   };
   adapters: string[];
   defaultTokens: Asset[];
+}
+
+/**
+ * A deployment block from the environment, falling back to the one recorded here.
+ *
+ * Anyone pointing `VITE_STRATEGIES_ADDRESS_*` at their own deployment needs the matching block, or
+ * the scan starts before the contract existed (harmless but slow) or after its first position
+ * (silently incomplete, which is not).
+ */
+function blockFromEnv(raw: string | undefined, recorded?: bigint): bigint | undefined {
+  if (raw === undefined || raw.trim() === '') return recorded;
+  try {
+    const parsed = BigInt(raw.trim());
+    return parsed >= 0n ? parsed : recorded;
+  } catch {
+    return recorded;
+  }
 }
 
 export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
@@ -99,6 +124,8 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D',
       wethGateway: '0xa0d9C1E9E48Ca30c8d8C3B5D69FF5dc1f6DFfC24',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_8453 ?? '') as `0x${string}`,
+      // contract/broadcast/DeployStrategies.s.sol/8453/run-latest.json
+      strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_8453, 49_831_780n),
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
@@ -116,6 +143,9 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       wethGateway: '0x5283BEcEd7ADF6D003225C13896E536f2D4264FF',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_42161 ?? '') as `0x${string}`,
+      // contract/broadcast/DeployStrategies.s.sol/42161/run-latest.json — same address as Base,
+      // because deployment goes through CREATE2.
+      strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_42161, 493_443_506n),
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
@@ -184,4 +214,26 @@ export function getStrategiesAddress(chainId: number | undefined): `0x${string}`
   const addr = getChainConfig(chainId)?.aave.strategies;
   if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
   return addr;
+}
+
+/** Where a history scan of this chain starts, or null when there is no deployment to scan for. */
+export function getStrategiesFromBlock(chainId: number | undefined): bigint | null {
+  if (getStrategiesAddress(chainId) === null) return null;
+  return getChainConfig(chainId)?.aave.strategiesFromBlock ?? null;
+}
+
+/**
+ * Every chain whose history can actually be read back: a Strategies address AND a start block.
+ *
+ * One without the other is not scannable — an address with no start block has nowhere to begin,
+ * and a start block with no address has nothing to look for.
+ */
+export function syncableChains(): { chainId: number; address: `0x${string}`; fromBlock: bigint }[] {
+  return Object.keys(CHAIN_CONFIGS)
+    .map(Number)
+    .flatMap((chainId) => {
+      const address = getStrategiesAddress(chainId);
+      const fromBlock = getStrategiesFromBlock(chainId);
+      return address && fromBlock !== null ? [{ chainId, address, fromBlock }] : [];
+    });
 }

@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { Address, Hex } from 'viem'
 import { TxHistoryList } from './TxHistoryList'
 import { appendHistory, type TxHistoryEntry } from '../lib/txHistory'
+import type { HistorySync, HistorySyncStatus } from '../hooks/useHistorySync'
 
 const WALLET = '0x1111111111111111111111111111111111111111' as Address
 const OTHER = '0x2222222222222222222222222222222222222222' as Address
@@ -43,12 +44,25 @@ function entry(over: Partial<TxHistoryEntry> = {}): TxHistoryEntry {
     rate: '0.000293',
     fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
     deltas: [{ token: WETH, symbol: 'aWETH', decimals: 18, delta: 10n ** 18n }],
+    source: 'live',
+    blockNumber: null,
     ...over,
   }
 }
 
-const show = (over: { wallet?: Address; chainId?: number } = {}) =>
-  render(<TxHistoryList wallet={over.wallet ?? WALLET} chainId={over.chainId ?? 8453} />)
+const show = (over: { wallet?: Address; chainId?: number; sync?: HistorySync } = {}) =>
+  render(
+    <TxHistoryList
+      wallet={over.wallet ?? WALLET}
+      chainId={over.chainId ?? 8453}
+      sync={over.sync}
+    />,
+  )
+
+const sync = (over: Partial<HistorySyncStatus> = {}, resync = () => {}): HistorySync => ({
+  status: { scanning: false, error: null, syncedAt: null, ...over },
+  resync,
+})
 
 describe('TxHistoryList', () => {
   beforeEach(installStorage)
@@ -183,5 +197,60 @@ describe('TxHistoryList', () => {
     })
 
     expect(screen.queryByText(/Recent activity/)).toBeTruthy()
+  })
+})
+
+describe('TxHistoryList sync status', () => {
+  beforeEach(installStorage)
+
+  it('says nothing about syncing when nothing is happening', () => {
+    appendHistory(localStorage, entry())
+
+    show({ sync: sync() })
+
+    expect(screen.queryByText(/Checking the chain/)).toBeNull()
+    expect(screen.queryByRole('button', { name: /Resync/ })).toBeNull()
+  })
+
+  it('says so while it is reading the chain', () => {
+    appendHistory(localStorage, entry())
+
+    show({ sync: sync({ scanning: true }) })
+
+    expect(screen.getByText(/Checking the chain/)).toBeTruthy()
+  })
+
+  it('shows the panel for a wallet with no rows yet when the sync failed', () => {
+    // Otherwise the one user who most needs the Resync button — nothing recovered, and no idea
+    // why — is shown an empty screen with no way to try again.
+    show({ sync: sync({ error: 'rate limited' }) })
+
+    expect(screen.getByText(/rate limited/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Resync/ })).toBeTruthy()
+  })
+
+  it('still renders nothing for a wallet with no rows and no trouble', () => {
+    const { container } = show({ sync: sync() })
+
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('offers a resync once opened', () => {
+    appendHistory(localStorage, entry())
+    let asked = 0
+
+    show({ sync: sync({}, () => asked++) })
+    fireEvent.click(screen.getByText(/Recent activity/))
+    fireEvent.click(screen.getByRole('button', { name: /Resync/ }))
+
+    expect(asked).toBe(1)
+  })
+
+  it('works with no sync wired up at all', () => {
+    appendHistory(localStorage, entry())
+
+    show()
+
+    expect(screen.getByText(/Recent activity \(1\)/)).toBeTruthy()
   })
 })

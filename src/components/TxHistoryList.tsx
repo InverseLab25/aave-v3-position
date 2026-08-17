@@ -10,10 +10,16 @@ import { browserStorage } from '../lib/delegationCache'
 import { historyVersion, loadHistory, subscribeHistory, type TxHistoryEntry } from '../lib/txHistory'
 import { ExplorerLink } from './ExplorerLink'
 import { T } from '../styles/theme'
+import type { HistorySync } from '../hooks/useHistorySync'
 
 interface TxHistoryListProps {
   wallet: Address | undefined
   chainId: number
+  /**
+   * The on-chain sync, when one is running. Optional: the list reads storage and is perfectly
+   * correct without it — this only reports what the sync is doing and offers to run it again.
+   */
+  sync?: HistorySync
 }
 
 /** Rates carry their own precision from `quoteRate`; this only groups the thousands. */
@@ -99,7 +105,55 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   )
 }
 
-export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
+/**
+ * What the sync is up to, and a way to make it start over.
+ *
+ * Deliberately quiet. A sync that is working is not news, so this renders only while a scan is in
+ * flight or after one has failed — the Resync button appears alongside, because the moment a user
+ * wants to force a re-read is the moment they have been told something went wrong.
+ */
+function SyncFooter({ sync, expanded }: { sync: HistorySync; expanded: boolean }) {
+  const { scanning, error } = sync.status
+  // The button is for someone already looking at the list, or for someone who has just been told
+  // the read failed. Offering it under a collapsed, working panel is noise.
+  const offerResync = expanded || error !== null
+  if (!scanning && !error && !offerResync) return null
+
+  return (
+    <div
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        gap: T.space[3], marginTop: T.space[2], fontSize: T.fontSize.xs,
+      }}
+    >
+      <span style={{ color: error ? T.warning : T.textMuted }}>
+        {error
+          ? `Could not read the chain: ${error}`
+          : scanning
+            ? 'Checking the chain for older activity…'
+            : ''}
+      </span>
+      {offerResync && (
+        <button
+          type="button"
+          onClick={sync.resync}
+          disabled={scanning}
+          style={{
+            border: `1px solid ${T.border}`, borderRadius: T.radius.sm,
+            background: 'transparent', padding: '2px 8px',
+            color: scanning ? T.textMuted : T.primary,
+            cursor: scanning ? 'default' : 'pointer',
+            opacity: scanning ? 0.5 : 1, fontSize: T.fontSize.xs,
+          }}
+        >
+          Resync
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState(0)
 
@@ -129,7 +183,18 @@ export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
   const from = current * PAGE_SIZE
   const shown = entries.slice(from, from + PAGE_SIZE)
 
-  if (entries.length === 0) return null
+  // A wallet with nothing recorded and nothing to report stays off the screen entirely. The one
+  // exception is a sync that FAILED, because the user it failed for is the one who needs the
+  // Resync button — and hiding the panel would leave them an empty screen and no way to retry.
+  if (entries.length === 0 && !sync?.status.error) return null
+
+  if (entries.length === 0 && sync) {
+    return (
+      <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm }}>
+        <SyncFooter sync={sync} expanded={false} />
+      </div>
+    )
+  }
 
   return (
     <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm }}>
@@ -143,6 +208,8 @@ export function TxHistoryList({ wallet, chainId }: TxHistoryListProps) {
       >
         {open ? '▾' : '▸'} Recent activity ({entries.length})
       </button>
+
+      {sync && <SyncFooter sync={sync} expanded={open} />}
 
       {open && (
         <div style={{ marginTop: T.space[2] }}>

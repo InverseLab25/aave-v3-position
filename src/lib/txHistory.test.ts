@@ -5,9 +5,11 @@ import {
   historyVersion,
   subscribeHistory,
   HISTORY_LIMIT,
+  HISTORY_TOTAL_LIMIT,
   appendHistory,
   clearHistory,
   loadHistory,
+  mergeHistory,
   type TxHistoryEntry,
 } from './txHistory'
 import type { DelegationStorage } from './delegationCache'
@@ -46,6 +48,8 @@ function entry(over: Partial<TxHistoryEntry> = {}): TxHistoryEntry {
     rate: '0.000293',
     fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
     deltas: [{ token: WETH, symbol: 'WETH', decimals: 18, delta: 10n ** 18n }],
+    source: 'live',
+    blockNumber: null,
     ...over,
   }
 }
@@ -215,5 +219,283 @@ describe('txHistory', () => {
     expect(loadHistory(null)).toEqual([])
     expect(() => appendHistory(null, entry())).not.toThrow()
     expect(() => clearHistory(null)).not.toThrow()
+  })
+
+  it('reads a row written before provenance was recorded as a live one of unknown block', () => {
+    // Every entry in a user's storage today predates both fields. Refusing to decode them would
+    // throw away the exact history this feature exists to preserve.
+    const v1 = JSON.parse(
+      JSON.stringify({ ...entry(), source: undefined, blockNumber: undefined }, (_k, v) =>
+        typeof v === 'bigint' ? v.toString() : v,
+      ),
+    )
+    const storage = memoryStorage({ [HISTORY_KEY]: JSON.stringify([v1]) })
+
+    const [row] = loadHistory(storage)
+
+    expect(row.source).toBe('live')
+    expect(row.blockNumber).toBeNull()
+  })
+
+  it('keeps a block number across a write and a read', () => {
+    const storage = memoryStorage()
+
+    appendHistory(storage, entry({ blockNumber: 49_831_780n, source: 'chain' }))
+
+    expect(loadHistory(storage)[0].blockNumber).toBe(49_831_780n)
+    expect(loadHistory(storage)[0].source).toBe('chain')
+  })
+
+  it('orders by when it happened, not by when it was written down', () => {
+    // A backfill produces rows out of order — an hour-old transaction can be recorded after a
+    // minute-old one. Insertion order would put the older of the two on top.
+    const storage = memoryStorage()
+
+    appendHistory(storage, entry({ hash: hash(1), at: 3000 }))
+    appendHistory(storage, entry({ hash: hash(2), at: 1000 }))
+    appendHistory(storage, entry({ hash: hash(3), at: 2000 }))
+
+    expect(loadHistory(storage).map((e) => e.hash)).toEqual([hash(1), hash(3), hash(2)])
+  })
+
+  it('caps per wallet and chain rather than across all of them', () => {
+    // A global cap means a backfill on one chain silently evicts another chain's history.
+    const storage = memoryStorage()
+    for (let i = 0; i < HISTORY_LIMIT; i++) {
+      appendHistory(storage, entry({ hash: hash(i), chainId: 8453, at: i }))
+    }
+    appendHistory(storage, entry({ hash: hash(999), chainId: 42161, at: 1 }))
+
+    expect(loadHistory(storage, { chainId: 8453 })).toHaveLength(HISTORY_LIMIT)
+    expect(loadHistory(storage, { chainId: 42161 })).toHaveLength(1)
+  })
+
+  it('bounds the whole store however many scopes there are', () => {
+    const storage = memoryStorage()
+    const scopes = Math.ceil(HISTORY_TOTAL_LIMIT / HISTORY_LIMIT) + 2
+
+    for (let c = 0; c < scopes; c++) {
+      mergeHistory(storage, {
+        wallet: WALLET,
+        chainId: c + 1,
+        range: null,
+        entries: Array.from({ length: HISTORY_LIMIT }, (_, i) =>
+          entry({ hash: hash(c * 1000 + i), chainId: c + 1, at: c * 1000 + i }),
+        ),
+      })
+    }
+
+    expect(loadHistory(storage).length).toBeLessThanOrEqual(HISTORY_TOTAL_LIMIT)
+  })
+})
+
+describe('mergeHistory', () => {
+  const range = { from: 100n, to: 200n }
+
+  it('adds a transaction this browser never saw', () => {
+    const storage = memoryStorage()
+
+    mergeHistory(storage, {
+      wallet: WALLET,
+      chainId: 8453,
+      range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n })],
+    })
+
+    expect(loadHistory(storage)).toHaveLength(1)
+  })
+
+  it('repairs a row that was recorded before its tokens could be named', () => {
+    // The live recorder writes whatever metadata the screen happened to hold. On a cold load that
+    // is nothing, and the row reads "1234 raw units against 0x8f3c…b21a" forever.
+    const storage = memoryStorage()
+    appendHistory(
+      storage,
+      entry({
+        hash: hash(1),
+        rate: null,
+        swap: {
+          srcToken: USDC, dstToken: WETH,
+          srcSymbol: null, srcDecimals: null, dstSymbol: null, dstDecimals: null,
+          spentAmount: 3405_100000n, returnAmount: 10n ** 18n,
+        },
+      }),
+    )
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n, rate: '0.000293' })],
+    })
+
+    const [row] = loadHistory(storage)
+    expect(row.swap?.srcSymbol).toBe('USDC')
+    expect(row.swap?.dstDecimals).toBe(18)
+    expect(row.rate).toBe('0.000293')
+  })
+
+  it('keeps the fill quality only the live record could have measured', () => {
+    // `expectedOut` and `minOut` came from a quote that exists nowhere on chain, so a re-read can
+    // never recover them. A merge that overwrote the live row would destroy them.
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1) }))
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n, fill: null })],
+    })
+
+    expect(loadHistory(storage)[0].fill).toEqual({
+      delta: -2_700000n, percent: -0.0792, belowFloor: false,
+    })
+  })
+
+  it('prefers the block timestamp over the moment the browser noticed', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), at: 9_999_999 }))
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n, at: 1_700_000_000_000 })],
+    })
+
+    expect(loadHistory(storage)[0].at).toBe(1_700_000_000_000)
+  })
+
+  it('does not borrow symbols from a local row describing a different pair', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1) }))
+    const other = '0x3333333333333333333333333333333333333333' as Address
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [
+        entry({
+          hash: hash(1), source: 'chain', blockNumber: 150n,
+          swap: {
+            srcToken: other, dstToken: WETH,
+            srcSymbol: null, srcDecimals: null, dstSymbol: null, dstDecimals: null,
+            spentAmount: 1n, returnAmount: 2n,
+          },
+        }),
+      ],
+    })
+
+    expect(loadHistory(storage)[0].swap?.srcSymbol).toBeNull()
+  })
+
+  it('records a transaction once when the live path and the sync both report it', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1) }))
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n })],
+    })
+
+    expect(loadHistory(storage)).toHaveLength(1)
+  })
+
+  it('drops a row the completed scan could not confirm on chain', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), source: 'chain', blockNumber: 150n }))
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, range, entries: [] })
+
+    expect(loadHistory(storage)).toEqual([])
+  })
+
+  it('deletes nothing when the scan did not finish', () => {
+    // The clause that matters most. A scan that threw halfway has no opinion about what exists,
+    // and treating its empty result as authoritative would erase real history on any RPC blip.
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), source: 'chain', blockNumber: 150n }))
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, range: null, entries: [] })
+
+    expect(loadHistory(storage)).toHaveLength(1)
+  })
+
+  it('leaves a row sitting outside the range that was scanned', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), source: 'chain', blockNumber: 50n }))
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, range, entries: [] })
+
+    expect(loadHistory(storage)).toHaveLength(1)
+  })
+
+  it('leaves a row whose block was never recorded', () => {
+    // Everything written before this feature. There is no way to tell whether the scan covered it.
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), blockNumber: null }))
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, range, entries: [] })
+
+    expect(loadHistory(storage)).toHaveLength(1)
+  })
+
+  it('leaves another wallet and another chain alone', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), wallet: OTHER_WALLET, blockNumber: 150n }))
+    appendHistory(storage, entry({ hash: hash(2), chainId: 42161, blockNumber: 150n }))
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, range, entries: [] })
+
+    expect(loadHistory(storage)).toHaveLength(2)
+  })
+
+  it('matches the wallet it is pruning for whatever case it is given in', () => {
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), blockNumber: 150n }))
+
+    mergeHistory(storage, {
+      wallet: WALLET.toUpperCase() as Address, chainId: 8453, range, entries: [],
+    })
+
+    expect(loadHistory(storage)).toEqual([])
+  })
+
+  it('tells subscribers once, however many rows it wrote', () => {
+    const storage = memoryStorage()
+    let notified = 0
+    const unsubscribe = subscribeHistory(() => notified++)
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1) }), entry({ hash: hash(2) })],
+    })
+
+    expect(notified).toBe(1)
+    unsubscribe()
+  })
+
+  it('says nothing when it changed nothing', () => {
+    // The panel re-renders on every announcement. A sync that finds no news should be invisible.
+    const storage = memoryStorage()
+    appendHistory(storage, entry({ hash: hash(1), source: 'chain', blockNumber: 150n }))
+    let notified = 0
+    const unsubscribe = subscribeHistory(() => notified++)
+
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range,
+      entries: [entry({ hash: hash(1), source: 'chain', blockNumber: 150n })],
+    })
+
+    expect(notified).toBe(0)
+    unsubscribe()
+  })
+
+  it('survives an absent store and one that refuses to be written to', () => {
+    const full: DelegationStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('QuotaExceededError')
+      },
+      removeItem: () => {},
+    }
+    const input = { wallet: WALLET, chainId: 8453, range, entries: [entry()] }
+
+    expect(() => mergeHistory(null, input)).not.toThrow()
+    expect(() => mergeHistory(full, input)).not.toThrow()
   })
 })

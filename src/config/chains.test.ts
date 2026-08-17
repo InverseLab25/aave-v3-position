@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
-import { CHAIN_CONFIGS, getStrategiesAddress } from './chains';
+import { CHAIN_CONFIGS, getStrategiesAddress, getStrategiesFromBlock, syncableChains } from './chains';
 
 const originalAave = { ...CHAIN_CONFIGS[1].aave };
 
@@ -40,4 +40,27 @@ it('returns null for the zero address', () => {
 it('returns null for a malformed address', () => {
   CHAIN_CONFIGS[1].aave.strategies = '0xnope' as `0x${string}`;
   expect(getStrategiesAddress(1)).toBeNull();
+});
+
+it('has no start block for a chain with no strategies address', () => {
+  // A start block on its own is not scannable: there is nothing at that address to look for.
+  expect(getStrategiesFromBlock(1)).toBeNull();
+  expect(getStrategiesFromBlock(999999)).toBeNull();
+  expect(getStrategiesFromBlock(undefined)).toBeNull();
+});
+
+it('refuses to scan a chain whose deployment block is unknown', () => {
+  // The dangerous case. Falling back to genesis here would walk every block a public RPC has,
+  // in chunks, looking for a contract that may never have been deployed on that chain.
+  CHAIN_CONFIGS[1].aave.strategies = '0x1111111111111111111111111111111111111111';
+
+  expect(getStrategiesFromBlock(1)).toBeNull();
+  expect(syncableChains().map((c) => c.chainId)).not.toContain(1);
+});
+
+it('offers only chains that have both an address and a start block', () => {
+  for (const chain of syncableChains()) {
+    expect(getStrategiesAddress(chain.chainId)).toBe(chain.address);
+    expect(chain.fromBlock).toBeGreaterThan(0n);
+  }
 });

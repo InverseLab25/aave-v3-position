@@ -17,6 +17,15 @@ const mocks = vi.hoisted(() => ({
   useChainId: vi.fn(),
   useConnection: vi.fn(),
   useReadContract: vi.fn(),
+  // useHistorySync reaches for both. `getClient` throwing is the honest answer for a test with no
+  // transport, and the hook is built to treat an unreachable chain as one it cannot sync.
+  useConfig: vi.fn(() => ({
+    chains: [],
+    getClient: () => {
+      throw new Error('no transport in tests')
+    },
+  })),
+  useReadContracts: vi.fn(() => ({ data: undefined })),
 }))
 
 vi.mock('../hooks/useAavePositions', async (orig) => ({
@@ -32,6 +41,8 @@ vi.mock('wagmi', () => ({
   useChainId: mocks.useChainId,
   useConnection: mocks.useConnection,
   useReadContract: mocks.useReadContract,
+  useConfig: mocks.useConfig,
+  useReadContracts: mocks.useReadContracts,
 }))
 
 import { AavePosition } from './AavePosition'
@@ -276,6 +287,8 @@ it('lists recent activity under the borrowed assets', () => {
     rate: null,
     fill: null,
     deltas: [],
+    source: 'live',
+    blockNumber: null,
   })
 
   render(<AavePosition />)
@@ -310,6 +323,8 @@ it('still lists recent activity for an account that has closed everything', () =
     rate: null,
     fill: null,
     deltas: [],
+    source: 'live',
+    blockNumber: null,
   })
 
   render(<AavePosition />)

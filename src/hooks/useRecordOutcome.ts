@@ -73,6 +73,11 @@ export function useRecordOutcome({ outcome, tokens, hash, chainId, wallet, kind 
         const m = meta(d.token)
         return { token: d.token, symbol: m?.symbol ?? null, decimals: m?.decimals ?? null, delta: d.delta }
       }),
+      source: 'live',
+      // Not known here: this runs off a receipt the flow already has, and the block it landed in
+      // is not what the flow was waiting for. The sync fills it in when it confirms the row,
+      // which is also the point at which the row becomes safe to prune.
+      blockNumber: null,
     }
 
     appendHistory(browserStorage(), entry)
