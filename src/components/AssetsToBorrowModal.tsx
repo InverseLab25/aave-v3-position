@@ -13,7 +13,8 @@ import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { Modal } from './Modal'
 
 interface AssetsToBorrowModalProps {
   chainId: number
@@ -137,12 +138,7 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
   )
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal-content" style={{ ...modalStyle, maxWidth: '600px' }}>
-        <div style={modalHeaderStyle}>
-          <h2 style={modalTitleStyle}>{selectedAsset ? `Borrow ${selectedAsset.symbol}` : 'Assets to Borrow'}</h2>
-          <button style={closeButtonStyle} onClick={onClose}>×</button>
-        </div>
+    <Modal title={selectedAsset ? `Borrow ${selectedAsset.symbol}` : 'Assets to Borrow'} onClose={onClose} maxWidth="600px">
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {!selectedAsset ? (
@@ -232,7 +228,6 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

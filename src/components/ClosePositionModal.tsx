@@ -12,6 +12,7 @@ import type { CloseErrorKind } from '../lib/deleverage'
 import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
 import { ExplorerLink } from './ExplorerLink'
+import { Modal } from './Modal'
 import { TxOutcomePanel } from './TxOutcome'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
 import { hideTokens } from '../lib/txOutcome'
@@ -420,13 +421,14 @@ export function ClosePositionModal({
     : closeAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-content">
-        <div className="modal-header">
-          <h2>Close Borrow Position</h2>
-        </div>
-
-        <div className="modal-body">
+    <Modal
+      title="Close Borrow Position"
+      onClose={onClose}
+      // A close in flight owns the screen until its receipt lands. Dismissing it with a stray
+      // click outside is how a user loses the only report that their debt was repaid.
+      dismissable={!isProcessing}
+    >
+        <div>
           <div className="info-row" style={{ marginBottom: borrowedAsset.priceInUsd != null ? 'var(--space-2)' : 'var(--space-4)' }}>
             <span className="info-row-label">Debt to Close</span>
             <span className="info-row-value" style={{ fontSize: 'var(--text-lg)', color: 'var(--color-danger)' }}>
@@ -898,7 +900,6 @@ export function ClosePositionModal({
                 : 'Sign Approval'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

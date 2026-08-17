@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { formatUnits } from 'viem';
 import { useConnection, useWaitForTransactionReceipt } from 'wagmi';
 import type { QuoteResponse, TransactionPayload, Asset } from '../adapters/types';
+import { Modal } from './Modal';
 import { SwapExecutor } from './SwapExecutor';
 import { TxOutcomePanel } from './TxOutcome';
 import { readOutcome } from '../lib/txOutcome';
@@ -125,48 +126,34 @@ export function ConfirmSwapModal({
   }), [fromAsset, toAsset]);
 
   const done = execStep === 'success';
+  // Anything between committing and the receipt. The executor reports its own step up to here.
+  const sending = execStep === 'approving' || execStep === 'executing';
 
   return (
-    <div className="modal-overlay">
-      <div 
-        className="modal-content" 
-        style={{ 
-          backgroundColor: '#fff', 
-          color: '#111', 
-          borderRadius: '16px',
-          padding: '24px',
-          width: '100%',
-          maxWidth: '420px',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          boxShadow: '0 10px 25px rgba(0,0,0,0.1)'
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {done ? (
-                  <>
-                    <svg
-                      width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.success}
-                      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <circle cx="12" cy="12" r="10" strokeWidth="2" />
-                      <path d="M8 12.5l2.5 2.5L16 9.5" />
-                    </svg>
-                    Swap complete
-                  </>
-                ) : (
-                  'Confirm Swap Details'
-                )}
-              </h2>
-              <button
-                onClick={onClose}
-                style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '20px', cursor: 'pointer' }}
-              >
-                ✕
-              </button>
-            </div>
-
+    <Modal
+      title={
+        done ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+            <svg
+              width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.success}
+              strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="10" strokeWidth="2" />
+              <path d="M8 12.5l2.5 2.5L16 9.5" />
+            </svg>
+            Swap complete
+          </span>
+        ) : (
+          'Confirm Swap Details'
+        )
+      }
+      onClose={onClose}
+      maxWidth="420px"
+      // A send in flight must not be dismissable by a stray click outside it: losing the report is
+      // how a user ends up not knowing whether their money moved.
+      dismissable={!sending}
+    >
             <div style={{ display: done ? 'none' : 'block' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', marginTop: '4px' }}>
               <span style={{ color: '#6b7280', fontSize: '13px' }}>
@@ -355,7 +342,6 @@ export function ConfirmSwapModal({
                 </div>
               </div>
             )}
-      </div>
-    </div>
+    </Modal>
   );
 }

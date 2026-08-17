@@ -6,6 +6,7 @@ import { useAdjustedGas } from '../hooks/useAdjustedGas'
 import { healthFactor, evaluateHf } from '../utils/health'
 import { simulateAndWrite, approveAbi } from '../utils/contract'
 import { GasInfoCard } from './GasInfoCard'
+import { Modal } from './Modal'
 import { ExplorerLink } from './ExplorerLink'
 import { computeLiquidationView } from '../utils/liquidation'
 import type { SuppliedAssetLike } from '../utils/liquidation'
@@ -13,7 +14,7 @@ import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
 
 interface WithdrawModalProps {
   asset: SuppliedAsset
@@ -125,15 +126,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const btnLabel = isInsufficient ? 'Insufficient supplied' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Withdraw'
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div style={{ ...modalStyle, maxWidth: '440px' }}>
-        {/* Header */}
-        <div style={modalHeaderStyle}>
-          <h2 style={modalTitleStyle}>Withdraw {asset.symbol}</h2>
-          <button style={closeButtonStyle} onClick={onClose}>×</button>
-        </div>
-
-        {/* Body */}
+    <Modal title={`Withdraw ${asset.symbol}`} onClose={onClose} maxWidth="440px" dismissable={!isProcessing}>
         <div style={{ padding: T.space[5] }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[3] }}>
             <span>Available to withdraw</span>
@@ -176,7 +169,6 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
             disabled={isProcessing || !canExecute || isInsufficient || hfGuardBlocked}
           >{btnLabel}</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

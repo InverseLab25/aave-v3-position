@@ -14,7 +14,8 @@ import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { Modal } from './Modal'
 
 const SUPPLY_GAS_LIMIT = 250000n /* Aave supply */
 
@@ -174,13 +175,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   )
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal-content" style={{ ...modalStyle, maxWidth: '600px' }}>
-        {/* Header */}
-        <div style={modalHeaderStyle}>
-          <h2 style={modalTitleStyle}>{selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'}</h2>
-          <button style={closeButtonStyle} onClick={onClose}>×</button>
-        </div>
+    <Modal title={selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'} onClose={onClose} maxWidth="600px">
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {!selectedAsset ? (
@@ -272,7 +267,6 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

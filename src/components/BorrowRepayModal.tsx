@@ -14,7 +14,8 @@ import { computeLiquidationView } from '../utils/liquidation'
 import type { SuppliedAssetLike } from '../utils/liquidation'
 import type { BorrowedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
-import { T, modalStyle, modalHeaderStyle, modalTitleStyle, closeButtonStyle, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { Modal } from './Modal'
 
 const RATE_MODE = 2n
 const BORROW_REPAY_GAS_LIMIT = 300000n /* Aave borrow/repay */
@@ -215,13 +216,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className="modal-content" style={{ ...modalStyle, maxWidth: '440px' }}>
-        {/* Header */}
-        <div style={modalHeaderStyle}>
-          <h2 style={modalTitleStyle}>{asset.symbol}</h2>
-          <button style={closeButtonStyle} onClick={onClose}>×</button>
-        </div>
+    <Modal title={asset.symbol} onClose={onClose} maxWidth="440px">
 
         {/* Underline tabs */}
         <div style={{ display: 'flex', gap: T.space[1], padding: `${T.space[3]} ${T.space[5]} 0`, borderBottom: `1px solid ${T.border}` }}>
@@ -295,7 +290,6 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             disabled={isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked}
           >{btnLabel}</button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

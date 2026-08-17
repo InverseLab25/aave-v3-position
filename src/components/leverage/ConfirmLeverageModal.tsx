@@ -13,6 +13,7 @@ import type { OpenPreview, OpenStep } from '../../hooks/useLeverageOpen'
 import type { OpenProjection } from '../../lib/leverage'
 import { PRICE_IMPACT_HIGH_PERCENT } from '../../lib/swapRoute'
 import { ExplorerLink } from '../ExplorerLink'
+import { Modal } from '../Modal'
 import { TxOutcomePanel, type TokenMeta } from '../TxOutcome'
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
@@ -135,14 +136,9 @@ export function ConfirmLeverageModal({
   const impact = preview?.priceImpactPercent ?? null
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-content">
-        <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: T.space[2] }}>
-          {/* Once it has landed the title stops describing an offer and starts describing a
-              result. Leaving "Open long WETH" up is what made a settled modal read as one still
-              waiting to be confirmed. */}
-          <h2 style={{ flex: 1 }}>
-            {done ? (
+    <Modal
+      title={
+        done ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
                 <svg
                   width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.success}
@@ -154,29 +150,32 @@ export function ConfirmLeverageModal({
                 </svg>
                 Swap complete
               </span>
-            ) : (
-              title
-            )}
-          </h2>
-          {/* An exit that is not also an action. The footer's button is the primary way out, but a
-              report the user is finished reading should not need one labelled "Done" to leave. */}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            title="Close"
-            className="btn-ghost"
-            style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              padding: '4px', lineHeight: 1, fontSize: '1.25rem', color: T.textMuted,
-              background: 'none', border: 'none', cursor: 'pointer',
-            }}
-          >
-            ×
+        ) : (
+          title
+        )
+      }
+      onClose={onClose}
+      // Not while the wallet has it, and not while the receipt is the only record on screen: a
+      // stray click outside must not take away the report of a send.
+      dismissable={!busy && !done}
+      footer={
+        <>
+          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+            {done ? 'Done' : 'Cancel'}
           </button>
-        </div>
-
-        <div className="modal-body">
+          {!done && (
+            <button
+              onClick={onConfirm}
+              disabled={!preview || isQuoting || busy || priceImpactBlocked}
+              className="btn-primary"
+              style={{ flex: 1, padding: '10px' }}
+            >
+              {busy ? 'Processing…' : isQuoting ? 'Pricing…' : 'Confirm'}
+            </button>
+          )}
+        </>
+      }
+    >
           {/* Everything below belongs to DECIDING, and a settled transaction has decided.
               Leaving it up left a forecast contradicting the receipt beneath it, a tolerance for a
               swap already filled, a step tracker for steps already taken — and, worst of all, a
@@ -349,24 +348,6 @@ export function ConfirmLeverageModal({
               <ExplorerLink hash={txHash} chainId={chainId} />
             </div>
           )}
-        </div>
-
-        <div className="modal-footer">
-          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
-            {done ? 'Done' : 'Cancel'}
-          </button>
-          {!done && (
-            <button
-              onClick={onConfirm}
-              disabled={!preview || isQuoting || busy || priceImpactBlocked}
-              className="btn-primary"
-              style={{ flex: 1, padding: '10px' }}
-            >
-              {busy ? 'Processing…' : isQuoting ? 'Pricing…' : 'Confirm'}
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
