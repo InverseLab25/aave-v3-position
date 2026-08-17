@@ -15,6 +15,8 @@ import { ExplorerLink } from './ExplorerLink'
 import { Modal } from './Modal'
 import { TxOutcomePanel } from './TxOutcome'
 import { TxSteps } from './TxSteps'
+import { SlippageField } from './leverage/SlippageField'
+import { T } from '../styles/theme'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
 import { hideTokens } from '../lib/txOutcome'
 import { useRecordOutcome } from '../hooks/useRecordOutcome'
@@ -552,44 +554,18 @@ export function ClosePositionModal({
               </div>
             </div>
 
-            <div style={{ marginBottom: 'var(--space-5)' }}>
-              <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
-                Max Slippage
-              </label>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                {SLIPPAGE_PRESETS.map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setSlippage(p)}
-                    style={{
-                      padding: '6px 14px',
-                      border: `1px solid var(--color-border)`,
-                      borderRadius: 'var(--radius-md)',
-                      background: slippage === p ? 'var(--color-primary)' : 'var(--color-surface-alt)',
-                      color: slippage === p ? 'var(--color-primary-text)' : 'var(--color-text)',
-                      cursor: 'pointer',
-                      fontWeight: slippage === p ? 600 : 400,
-                      transition: 'var(--transition)'
-                    }}
-                  >
-                    {p}%
-                  </button>
-                ))}
-                <div style={{ position: 'relative', flex: 1, marginLeft: '8px' }}>
-                  <input
-                    type="number"
-                    step="any"
-                    className="input"
-                    value={slippage}
-                    onChange={(e) => setSlippage(Math.max(0, parseFloat(e.target.value) || 0))}
-                    style={{ paddingRight: '24px' }}
-                  />
-                  <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)', pointerEvents: 'none' }}>
-                    %
-                  </span>
-                </div>
-              </div>
+            {/* The shared control, not a second copy of it. The hand-styled version here
+                disagreed with the open's on padding, colour and weight, and clamped nothing where
+                this one enforces a ceiling. */}
+            <div style={{ marginBottom: T.space[5] }}>
+              <SlippageField
+                percent={slippage}
+                onChange={setSlippage}
+                ariaLabel="Close max slippage percent"
+                disabled={isProcessing}
+              />
             </div>
+
             </>
           )}
 
@@ -689,8 +665,11 @@ export function ClosePositionModal({
 
           {!isSameAsset && closeAvailable && !isComplete && (
             <div style={{ marginBottom: 'var(--space-5)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <h4 style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Estimated Output</h4>
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                marginTop: T.space[4], marginBottom: T.space[2],
+              }}>
+                <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Estimated Output</h4>
                 <button
                   // Refresh exists to get prices newer than the ones on screen, so it has to
                   // drop the quote-reuse window as well as re-run the effect.
@@ -701,13 +680,19 @@ export function ClosePositionModal({
                   disabled={isQuoting}
                   className="btn-ghost"
                   title="Re-fetch the latest quote and prices"
-                  style={{ fontSize: 'var(--text-xs)', padding: '3px 8px', display: 'flex', alignItems: 'center', gap: '4px', cursor: isQuoting ? 'default' : 'pointer', opacity: isQuoting ? 0.6 : 1 }}
+                  style={{
+                    fontSize: T.fontSize.xs, padding: '3px 8px',
+                    cursor: isQuoting ? 'default' : 'pointer', opacity: isQuoting ? 0.6 : 1,
+                  }}
                 >
-                  <span>↻</span> {isQuoting ? 'Refreshing…' : 'Refresh'}
+                  ↻ {isQuoting ? 'Pricing…' : 'Refresh'}
                 </button>
               </div>
               {preview && preview.covered ? (
-                <div style={{ padding: '14px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+                <div style={{
+                  padding: T.space[3], background: T.surfaceAlt,
+                  border: `1px solid ${T.border}`, borderRadius: T.radius.md,
+                }}>
                   <div className="info-row">
                     <span className="info-row-label">Collateral in (to swap)</span>
                     <span className="info-row-value">{formatAmount(preview.collateralSwapped)} {preview.collateralSymbol}</span>

@@ -387,3 +387,25 @@ describe('the close reports which of its three waits it is on', () => {
     expect(screen.queryByText('Requesting permit signature (1 of 2)…')).toBeNull()
   })
 })
+
+describe('the close uses the same controls as the open', () => {
+  it('offers the shared slippage field, not its own copy of one', async () => {
+    // The close had forty lines of hand-styled preset buttons duplicating SlippageField, which
+    // meant the two transaction screens disagreed about what the same control looks like — and
+    // the close's copy also clamped nothing, where the shared one enforces a ceiling.
+    mount()
+
+    const field = await screen.findByLabelText('Close max slippage percent')
+    expect(field).toBeTruthy()
+    expect((field as HTMLInputElement).max).toBe('50')
+  })
+
+  it('reports a slippage change to the quoting effect', async () => {
+    mount()
+
+    const field = await screen.findByLabelText('Close max slippage percent')
+    fireEvent.change(field, { target: { value: '0.5' } })
+
+    expect((field as HTMLInputElement).value).toBe('0.5')
+  })
+})
