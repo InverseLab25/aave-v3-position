@@ -166,6 +166,28 @@ describe('TxHistoryList', () => {
     expect(screen.getByText(/no swap recorded/i)).toBeTruthy()
   })
 
+  it('shows no slippage badge when the fill matched the quote exactly', () => {
+    // A delta of zero rendered "+0.000000 WETH" — a badge whose content is that nothing happened.
+    appendHistory(localStorage, entry({ fill: { delta: 0n, percent: 0, belowFloor: false } }))
+    show()
+    expand()
+
+    expect(screen.queryByText(/0\.000000 WETH/)).toBeNull()
+  })
+
+  it('scrolls the row rather than the page when there is no room for it', () => {
+    // Five nowrap columns give the row a hard minimum near 624px. Without a scroller here the
+    // whole page went sideways on a narrow viewport.
+    appendHistory(localStorage, entry())
+    const { container } = show()
+    expand()
+
+    const scroller = [...container.querySelectorAll<HTMLElement>('div')].find(
+      (d) => d.style.overflowX === 'auto',
+    )
+    expect(scroller).toBeTruthy()
+  })
+
   /** `n` recorded transactions, newest first — hash(0) is the newest. */
   const seed = (n: number) => {
     for (let i = n - 1; i >= 0; i--) appendHistory(localStorage, entry({ hash: hash(i), at: 1000 - i }))

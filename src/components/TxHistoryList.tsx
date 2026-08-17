@@ -74,55 +74,82 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: T.space[4],
-        padding: `${T.space[3]} 0`, borderTop: `1px solid ${T.border}`,
+        display: 'grid',
+        gridTemplateColumns: 'minmax(80px, auto) minmax(200px, 2fr) minmax(180px, 1.5fr) minmax(100px, 1fr) auto',
+        alignItems: 'center',
+        gap: T.space[4],
+        padding: `${T.space[3]} 0`,
+        borderTop: `1px solid ${T.border}`,
+        fontSize: T.fontSize.sm,
       }}
     >
-      {/* Left side: Kind and Date */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: T.space[3], minWidth: 'max-content' }}>
-        <span style={{ fontWeight: 600, width: '45px' }}>{entry.kind === 'open' ? 'Open' : 'Close'}</span>
-        <span style={{ color: T.textMuted, fontSize: T.fontSize.xs }}>
-          {new Date(entry.at).toLocaleString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
+      {/* 1. Action Badge & Date */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+        <span style={{ 
+          fontWeight: 600, 
+          color: entry.kind === 'open' ? T.success : T.text,
+          fontSize: T.fontSize.sm 
+        }}>
+          {entry.kind === 'open' ? 'Open' : 'Close'}
+        </span>
+        <span style={{ color: T.textMuted, fontSize: T.fontSize.xs, whiteSpace: 'nowrap' }}>
+          {new Date(entry.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
         </span>
       </div>
 
-      {/* Middle: Swap Details */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: T.space[4], flex: 1, minWidth: 'max-content' }}>
-        {swap && priced && swap.srcSymbol && swap.dstSymbol ? (
-          <div style={{ minWidth: '200px' }}>
-            <RateLine
-              srcSymbol={swap.srcSymbol}
-              srcDecimals={swap.srcDecimals!}
-              dstSymbol={swap.dstSymbol}
-              dstDecimals={swap.dstDecimals!}
-              spentAmount={swap.spentAmount}
-              returnAmount={swap.returnAmount}
-            />
-          </div>
-        ) : swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
-          <span style={{ minWidth: '200px' }}>{`1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`}</span>
+      {/* 2. Swap Amounts (Primary Focus) */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap', fontWeight: 500 }}>
+        {swap ? (
+          <>
+            <span style={{ color: T.text }}>{amount(swap.spentAmount, swap.srcDecimals)}</span>
+            <span style={{ color: T.textMuted }}>{swap.srcSymbol ?? shortAddress(swap.srcToken)}</span>
+            <span style={{ color: T.textMuted, margin: '0 4px' }}>→</span>
+            <span style={{ color: T.text }}>{amount(swap.returnAmount, swap.dstDecimals)}</span>
+            <span style={{ color: T.textMuted }}>{swap.dstSymbol ?? shortAddress(swap.dstToken)}</span>
+          </>
         ) : (
-          <span style={{ color: T.textMuted, minWidth: '200px' }}>No swap recorded</span>
+          <span style={{ color: T.textMuted }}>No swap recorded</span>
         )}
+      </div>
 
-        {swap && (
-          <span style={{ color: T.textMuted, fontSize: T.fontSize.xs, flex: 1 }}>
-            {`${amount(swap.spentAmount, swap.srcDecimals)} ${swap.srcSymbol ?? shortAddress(swap.srcToken)}`}
-            {' → '}
-            {`${amount(swap.returnAmount, swap.dstDecimals)} ${swap.dstSymbol ?? shortAddress(swap.dstToken)}`}
-          </span>
-        )}
+      {/* 3. Rate Line */}
+      <div style={{ color: T.textMuted, fontSize: T.fontSize.sm, whiteSpace: 'nowrap' }}>
+        {swap && priced && swap.srcSymbol && swap.dstSymbol ? (
+          <RateLine
+            srcSymbol={swap.srcSymbol}
+            srcDecimals={swap.srcDecimals!}
+            dstSymbol={swap.dstSymbol}
+            dstDecimals={swap.dstDecimals!}
+            spentAmount={swap.spentAmount}
+            returnAmount={swap.returnAmount}
+          />
+        ) : swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
+          <span>{`1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`}</span>
+        ) : null}
+      </div>
 
-        {entry.fill?.percent !== null && entry.fill !== null && (
-          <span style={{ fontSize: T.fontSize.xs, color: entry.fill.delta < 0n ? T.warning : T.success, minWidth: '150px', textAlign: 'right' }}>
-            {`${Math.abs(entry.fill.percent!).toFixed(4)}% ${entry.fill.delta < 0n ? 'below' : 'above'} the quote`}
+      {/* 4. Slippage / Performance */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+        {entry.fill?.delta !== undefined && entry.fill.delta !== null && entry.fill.delta !== 0n && swap && swap.dstDecimals !== null && (
+          <span style={{ 
+            fontSize: T.fontSize.xs,
+            fontWeight: 500,
+            padding: '2px 6px',
+            borderRadius: T.radius.sm,
+            // Two of the four hexes here were these tokens written longhand; the other two were
+            // new shades that existed nowhere else, so they were the only colours in this
+            // component that could not follow a theme change.
+            backgroundColor: entry.fill.delta < 0n ? T.dangerBg : T.successBg,
+            color: entry.fill.delta < 0n ? T.danger : T.success,
+          }}>
+            {`${entry.fill.delta > 0n ? '+' : '-'}${amount(entry.fill.delta < 0n ? -entry.fill.delta : entry.fill.delta, swap.dstDecimals)} ${swap.dstSymbol ?? shortAddress(swap.dstToken)}`}
           </span>
         )}
       </div>
 
-      {/* Right side: View Link */}
-      <div style={{ minWidth: 'max-content' }}>
-        <ExplorerLink hash={entry.hash as `0x${string}`} chainId={chainId} label="View" />
+      {/* 5. Explorer Link */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+        <ExplorerLink hash={entry.hash as `0x${string}`} chainId={chainId} label="Explorer" inline />
       </div>
     </div>
   )
@@ -135,7 +162,7 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
  * flight or after one has failed — the Resync button appears alongside, because the moment a user
  * wants to force a re-read is the moment they have been told something went wrong.
  */
-function SyncFooter({ sync, expanded }: { sync: HistorySync; expanded: boolean }) {
+function SyncFooter({ sync, expanded, inline }: { sync: HistorySync; expanded: boolean; inline?: boolean }) {
   const { scanning, error } = sync.status
   // The button is for someone already looking at the list, or for someone who has just been told
   // the read failed. Offering it under a collapsed, working panel is noise.
@@ -145,8 +172,11 @@ function SyncFooter({ sync, expanded }: { sync: HistorySync; expanded: boolean }
   return (
     <div
       style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        gap: T.space[3], marginTop: T.space[2], fontSize: T.fontSize.xs,
+        display: 'flex', alignItems: 'center', 
+        justifyContent: inline ? 'flex-end' : 'space-between',
+        gap: T.space[3], 
+        marginTop: inline ? 0 : T.space[2], 
+        fontSize: T.fontSize.xs,
       }}
     >
       <span style={{ color: error ? T.warning : T.textMuted }}>
@@ -226,22 +256,26 @@ export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
       borderRadius: T.radius.lg, padding: T.space[4],
       boxShadow: T.shadow.sm
     }}>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        style={{
-          border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-          color: T.text, fontWeight: 600, fontSize: T.fontSize.base,
-          display: 'flex', alignItems: 'center', gap: T.space[1]
-        }}
-      >
-        {open ? '▾' : '▸'} Recent activity ({entries.length})
-      </button>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          style={{
+            border: 'none', background: 'none', padding: 0, cursor: 'pointer',
+            color: T.text, fontWeight: 600, fontSize: T.fontSize.md,
+            display: 'flex', alignItems: 'center', gap: T.space[1]
+          }}
+        >
+          {open ? '▾' : '▸'} Recent activity ({entries.length})
+        </button>
 
-      {sync && <SyncFooter sync={sync} expanded={open} />}
+        {sync && <SyncFooter sync={sync} expanded={open} inline />}
+      </div>
 
+      {/* The row is a five-column grid of nowrap cells, so it has a hard minimum of about 624px.
+          Below that it used to push the whole page sideways; it scrolls inside itself now. */}
       {open && (
-        <div style={{ marginTop: T.space[2] }}>
+        <div style={{ marginTop: T.space[2], overflowX: 'auto' }}>
           {shown.map((e) => (
             <Row key={`${e.chainId}:${e.hash}`} entry={e} chainId={chainId} />
           ))}
