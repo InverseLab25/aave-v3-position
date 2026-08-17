@@ -191,7 +191,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
 
   const hasAaveConfig = !!chainConfig?.aave
 
-  const { netPrincipals, costBasis, isLoadingHistory } = useAaveHistoricalInterest(
+  const { netPrincipals, costBasis } = useAaveHistoricalInterest(
     options?.viewAddress,
     options?.viewChainId
   )
@@ -323,7 +323,12 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     chainId,
     chainName: chainConfig?.name ?? 'Unknown',
     isUnsupportedChain: !hasAaveConfig,
-    isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
+    // NOT `|| isLoadingHistory`. Cost basis comes from Aave's hosted indexer, and everything the
+    // position itself reports — collateral, debt, health factor — is already in hand from the
+    // chain. Folding that call in here let a slow third party blank the whole panel behind
+    // "Loading Aave Position...", with nothing on screen to say why. The basis fills in when it
+    // arrives, the way the history list already handles its own sync.
+    isLoading: isAccountLoading || isUiLoading,
     hasReadError,
     collateralUsd: 0,
     debtUsd: 0,
@@ -594,7 +599,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     chainId,
     chainName: chainConfig?.name ?? 'Unknown',
     isUnsupportedChain: false,
-    isLoading: isAccountLoading || isUiLoading || isLoadingHistory,
+    // Same as above: the indexer must not be able to hide an on-chain position.
+    isLoading: isAccountLoading || isUiLoading,
     hasReadError,
     eModeCategoryId,
     isEModeEnabled: eModeCategoryId > 0,

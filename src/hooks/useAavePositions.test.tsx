@@ -149,6 +149,28 @@ describe('useAavePositions memoisation', () => {
     expect(result.current.suppliedAssets[0].amount).toBeCloseTo(5)
   })
 
+  it('shows the position while the cost basis is still loading', () => {
+    // Collateral, debt and health factor come off the chain and are already in hand. Folding a
+    // hosted GraphQL call into this flag let api.v3.aave.com hide a position it had no part in
+    // reporting — and the panel says only "Loading Aave Position...", so a slow third party looked
+    // like a broken app.
+    mocks.useAaveHistoricalInterest.mockReturnValue({ ...freshHistory(), isLoadingHistory: true })
+
+    const { result } = renderHook(() => useAavePositions())
+
+    expect(result.current.isLoading).toBe(false)
+    expect(result.current.collateralUsd).toBeGreaterThan(0)
+  })
+
+  it('still waits for the reads the position itself depends on', () => {
+    mocks.useReadContract.mockReturnValue({ data: undefined, isLoading: true })
+    mocks.useReadContracts.mockReturnValue({ data: undefined, isLoading: true })
+
+    const { result } = renderHook(() => useAavePositions())
+
+    expect(result.current.isLoading).toBe(true)
+  })
+
   it('returns stable empty singletons when there is nothing to show', () => {
     mocks.useReadContract.mockReturnValue({ data: undefined, isLoading: true })
     mocks.useReadContracts.mockReturnValue({ data: undefined, isLoading: true })
