@@ -1,11 +1,10 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
-import { parseUnits, maxUint256, formatGwei } from 'viem'
+import { parseUnits, maxUint256 } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { aavePoolAbi } from '../config/aavev3Abi'
 import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
-import { useAdjustedGas } from '../hooks/useAdjustedGas'
 
 import { clearQuoteCache } from '../adapters/http'
 import type { CloseErrorKind } from '../lib/deleverage'
@@ -50,30 +49,6 @@ const SLIPPAGE_SUGGESTION_CAP = 1
 const QUOTE_REFRESH_MS = 3000
 
 /**
- * Gas the close costs BESIDES the swap: flash loan, Aave repay, two permits, the aToken pull,
- * the withdraw and the settlement transfers.
- *
- * Measured on a mainnet fork (`forge test --gas-report`): `closePositionWithPermit` peaks at
- * 514k with the swap mocked out, so this is that figure rounded up. The swap itself is added
- * on top from the aggregator's own estimate, which is the only party that knows how many
- * venues the route touches — a large split route can be several million on its own, and a
- * fixed constant was understating it by an order of magnitude.
- */
-const CLOSE_OVERHEAD_GAS = 550_000n
-
-/** Fallback swap gas when the aggregator has not quoted one yet. */
-const FALLBACK_SWAP_GAS = 350_000n
-
-/**
- * Priority multiplier the close transaction actually pays (see useDeleverageClose). The
- * preview has to use the same one, or it shows a fee that is not the fee being charged.
- */
-const CLOSE_PRIORITY_MULTIPLIER = 10n
-
-/** Aave's own repayWithATokens on the same-asset path — an ordinary pool call. */
-const SAME_ASSET_REPAY_GAS_LIMIT = 300_000n
-
-/**
  * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
  * the two amount fields in this app read as the same control.
  */
@@ -103,15 +78,12 @@ const formatAmount = (s: string): string => {
 interface ClosePositionModalProps {
   borrowedAsset: BorrowedAsset
   suppliedAssets: SuppliedAsset[]
-  /** Native token price, for costing the gas estimate. Zero hides the USD figure. */
-  ethPriceUsd: number
   onClose: () => void
 }
 
 export function ClosePositionModal({
   borrowedAsset,
   suppliedAssets,
-  ethPriceUsd,
   onClose,
 }: ClosePositionModalProps) {
   const { address } = useConnection()
@@ -281,23 +253,6 @@ export function ClosePositionModal({
   // preview has to follow whichever one is actually in play.
   // The swap dominates a cross-asset close and its cost is route-dependent, so take the
   // aggregator's estimate when there is one rather than assuming a fixed total.
-  const swapGas = (() => {
-    if (!preview?.swapGasEstimate) return FALLBACK_SWAP_GAS
-    try {
-      const g = BigInt(preview.swapGasEstimate)
-      return g > 0n ? g : FALLBACK_SWAP_GAS
-    } catch {
-      return FALLBACK_SWAP_GAS
-    }
-  })()
-
-  const { maxFee: uiMaxFee, maxPriority: uiMaxPriority, estimatedFeeUsd } = useAdjustedGas(
-    isSameAsset ? SAME_ASSET_REPAY_GAS_LIMIT : CLOSE_OVERHEAD_GAS + swapGas,
-    ethPriceUsd,
-    isSameAsset ? parseFloat(amountStr) > 0 : closeAvailable,
-    isSameAsset ? 1n : CLOSE_PRIORITY_MULTIPLIER,
-  )
-
   const log = (msg: string) => setLogs((prev) => [...prev, msg])
 
   // Clear the inputs and the quote once an action lands. Without this every gate on the
@@ -570,38 +525,6 @@ export function ClosePositionModal({
             </>
           )}
 
-          <div className={isSameAsset || closeAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: T.space[5] }}>
-            <h4 style={{ margin: '0 0 8px 0', fontSize: T.fontSize.sm, color: 'inherit' }}>Execution Path</h4>
-            {isSameAsset ? (
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                <span>✅</span>
-                <span style={{ fontSize: T.fontSize.sm }}>Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)</span>
-              </div>
-            ) : closeAvailable ? (
-              <div>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                  {isQuoting ? <span>⏳</span> : <span>✅</span>}
-                  <span style={{ fontSize: T.fontSize.sm }}>
-                    One transaction — Morpho Blue zero-fee flash loan{' '}
-                    {preview ? <strong>(via {preview.aggregator})</strong> : isQuoting ? <span style={{ opacity: 0.7 }}>(Finding best route...)</span> : ''}
-                  </span>
-                </div>
-                <p style={{ fontSize: T.fontSize.xs, marginTop: '8px', marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
-                  {collateralIn === undefined
-                    ? `Swaps only enough ${selectedCollateral?.symbol ?? ''} to repay ${borrowedAsset.amount.toFixed(4)} ${borrowedAsset.symbol}.`
-                    : `Swaps the ${selectedCollateral?.symbol ?? ''} amount you chose; anything beyond the debt comes back as ${borrowedAsset.symbol}.`}{' '}
-                  Nothing is requested until you press Execute — then your wallet asks for{' '}
-                  <strong>two signatures and one transaction</strong>.
-                </p>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <span>⚠️</span>
-                <span style={{ fontSize: T.fontSize.sm }}>One-click close is not available on this network yet.</span>
-              </div>
-            )}
-          </div>
-
           {/*
             Once the action has landed the quote has been cleared, and an empty quote panel
             renders as "no swap route available" — which reads as a failure directly under a
@@ -725,10 +648,6 @@ export function ClosePositionModal({
                       {preview.collateralKeptSuppliedUsd != null ? ` (~$${preview.collateralKeptSuppliedUsd.toFixed(2)})` : ''}
                     </span>
                   </div>
-                  <div className="info-row">
-                    <span className="info-row-label">Route</span>
-                    <span className="info-row-value">{preview.aggregator}</span>
-                  </div>
                   {preview.routeCostPercent != null && (
                     <div className="info-row">
                       <span className="info-row-label">Price impact &amp; fees</span>
@@ -771,12 +690,15 @@ export function ClosePositionModal({
                       ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, short of the {formatAmount(preview.debtRequired)} {preview.debtSymbol} needed to cover your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt plus the interest accruing before this lands. Closing is blocked so you don't sign for a swap that would revert on-chain — lower the slippage to guarantee it.
                     </div>
                   )}
-                  <p style={{ fontSize: T.fontSize.xs, marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
-                    {collateralIn === undefined
-                      ? `Only enough ${preview.collateralSymbol} is swapped for the router's guaranteed output to repay the debt at ${slippage}% slippage; the rest stays supplied in Aave.`
-                      : `You chose how much ${preview.collateralSymbol} to swap. The debt is repaid first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
-                    Estimated from your live balances.
-                  </p>
+                  {/* Only for a hand-chosen amount, which is the case that needs explaining: the
+                      surplus coming back to the wallet is not stated anywhere else. The automatic
+                      case is described by the numbers above it and needs no prose. */}
+                  {collateralIn !== undefined && (
+                    <p style={{ fontSize: T.fontSize.xs, marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
+                      {`You chose how much ${preview.collateralSymbol} to swap. The debt is repaid first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
+                      Estimated from your live balances.
+                    </p>
+                  )}
                 </div>
               ) : preview && !preview.covered ? (
                 <div className="alert alert-warning" style={{ margin: 0 }}>
@@ -825,27 +747,6 @@ export function ClosePositionModal({
                   No swap route available for this pair right now.
                 </div>
               )}
-            </div>
-          )}
-
-          {uiMaxFee && uiMaxPriority && (
-            <div style={{ padding: '12px', backgroundColor: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: T.radius.md }}>
-              {estimatedFeeUsd > 0 && (
-                <div className="info-row">
-                  <span className="info-row-label" style={{ fontWeight: 600 }}>Network Fee (Estimated)</span>
-                  <span className="info-row-value" style={{ fontWeight: 600 }}>
-                    ~${estimatedFeeUsd.toFixed(2)}
-                  </span>
-                </div>
-              )}
-              <div className="info-row">
-                <span className="info-row-label">Max Fee (Estimated)</span>
-                <span className="info-row-value">{Number(formatGwei(uiMaxFee)).toFixed(2)} Gwei</span>
-              </div>
-              <div className="info-row">
-                <span className="info-row-label">Max Priority Fee</span>
-                <span className="info-row-value">{Number(formatGwei(uiMaxPriority)).toFixed(2)} Gwei</span>
-              </div>
             </div>
           )}
 

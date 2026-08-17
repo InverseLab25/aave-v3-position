@@ -159,7 +159,6 @@ const mountWithBothCollaterals = () =>
     <ClosePositionModal
       borrowedAsset={USDC_BORROWED}
       suppliedAssets={[WETH_SUPPLIED, WBTC_SUPPLIED]}
-      ethPriceUsd={3000}
       onClose={vi.fn()}
     />,
   )
@@ -169,7 +168,6 @@ const mount = () =>
     <ClosePositionModal
       borrowedAsset={USDC_BORROWED}
       suppliedAssets={[WETH_SUPPLIED]}
-      ethPriceUsd={3000}
       onClose={vi.fn()}
     />,
   )
@@ -408,4 +406,15 @@ describe('the close uses the same controls as the open', () => {
 
     expect((field as HTMLInputElement).value).toBe('0.5')
   })
+})
+
+it('does not narrate the automatic sizing', async () => {
+  // Two paragraphs used to say the same thing forty lines apart — that it swaps only enough to
+  // repay the debt. Both are gone: the step line says what the wallet will ask for, and the
+  // numbers in Estimated Output say what it will do.
+  mount()
+
+  await screen.findByLabelText('Close max slippage percent')
+  expect(screen.queryByText(/is swapped for the router's guaranteed output/)).toBeNull()
+  expect(screen.queryByText(/Execution Path/)).toBeNull()
 })
