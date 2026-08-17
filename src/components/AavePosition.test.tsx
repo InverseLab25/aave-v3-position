@@ -299,6 +299,128 @@ it('lists recent activity under the borrowed assets', () => {
   expect(borrowed.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 })
 
+/** A memory-backed localStorage, seeded with `entries` of history and `overrides`. */
+function installStorage(seed: { overrides?: Record<string, number> } = {}) {
+  const map = new Map<string, string>()
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    },
+    configurable: true,
+  })
+  if (seed.overrides) {
+    map.set('aave.avgPriceOverrides.v1', JSON.stringify(seed.overrides))
+  }
+}
+
+/** A WETH supply whose cost basis the Aave indexer could not price. */
+const UNPRICED_WETH_SUPPLY = {
+  symbol: 'WETH',
+  underlyingAsset: WETH.underlyingAsset,
+  decimals: 18,
+  // The raw amount is exact; this is what a double can actually hold of it.
+  amount: 36.11233521585821,
+  amountRaw: 36_112_335_215_858_211_266n,
+  valueUsd: 108_337,
+  priceInUsd: '3000',
+  apy: 2,
+  aTokenAddress: WETH.aTokenAddress,
+  usageAsCollateralEnabledOnUser: true,
+  liquidationThreshold: 0.83,
+  interestEarnedTokens: 0,
+  interestEarnedUsd: 0,
+  positionPnl: { avgEntryPriceUsd: 0, realizedPnlUsd: 0, interestUsd: 0, totalPnlUsd: 0 },
+}
+
+/** The Arbitrum fill: 67,754.40695 stable for 36.112335215858211266 WETH — $1,876.21 a unit. */
+const LEVERAGED_OPEN = {
+  hash: `0x${'33'.repeat(32)}` as `0x${string}`,
+  chainId: 1,
+  wallet: OWNER,
+  kind: 'open' as const,
+  at: 1_800_000_000_000,
+  swap: {
+    srcToken: USDC.underlyingAsset,
+    dstToken: WETH.underlyingAsset,
+    srcSymbol: 'USDC',
+    srcDecimals: 6,
+    dstSymbol: 'WETH',
+    dstDecimals: 18,
+    spentAmount: 67_754_406_950n,
+    returnAmount: 36_112_335_215_858_211_266n,
+  },
+  rate: null,
+  fill: null,
+  deltas: [],
+  source: 'chain' as const,
+  blockNumber: 100n,
+}
+
+const withSupply = () => ({
+  ...EMPTY_PORTFOLIO,
+  collateralUsd: 108_337,
+  debtUsd: 500,
+  suppliedAssets: [UNPRICED_WETH_SUPPLY],
+  isUnsupportedChain: false,
+  chainName: 'Ethereum',
+})
+
+it('prices a supply from its own fills when the indexer could not', () => {
+  // The whole point: a leveraged open BOUGHT its collateral through a router, and what it paid
+  // is in the receipt. Asking the user to type that in was asking them to read an explorer.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withSupply())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+
+  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
+})
+
+it('keeps a hand-typed avg ahead of the one derived from history', () => {
+  // Deriving must never silently discard something the user set on purpose.
+  installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withSupply())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+
+  expect(screen.getByText('Avg: $2500.00')).toBeTruthy()
+})
+
+it("never prices someone else's position from this browser's fills", () => {
+  // The history in this browser belongs to the connected wallet. Viewing another address and
+  // pricing THEIR collateral at what I paid would be a confidently wrong number, which is worse
+  // than the dash the indexer leaves.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withSupply())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition viewAddress="0x0000000000000000000000000000000000009999" />)
+
+  expect(screen.queryByText('Avg: $1876.21')).toBeNull()
+})
+
+it('shows the fill-derived price beside the indexer one in the editor', () => {
+  // Two sources that can disagree, so the editor has to name which is which rather than show
+  // one figure under a label that could mean either.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withSupply())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+  fireEvent.click(screen.getByText('Avg: $1876.21'))
+
+  expect(screen.getByText('Paid on your swaps')).toBeTruthy()
+  expect(screen.getByText('$1876.2123')).toBeTruthy()
+})
+
 it('still lists recent activity for an account that has closed everything', () => {
   // The person most likely to look is the one who just closed their last position — and that
   // lands on the empty state, which is a different tree entirely.

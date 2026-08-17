@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense, type ComponentType } from 'react'
+import { useState, useEffect, useMemo, useSyncExternalStore, lazy, Suspense, type ComponentType } from 'react'
 import { useConnection } from 'wagmi'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
@@ -31,6 +31,9 @@ import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { TxHistoryList } from './TxHistoryList'
 import { useHistorySync } from '../hooks/useHistorySync'
 import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
+import { browserStorage } from '../lib/delegationCache'
+import { historyVersion, loadHistory, subscribeHistory } from '../lib/txHistory'
+import { avgEntryFromHistory } from '../lib/historyBasis'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
@@ -129,6 +132,44 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     }
   }, [overrides])
 
+  /**
+   * The avg entry price each supplied asset was actually BOUGHT at, read off this wallet's fills.
+   *
+   * Aave's indexer prices a supply at its block's oracle price, which for a leveraged open is not
+   * what was paid — the collateral came through a router. `avgEntryFromHistory` recovers the real
+   * figure from the `Swapped` amounts the sync already stores, so the override below stops being
+   * the only way to get an honest basis on screen.
+   *
+   * Keyed by lower-cased underlying address, and only for the SUPPLY side: an open buys collateral,
+   * so a fill prices what was acquired. The debt leg is the stable that paid for it.
+   */
+  const historyVersionSnapshot = useSyncExternalStore(subscribeHistory, historyVersion, historyVersion)
+  const derivedAvgEntry = useMemo(() => {
+    void historyVersionSnapshot
+    // Never while viewing another address, on the same reasoning as the history list itself
+    // (`wallet={viewAddress ? undefined : connectedAddress}`): these fills are this browser's, and
+    // pricing a stranger's collateral with them would be confidently wrong rather than merely absent.
+    if (viewAddress || !connectedAddress) return {} as Record<string, number>
+    const entries = loadHistory(browserStorage(), { wallet: connectedAddress, chainId })
+    if (entries.length === 0) return {} as Record<string, number>
+
+    // Every reserve the market lists, so the debt leg can be priced even when the wallet holds
+    // none of it. Supplied and borrowed rows are folded in for anything the reserve list misses.
+    const priceUsd = new Map<string, number>()
+    for (const r of availableReserves) priceUsd.set(r.underlyingAsset.toLowerCase(), Number(r.priceInUsd))
+    for (const a of [...suppliedAssets, ...borrowedAssets]) {
+      priceUsd.set(a.underlyingAsset.toLowerCase(), Number(a.priceInUsd))
+    }
+    const priceUsdOf = (token: `0x${string}`) => priceUsd.get(token.toLowerCase())
+
+    const derived: Record<string, number> = {}
+    for (const asset of suppliedAssets) {
+      const avg = avgEntryFromHistory(entries, asset.underlyingAsset, priceUsdOf)
+      if (avg !== null && avg > 0) derived[asset.underlyingAsset.toLowerCase()] = avg
+    }
+    return derived
+  }, [historyVersionSnapshot, viewAddress, connectedAddress, chainId, availableReserves, suppliedAssets, borrowedAssets])
+
   // Track which row currently has its override input open.
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [draftValue, setDraftValue] = useState<string>('')
@@ -163,7 +204,12 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     // Overrides are keyed by side:address so a WETH supply override doesn't leak into a WETH borrow.
     const overrideKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const override = overrides[overrideKey]
-    const effectiveAvgEntry = override && override > 0 ? override : pnl.avgEntryPriceUsd
+    // Hand-typed beats derived beats indexed. The override is last-written-by-a-person and must
+    // never be quietly replaced; the derived figure is what the wallet actually paid, so it beats
+    // the indexer's oracle-priced guess at a leveraged open.
+    const derived = side === 'supply' ? derivedAvgEntry[a.underlyingAsset.toLowerCase()] : undefined
+    const effectiveAvgEntry =
+      override && override > 0 ? override : derived && derived > 0 ? derived : pnl.avgEntryPriceUsd
     if (!(effectiveAvgEntry > 0)) return { effectiveAvgEntry: 0, priceGainUsd: 0, totalPnlUsd: 0, isOverride: false }
 
     const chainConfig = getChainConfig(chainId)
@@ -257,6 +303,8 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
       asset,
       rowKey: editingKey,
       onChainAvg: asset.positionPnl?.avgEntryPriceUsd ?? 0,
+      // Supply-side only, matching the precedence chain in `applyOverride`.
+      derivedAvg: side === 'supply' ? (derivedAvgEntry[addr] ?? 0) : 0,
       currentPrice,
       isOverride: editingKey in overrides,
     }
@@ -665,9 +713,17 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                 <span className="info-row-value">${editCtx.currentPrice.toFixed(4)}</span>
               </div>
               <div className="info-row">
-                <span className="info-row-label">On-chain avg (from tx history)</span>
+                <span className="info-row-label">Aave indexer avg</span>
                 <span className="info-row-value">${editCtx.onChainAvg.toFixed(4)}</span>
               </div>
+              {/* What the router actually filled at, which for a leveraged open is the number the
+                  indexer's oracle price is standing in for. Shown only when there is one. */}
+              {editCtx.derivedAvg > 0 && (
+                <div className="info-row">
+                  <span className="info-row-label">Paid on your swaps</span>
+                  <span className="info-row-value">${editCtx.derivedAvg.toFixed(4)}</span>
+                </div>
+              )}
               {editCtx.isOverride && (
                 <div className="info-row" style={{ color: T.primary }}>
                   <span>Your current override</span>
