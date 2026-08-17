@@ -1,17 +1,24 @@
 /**
- * Keeps local history in step with the chain, for every chain this wallet could have used one on.
+ * Brings local history up to date with the chain, once, for the chain the wallet is on.
  *
- * There is no backend to push from, so the closest equivalent is built here: the node holds an
- * event filter keyed to this wallet's address, and the app asks it what has changed. A catch-up
- * scan runs when a wallet connects, and a `watchEvent` subscription covers everything after that
- * — including a position opened from another device, which the live recorder can never see.
+ * A position outlives the browser that opened it. `localStorage` is per-browser and per-device, so
+ * a position opened on a laptop is invisible on a phone, and clearing site data loses the record
+ * of one that plainly still exists on chain. `useRecordOutcome` covers only transactions this
+ * browser sent while the app was open — and only if it stayed open long enough for the receipt.
+ * This covers the rest, and repairs a row that was written wrong.
  *
- * All of the reasoning lives in `lib/historySync`; this is the wiring. Failures are reported and
+ * It also feeds `historyBasis`, which replays these rows to price a position. With no rows there
+ * is no average entry price, and the panel falls back to the indexer's oracle-priced figure.
+ *
+ * Once per connect, and nothing after: there used to be a `watchEvent` subscription per event per
+ * chain polling forever — see the note further down for why it went.
+ *
+ * All of the reasoning lives in `lib/hashSync`; this is the wiring. Failures are reported and
  * retried, never thrown: nothing about reading history back is worth failing a screen for.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useConfig, useConnection, useReadContracts } from 'wagmi'
-import { getBlock, getTransactionReceipt, watchEvent } from 'viem/actions'
+import { useChainId, useConfig, useConnection, useReadContracts } from 'wagmi'
+import { getBlock, getTransactionReceipt } from 'viem/actions'
 import {
   type Address,
   type Client,
@@ -21,23 +28,9 @@ import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { browserStorage } from '../lib/delegationCache'
 import { syncChainFromHashes, type HashSyncClient } from '../lib/hashSync'
 import { fetchUserTxHashes } from '../lib/aaveTxHashes'
-import {
-  POSITION_CLOSED,
-  POSITION_OPENED,
-} from '../lib/strategiesLogs'
 import { clearScreened } from '../lib/screenCache'
 import { buildTokenMap, positionTokens, type TokenMeta } from '../lib/tokenMeta'
 
-/**
- * How often the live subscription asks the node what has changed.
- *
- * Slower than the wallet-facing default because nothing here is being waited on: a position opened
- * on another device showing up ten seconds later than it could have costs nothing, and a filter
- * per chain polling every four seconds is background traffic a user never asked for.
- */
-const WATCH_INTERVAL_MS = 12_000
-
-/** Reserve lists change when Aave lists a market. Once per session is more than often enough. */
 const RESERVE_STALE_MS = 10 * 60_000
 
 export interface HistorySyncStatus {
@@ -98,7 +91,21 @@ export function useHistorySync(): HistorySync {
 
   // Static config, so the list is fixed for the life of the app — but a fresh array every call
   // would restart every effect below on each render.
-  const chains = useMemo(() => syncableChains(), [])
+  const connectedChainId = useChainId()
+
+  /**
+   * The connected chain only, never every chain that has a deployment.
+   *
+   * Syncing all of them was speculative: the panel shows one chain's position and one chain's
+   * history at a time, so a row recovered for a chain nobody is looking at is a request spent on
+   * something invisible. Connected to Base and paying for Arbitrum reads is the whole of the cost
+   * and none of the benefit — and switching chains re-runs this, which is when the other chain's
+   * history is actually wanted.
+   */
+  const chains = useMemo(
+    () => syncableChains().filter((c) => c.chainId === connectedChainId),
+    [connectedChainId],
+  )
 
   const { data: reserveData } = useReadContracts({
     contracts: chains.map((chain) => ({
@@ -201,39 +208,18 @@ export function useHistorySync(): HistorySync {
   }, [wallet, chains, meta, runChain, attempt])
 
   /**
-   * The live subscription — the part standing in for a backend.
+   * There is no live subscription any more.
    *
-   * One filter per chain covering both events, narrowed to this wallet by the node. A matching log
-   * only TRIGGERS a sync rather than being decoded here, so every row still arrives through the
-   * same scan-build-merge path, cursor and all.
+   * There was one: a `watchEvent` filter per event per chain, polling every twelve seconds. With
+   * two deployments that is four subscriptions calling `eth_getFilterChanges` — or `eth_getLogs`,
+   * against a provider that will not hold a filter — forever, on chains the user was not on, and
+   * competing for the same rate limit as the confirm modal's three-second re-quote.
+   *
+   * It bought very little. A transaction sent from this browser is recorded by `useRecordOutcome`
+   * the moment its receipt lands, so the only thing the watcher added was noticing a position
+   * opened on ANOTHER device — which the catch-up below finds on the next load, or immediately
+   * when the user presses Resync.
    */
-  useEffect(() => {
-    if (!wallet) return
-    const unwatchers = chains.flatMap((chain) => {
-      try {
-        const client = config.getClient({
-          chainId: chain.chainId as (typeof config.chains)[number]['id'],
-        })
-        // One watcher per event: an `args` filter needs a single event, and letting the node do
-        // the narrowing is what keeps this from waking on every other user's position.
-        return [POSITION_OPENED, POSITION_CLOSED].map((event) =>
-          watchEvent(client, {
-            address: chain.address,
-            event,
-            args: { user: wallet },
-            pollingInterval: WATCH_INTERVAL_MS,
-            onLogs: () => void runChain(chain.chainId),
-            // A provider that cannot hold a filter falls back to polling `getLogs`; either way a
-            // subscription that errors must not become an unhandled rejection.
-            onError: () => {},
-          }),
-        )
-      } catch {
-        return []
-      }
-    })
-    return () => unwatchers.forEach((unwatch) => unwatch())
-  }, [wallet, chains, config, runChain])
 
   const resync = useCallback(() => {
     clearScreened(browserStorage())

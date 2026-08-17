@@ -10,9 +10,9 @@ const D_WETH = '0x24e6e0795b3c7c71D965fCc4f371803d1c1DcA1E' as Address
 
 const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
+  useChainId: vi.fn(),
   useConfig: vi.fn(),
   useReadContracts: vi.fn(),
-  watchEvent: vi.fn(),
   syncChainFromHashes: vi.fn(),
   fetchUserTxHashes: vi.fn(),
   syncableChains: vi.fn(),
@@ -21,11 +21,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('wagmi', () => ({
   useConnection: mocks.useConnection,
+  useChainId: mocks.useChainId,
   useConfig: mocks.useConfig,
   useReadContracts: mocks.useReadContracts,
 }))
 vi.mock('viem/actions', () => ({
-  watchEvent: mocks.watchEvent,
   getBlock: vi.fn(),
   getTransactionReceipt: vi.fn(),
 }))
@@ -69,8 +69,8 @@ function reservesLoaded(chains = 1) {
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useConnection.mockReturnValue({ address: WALLET })
+  mocks.useChainId.mockReturnValue(8453)
   mocks.useConfig.mockReturnValue({ chains: [], getClient: () => ({}) })
-  mocks.watchEvent.mockReturnValue(() => {})
   mocks.syncChainFromHashes.mockResolvedValue({ examined: 0, found: 0 })
   mocks.fetchUserTxHashes.mockResolvedValue([])
   mocks.syncableChains.mockReturnValue([
@@ -80,7 +80,10 @@ beforeEach(() => {
 })
 
 describe('useHistorySync', () => {
-  it('reads every chain the wallet could have a position on', async () => {
+  it('reads only the chain the wallet is connected to', async () => {
+    // Syncing every deployment meant a wallet on Base paying for Arbitrum reads it would never
+    // look at. The panel shows one chain's position and one chain's history at a time, and
+    // switching chains re-runs this — which is when the other chain's history is actually wanted.
     mocks.syncableChains.mockReturnValue([
       { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
       { chainId: 42161, address: STRATEGIES, fromBlock: 493_443_506n },
@@ -89,10 +92,22 @@ describe('useHistorySync', () => {
 
     renderHook(() => useHistorySync())
 
-    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(2))
-    expect(mocks.syncChainFromHashes.mock.calls.map((c) => c[0].chainId).sort((a, b) => a - b)).toEqual([
-      8453, 42161,
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
+    expect(mocks.syncChainFromHashes.mock.calls[0][0].chainId).toBe(8453)
+  })
+
+  it('follows the wallet to another chain', async () => {
+    mocks.syncableChains.mockReturnValue([
+      { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
+      { chainId: 42161, address: STRATEGIES, fromBlock: 493_443_506n },
     ])
+    mocks.useChainId.mockReturnValue(42161)
+    reservesLoaded(2)
+
+    renderHook(() => useHistorySync())
+
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
+    expect(mocks.syncChainFromHashes.mock.calls[0][0].chainId).toBe(42161)
   })
 
   it('does nothing at all without a connected wallet', async () => {
@@ -100,8 +115,7 @@ describe('useHistorySync', () => {
 
     renderHook(() => useHistorySync())
 
-    await waitFor(() => expect(mocks.watchEvent).not.toHaveBeenCalled())
-    expect(mocks.syncChainFromHashes).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.syncChainFromHashes).not.toHaveBeenCalled())
   })
 
   it('waits for the metadata that makes a recovered row readable', async () => {
@@ -111,8 +125,7 @@ describe('useHistorySync', () => {
 
     renderHook(() => useHistorySync())
 
-    await waitFor(() => expect(mocks.watchEvent).toHaveBeenCalled())
-    expect(mocks.syncChainFromHashes).not.toHaveBeenCalled()
+    await waitFor(() => expect(mocks.syncChainFromHashes).not.toHaveBeenCalled())
   })
 
   it('hands over the token names and the position tokens to hide', async () => {
@@ -140,36 +153,6 @@ describe('useHistorySync', () => {
     await waitFor(() => expect(result.current.status.syncedAt).not.toBeNull())
     expect(result.current.status.error).toBeNull()
     expect(result.current.status.scanning).toBe(false)
-  })
-
-  it('subscribes to both events, so either kind of position wakes it', async () => {
-    renderHook(() => useHistorySync())
-
-    await waitFor(() => expect(mocks.watchEvent).toHaveBeenCalledTimes(2))
-    const names = mocks.watchEvent.mock.calls.map((c) => c[1].event.name)
-    expect(names.sort()).toEqual(['PositionClosed', 'PositionOpened'])
-    expect(mocks.watchEvent.mock.calls[0][1].args).toEqual({ user: WALLET })
-  })
-
-  it('re-reads the chain when a watched event lands', async () => {
-    // The part standing in for a backend: a position opened on another device shows up here.
-    renderHook(() => useHistorySync())
-    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
-
-    mocks.watchEvent.mock.calls[0][1].onLogs([{}])
-
-    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(2))
-  })
-
-  it('lets go of its subscriptions when it goes away', async () => {
-    const unwatch = vi.fn()
-    mocks.watchEvent.mockReturnValue(unwatch)
-
-    const { unmount } = renderHook(() => useHistorySync())
-    await waitFor(() => expect(mocks.watchEvent).toHaveBeenCalled())
-    unmount()
-
-    expect(unwatch).toHaveBeenCalledTimes(2)
   })
 
   it('forgets every verdict when asked to resync, and reads again', async () => {
