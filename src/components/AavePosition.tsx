@@ -183,7 +183,15 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
         derived[`${side}:${asset.underlyingAsset.toLowerCase()}`] = {
           perUnit: basis.perUnit,
           quoteSymbol: quote?.symbol ?? null,
-          usd: canValue ? basis.perUnit * quote.priceUsd : null,
+          // A dollar to the dollar, deliberately — NOT `perUnit * quote.priceUsd`.
+          //
+          // Aave prices USDC at 0.99990104 today, so multiplying turned a fill of 1,875.7568 USDC
+          // per WETH into $1,875.5712 and the figure stopped matching the transaction it came
+          // from. It was also today's peg applied to last week's trade, which is not a correction
+          // so much as a different kind of error. `isVolatilePrice` already bounds the quote token
+          // to within two percent of a dollar, so what this gives up is at most that — against a
+          // number a user can check on an explorer, which is worth more.
+          usd: canValue ? basis.perUnit : null,
         }
       }
     }

@@ -380,6 +380,22 @@ it('prices a supply from its own fills when the indexer could not', () => {
   expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
 })
 
+it('shows the fill itself, not the fill re-priced at today\'s peg', () => {
+  // Aave prices USDC at 0.99990104, and multiplying by it turned a 1,876.2123 fill into
+  // 1,876.0269 — a figure that no longer matches the transaction on an explorer.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue({
+    ...withSupply(),
+    availableReserves: [WETH, { ...USDC, priceInUsd: '0.99990104' }],
+  })
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+
+  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
+})
+
 it('keeps a hand-typed avg ahead of the one derived from history', () => {
   // Deriving must never silently discard something the user set on purpose.
   installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
