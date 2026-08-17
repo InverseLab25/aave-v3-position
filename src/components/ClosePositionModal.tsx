@@ -11,10 +11,8 @@ import { clearQuoteCache } from '../adapters/http'
 import type { CloseErrorKind } from '../lib/deleverage'
 import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
-import { ExplorerLink } from './ExplorerLink'
 import { Modal } from './Modal'
-import { TxOutcomePanel } from './TxOutcome'
-import { TxSteps } from './TxSteps'
+import { TxReport } from './TxReport'
 import { SlippageField } from './leverage/SlippageField'
 import { T } from '../styles/theme'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
@@ -848,53 +846,40 @@ export function ClosePositionModal({
             </div>
           )}
 
-          {/* What the user is being asked for, rather than a scrolling record of it. The close
-              needs two signatures — a withdrawal permit, then the revoke that follows it at the
-              next nonce — and then the transaction. A single "Processing…" could not tell a
-              wallet that had not surfaced its second prompt from a send already in flight. */}
-          {!isSameAsset && (
-            <TxSteps
-              steps={[
-                {
-                  label: 'withdraw',
-                  done: signedUntil !== null || closeStep === 'sending' || isComplete,
-                  active: closeStep === 'permit',
-                },
-                {
-                  label: 'revoke',
-                  done: signedUntil !== null || closeStep === 'sending' || isComplete,
-                  active: closeStep === 'revoke',
-                },
-                { label: 'swap', done: isComplete, active: closeStep === 'sending' },
-              ]}
-            />
-          )}
+          {/* The tail both transaction screens end with, in the order both used. Shared with the
+              open so the two cannot drift apart again — see TxReport.
 
-          {/* The last thing that happened, not all of it. The full run used to render as a
-              scrolling monospace list, which reads as debug output in the middle of a transaction
-              screen — and the settled panel below already reports what actually happened. */}
-          {lastLog && (
-            <div
-              className={closeStep === 'error' ? 'alert alert-warning' : undefined}
-              style={{
-                marginTop: 'var(--space-4)',
-                fontSize: 'var(--text-sm)',
-                color: closeStep === 'error' ? undefined : 'var(--color-text-muted)',
-              }}
-            >
-              {lastLog}
-            </div>
-          )}
-
-          {/* What the close settled at, read off its own receipt — the only figures on this
-              screen that are not forecasts. */}
-          <TxOutcomePanel outcome={settled} tokens={outcomeTokens} />
-
-          {txHash && (
-            <div style={{ marginTop: 'var(--space-5)' }}>
-              <ExplorerLink hash={txHash} chainId={chainId} />
-            </div>
-          )}
+              The close needs two signatures, a withdrawal permit and the revoke that follows it at
+              the next nonce, and then the transaction. A single "Processing…" could not tell a
+              wallet that had not surfaced its second prompt from a send already in flight. The
+              same-asset path runs a plain pool call, so it has nothing to enumerate. */}
+          <TxReport
+            steps={
+              isSameAsset || isComplete
+                ? []
+                : [
+                    {
+                      label: 'withdraw',
+                      done: signedUntil !== null || closeStep === 'sending',
+                      active: closeStep === 'permit',
+                    },
+                    {
+                      label: 'revoke',
+                      done: signedUntil !== null || closeStep === 'sending',
+                      active: closeStep === 'revoke',
+                    },
+                    { label: 'swap', done: false, active: closeStep === 'sending' },
+                  ]
+            }
+            // The latest line, not the whole run: the full log rendered as a scrolling monospace
+            // list, which reads as debug output in the middle of a transaction screen.
+            error={closeStep === 'error' ? lastLog || null : null}
+            note={closeStep === 'error' ? null : lastLog || null}
+            outcome={settled}
+            outcomeTokens={outcomeTokens}
+            txHash={txHash}
+            chainId={chainId}
+          />
         </div>
 
         <div className="modal-footer">

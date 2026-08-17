@@ -12,10 +12,9 @@ import { formatUnits } from 'viem'
 import type { OpenPreview, OpenStep } from '../../hooks/useLeverageOpen'
 import type { OpenProjection } from '../../lib/leverage'
 import { PRICE_IMPACT_HIGH_PERCENT } from '../../lib/swapRoute'
-import { ExplorerLink } from '../ExplorerLink'
 import { Modal } from '../Modal'
-import { TxOutcomePanel, type TokenMeta } from '../TxOutcome'
-import { TxSteps } from '../TxSteps'
+import { TxReport } from '../TxReport'
+import type { TokenMeta } from '../TxOutcome'
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
 import { SlippageField } from './SlippageField'
@@ -331,38 +330,31 @@ export function ConfirmLeverageModal({
 
             {/* The first two are already behind the user by the time this renders — shown ticked
                 rather than hidden, so it is clear what has been spent if they cancel here. */}
-            <TxSteps
-              steps={[
-                { label: 'approved', done: true },
-                { label: 'signed', done: true },
-                { label: 'send', done, active: busy || done },
-              ]}
-            />
             </>
           )}
 
-          {execError && (
-            <div style={{ marginTop: T.space[3], fontSize: T.fontSize.sm, color: T.danger }}>
-              {execError}
-              {remedyHint && <span style={{ color: T.textMuted }}> {remedyHint}</span>}
-            </div>
-          )}
-
-          {settleNote && (
-            <div className="alert alert-warning" style={{ marginTop: T.space[3] }}>
-              <span style={{ fontSize: T.fontSize.sm }}>{settleNote}</span>
-            </div>
-          )}
-
-          {/* Fills in when the receipt lands, which is a block or two after `done`. Until then the
-              hash below is the whole report — the open is sent either way. */}
-          <TxOutcomePanel outcome={outcome} tokens={outcomeTokens} />
-
-          {done && txHash && (
-            <div style={{ marginTop: T.space[4] }}>
-              <ExplorerLink hash={txHash} chainId={chainId} />
-            </div>
-          )}
+          {/* The tail both transaction screens end with, in the order both used: where you are,
+              what went wrong, what settled, where to look. Shared so the two cannot drift. */}
+          <TxReport
+            // Empty once it has landed: the steps describe a decision already taken, and the
+            // settled report below is what a finished screen is for.
+            steps={
+              done
+                ? []
+                : [
+                    { label: 'approved', done: true },
+                    { label: 'signed', done: true },
+                    { label: 'send', done: false, active: busy },
+                  ]
+            }
+            error={execError}
+            errorHint={remedyHint}
+            note={settleNote}
+            outcome={outcome}
+            outcomeTokens={outcomeTokens}
+            txHash={done ? txHash : undefined}
+            chainId={chainId}
+          />
     </Modal>
   )
 }
