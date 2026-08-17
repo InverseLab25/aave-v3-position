@@ -3,20 +3,26 @@
  *
  * The average entry price shown against a position comes from Aave's indexer, which prices each
  * supply at the oracle price of its block. For a position opened through AaveV3Strategies that is
- * not what the user paid: the collateral was BOUGHT, through a router, at whatever the book gave
- * — and that number is in the `Swapped` event, which the history sync already records whole.
+ * not what the user paid: the asset was traded, through a router, at whatever the book gave — and
+ * that number is in the `Swapped` event, which the history sync already records whole.
  *
- * So the basis is recomputed here from the fills. The alternative was the manual override the
- * position table still offers, which asks a user to type in a price they would have to go and
- * work out from an explorer.
+ * Counted in the token on the OTHER side of the fill, never converted to USD. The rate a router
+ * filled at is a fact about two tokens; turning it into dollars needs a price for one of them, and
+ * the only price to hand is today's, which has no business pricing a trade from last week.
  */
 import { formatUnits, type Address } from 'viem'
 import { quoteRate } from './deleverage'
-import { isVolatilePrice } from '../utils/liquidation'
 import type { TxHistoryEntry } from './txHistory'
 
-/** Current USD price of a token, or undefined when nothing on screen knows it. */
-export type PriceLookup = (token: Address) => number | undefined
+/** Which leg of the position is being priced. */
+export type PositionSide = 'supply' | 'borrow'
+
+export interface HistoryBasis {
+  /** Quote tokens per 1 unit of the asset — what a unit cost, or what it was sold for. */
+  perUnit: number
+  /** The token `perUnit` is denominated in: the debt for a long, the collateral for a short. */
+  quoteToken: Address
+}
 
 /**
  * Oldest first.
@@ -39,82 +45,104 @@ function chronological(entries: readonly TxHistoryEntry[]): TxHistoryEntry[] {
 }
 
 /**
- * Weighted-average USD price paid for the `collateral` still held, replayed from this wallet's fills.
+ * Weighted-average price of the `asset` still held or still owed, replayed from this wallet's fills.
  *
  * Both the price and the quantity come from the `Swapped` events alone — never from Aave's
- * reported amounts. The rate a router filled at IS what a unit cost; the amounts on either side
- * of it are what says how much weight that cost carries.
+ * reported amounts. The rate a router filled at IS what a unit cost; the amounts on either side of
+ * it are what says how much weight that cost carries.
  *
- * Weighted rather than averaged flat, matching `addEntry` in `useAaveHistoricalInterest`: ten
- * units at 1,800 and one at 2,000 is a basis of 1,818, not 1,900.
+ * The two sides are the same fill read in opposite directions, because a leveraged open borrows
+ * one asset and buys the other with it:
  *
- * Closes participate, and the arithmetic makes the two cases fall out of one rule rather than a
- * threshold deciding between them:
+ *  - `supply` — the asset was BOUGHT, so it is the swap's destination. Quantity is what came back,
+ *    cost is what was spent, and the quote token is the debt. This is a long.
+ *  - `borrow` — the asset was SOLD to fund the collateral, so it is the swap's source. Quantity is
+ *    the debt taken on, cost is the collateral received, and the quote token is that collateral.
+ *    This is a short, and reading the other leg would answer "WETH per USDT", which tells a
+ *    shorter nothing about where they got in.
+ *
+ * Closes participate, mirrored the same way: a long sells its collateral, a short buys its debt
+ * back. One rule covers both shapes of close rather than a threshold deciding between them:
  *
  *  - A PARTIAL close scales cost and units by the same remaining share, so the average it leaves
  *    behind is the average it found. Selling 5 of 10 bought at 1,800 leaves 5 that cost 1,800.
  *  - A FULL close drives units to zero, taking the cost with it, so the next open starts from
  *    nothing. This is what stops a position exited months ago from pricing one opened yesterday.
  *
- * Flooring at zero is what makes the full case robust: collateral accrues interest, so an exit
- * sells MORE than the fills ever bought, and the overshoot has to read as "closed" rather than as
+ * Flooring at zero is what makes the full case robust: a position accrues interest, so an exit
+ * moves MORE than the fills ever opened, and the overshoot has to read as "closed" rather than as
  * a negative holding. No dust threshold is needed for the residue of a near-full close either —
  * a leftover of 1e-15 units carries 1e-15 of the weight, and the next open drowns it.
  *
- * Returns null rather than zero when nothing is held. Zero is a price, and the caller's
- * precedence chain reads it as one.
+ * Returns null when nothing is held, and also when the fills were quoted in MORE THAN ONE token:
+ * costs in USDT and costs in WBTC cannot be added, and reconciling them needs exactly the price
+ * conversion this function exists to avoid. Null rather than zero throughout — zero is a price,
+ * and the caller's precedence chain reads it as one.
  */
 export function avgEntryFromHistory(
   entries: readonly TxHistoryEntry[],
-  collateral: Address,
-  priceUsdOf: PriceLookup,
-): number | null {
-  const wanted = collateral.toLowerCase()
+  asset: Address,
+  side: PositionSide,
+): HistoryBasis | null {
+  const wanted = asset.toLowerCase()
   let totalUnits = 0
-  let totalCostUsd = 0
+  let totalCostIn = 0
+  let quoteToken: Address | null = null
 
   for (const entry of chronological(entries)) {
     const { swap } = entry
     if (!swap) continue
 
+    // A long holds the destination leg of its open and gives it back on close; a short owes the
+    // source leg and buys it back. So the leg carrying `asset` flips with BOTH side and kind.
+    const heldOnSource = side === 'borrow'
+    const onSource = entry.kind === 'open' ? heldOnSource : !heldOnSource
+
+    const assetToken = onSource ? swap.srcToken : swap.dstToken
+    if (assetToken.toLowerCase() !== wanted) continue
+
+    const assetDecimals = onSource ? swap.srcDecimals : swap.dstDecimals
+    const assetAmount = onSource ? swap.spentAmount : swap.returnAmount
+    if (assetDecimals === null) continue
+
     if (entry.kind === 'close') {
-      // The collateral is the leg being SOLD, so it is the source. No price gate: units left the
-      // position whatever they were sold for, and a close only ever moves the quantity.
-      if (swap.srcToken.toLowerCase() !== wanted) continue
-      if (swap.srcDecimals === null) continue
+      // No quote-token check: units left the position whatever they were traded against, and a
+      // close only ever moves the quantity.
       if (totalUnits <= 0) continue
+      const settled = Number(formatUnits(assetAmount, assetDecimals))
+      if (!(settled > 0)) continue
 
-      const sold = Number(formatUnits(swap.spentAmount, swap.srcDecimals))
-      if (!(sold > 0)) continue
-
-      const remaining = Math.max(0, totalUnits - sold)
+      const remaining = Math.max(0, totalUnits - settled)
       // Scaling both by the same share is exactly what leaves the average untouched.
-      totalCostUsd *= remaining / totalUnits
+      totalCostIn *= remaining / totalUnits
       totalUnits = remaining
       continue
     }
 
-    if (swap.dstToken.toLowerCase() !== wanted) continue
-    // Two unscaled integers have no ratio between them until both sides name their decimals.
-    if (swap.srcDecimals === null || swap.dstDecimals === null) continue
+    const quote = onSource ? swap.dstToken : swap.srcToken
+    const quoteDecimals = onSource ? swap.dstDecimals : swap.srcDecimals
+    if (quoteDecimals === null) continue
 
-    // The debt token the collateral was bought with has to be worth something knowable in dollars.
-    // Classified on price rather than by symbol, following `isVolatilePrice`: an allowlist rots on
-    // every new listing, and a depegged stable is exactly the case that must NOT pass here.
-    const debtPriceUsd = priceUsdOf(swap.srcToken)
-    if (debtPriceUsd === undefined || debtPriceUsd <= 0) continue
-    if (isVolatilePrice(debtPriceUsd)) continue
+    // Two tallies in different units are not a tally. Bail rather than pick a winner.
+    if (quoteToken !== null && quoteToken.toLowerCase() !== quote.toLowerCase()) return null
 
-    // Debt tokens per 1 collateral token — the fill, in the direction that prices the collateral.
-    const rate = quoteRate(swap.spentAmount, swap.returnAmount, swap.dstDecimals, swap.srcDecimals)
+    // Quote tokens per 1 unit of the asset — the fill, in the direction that prices the asset.
+    const rate = quoteRate(
+      onSource ? swap.returnAmount : swap.spentAmount,
+      assetAmount,
+      assetDecimals,
+      quoteDecimals,
+    )
     if (rate === null) continue
 
-    const units = Number(formatUnits(swap.returnAmount, swap.dstDecimals))
+    const units = Number(formatUnits(assetAmount, assetDecimals))
     if (!(units > 0)) continue
 
+    quoteToken = quote
     totalUnits += units
-    totalCostUsd += units * Number(rate) * debtPriceUsd
+    totalCostIn += units * Number(rate)
   }
 
-  return totalUnits > 0 ? totalCostUsd / totalUnits : null
+  if (!(totalUnits > 0) || quoteToken === null) return null
+  return { perUnit: totalCostIn / totalUnits, quoteToken }
 }

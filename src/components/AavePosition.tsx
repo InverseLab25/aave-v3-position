@@ -30,7 +30,7 @@ import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { TxHistoryList } from './TxHistoryList'
 import { useHistorySync } from '../hooks/useHistorySync'
-import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
+import { computeLiquidationView, hasLiquidationRowsToShow, isVolatilePrice, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import { browserStorage } from '../lib/delegationCache'
 import { historyVersion, loadHistory, subscribeHistory } from '../lib/txHistory'
 import { avgEntryFromHistory } from '../lib/historyBasis'
@@ -133,39 +133,59 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
   }, [overrides])
 
   /**
-   * The avg entry price each supplied asset was actually BOUGHT at, read off this wallet's fills.
+   * What each leg of the position was actually traded at, read off this wallet's own fills.
    *
    * Aave's indexer prices a supply at its block's oracle price, which for a leveraged open is not
-   * what was paid — the collateral came through a router. `avgEntryFromHistory` recovers the real
-   * figure from the `Swapped` amounts the sync already stores, so the override below stops being
-   * the only way to get an honest basis on screen.
+   * what was paid — the asset went through a router. `avgEntryFromHistory` recovers the real figure
+   * from the `Swapped` amounts the sync already stores, so the override below stops being the only
+   * way to get an honest basis on screen.
    *
-   * Keyed by lower-cased underlying address, and only for the SUPPLY side: an open buys collateral,
-   * so a fill prices what was acquired. The debt leg is the stable that paid for it.
+   * BOTH sides, keyed `side:address` like the overrides. A long's fill prices the collateral it
+   * bought; a short's prices the debt it sold, which is the only number that says where a short got
+   * in. Leaving the borrow side on the indexer while the supply side used fills would make one
+   * table disagree with the other.
+   *
+   * `perUnit` is denominated in the token on the other side of the fill, never in USD — see
+   * `historyBasis`. `usd` is that figure converted for the P&L column, and is null when the
+   * conversion would not be honest: `isVolatilePrice` keeps a WBTC-quoted basis from being
+   * multiplied by TODAY's BTC price to value a trade made last week. Such a row still SHOWS its
+   * token-denominated price; it just does not drive a dollar P&L.
    */
   const historyVersionSnapshot = useSyncExternalStore(subscribeHistory, historyVersion, historyVersion)
-  const derivedAvgEntry = useMemo(() => {
+  const derivedBasis = useMemo(() => {
+    type Derived = { perUnit: number; quoteSymbol: string | null; usd: number | null }
+    const empty = {} as Record<string, Derived>
     void historyVersionSnapshot
     // Never while viewing another address, on the same reasoning as the history list itself
     // (`wallet={viewAddress ? undefined : connectedAddress}`): these fills are this browser's, and
-    // pricing a stranger's collateral with them would be confidently wrong rather than merely absent.
-    if (viewAddress || !connectedAddress) return {} as Record<string, number>
+    // pricing a stranger's position with them would be confidently wrong rather than merely absent.
+    if (viewAddress || !connectedAddress) return empty
     const entries = loadHistory(browserStorage(), { wallet: connectedAddress, chainId })
-    if (entries.length === 0) return {} as Record<string, number>
+    if (entries.length === 0) return empty
 
-    // Every reserve the market lists, so the debt leg can be priced even when the wallet holds
-    // none of it. Supplied and borrowed rows are folded in for anything the reserve list misses.
-    const priceUsd = new Map<string, number>()
-    for (const r of availableReserves) priceUsd.set(r.underlyingAsset.toLowerCase(), Number(r.priceInUsd))
-    for (const a of [...suppliedAssets, ...borrowedAssets]) {
-      priceUsd.set(a.underlyingAsset.toLowerCase(), Number(a.priceInUsd))
+    // Every reserve the market lists, so the quote leg can be named and priced even when the wallet
+    // holds none of it. Held rows are folded in for anything the reserve list misses.
+    const meta = new Map<string, { symbol: string; priceUsd: number }>()
+    for (const r of availableReserves) {
+      meta.set(r.underlyingAsset.toLowerCase(), { symbol: r.symbol, priceUsd: Number(r.priceInUsd) })
     }
-    const priceUsdOf = (token: `0x${string}`) => priceUsd.get(token.toLowerCase())
+    for (const a of [...suppliedAssets, ...borrowedAssets]) {
+      meta.set(a.underlyingAsset.toLowerCase(), { symbol: a.symbol, priceUsd: Number(a.priceInUsd) })
+    }
 
-    const derived: Record<string, number> = {}
-    for (const asset of suppliedAssets) {
-      const avg = avgEntryFromHistory(entries, asset.underlyingAsset, priceUsdOf)
-      if (avg !== null && avg > 0) derived[asset.underlyingAsset.toLowerCase()] = avg
+    const derived: Record<string, Derived> = {}
+    for (const [side, list] of [['supply', suppliedAssets], ['borrow', borrowedAssets]] as const) {
+      for (const asset of list) {
+        const basis = avgEntryFromHistory(entries, asset.underlyingAsset, side)
+        if (!basis || !(basis.perUnit > 0)) continue
+        const quote = meta.get(basis.quoteToken.toLowerCase())
+        const canValue = quote !== undefined && quote.priceUsd > 0 && !isVolatilePrice(quote.priceUsd)
+        derived[`${side}:${asset.underlyingAsset.toLowerCase()}`] = {
+          perUnit: basis.perUnit,
+          quoteSymbol: quote?.symbol ?? null,
+          usd: canValue ? basis.perUnit * quote.priceUsd : null,
+        }
+      }
     }
     return derived
   }, [historyVersionSnapshot, viewAddress, connectedAddress, chainId, availableReserves, suppliedAssets, borrowedAssets])
@@ -205,11 +225,14 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     const overrideKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const override = overrides[overrideKey]
     // Hand-typed beats derived beats indexed. The override is last-written-by-a-person and must
-    // never be quietly replaced; the derived figure is what the wallet actually paid, so it beats
-    // the indexer's oracle-priced guess at a leveraged open.
-    const derived = side === 'supply' ? derivedAvgEntry[a.underlyingAsset.toLowerCase()] : undefined
+    // never be quietly replaced; the derived figure is what the wallet actually traded at, so it
+    // beats the indexer's oracle-priced guess at a leveraged open.
+    //
+    // `usd` rather than `perUnit`: this column is in dollars, and a basis quoted in a volatile
+    // token has no honest dollar value — those fall through to the indexer.
+    const derived = derivedBasis[overrideKey]?.usd ?? 0
     const effectiveAvgEntry =
-      override && override > 0 ? override : derived && derived > 0 ? derived : pnl.avgEntryPriceUsd
+      override && override > 0 ? override : derived > 0 ? derived : pnl.avgEntryPriceUsd
     if (!(effectiveAvgEntry > 0)) return { effectiveAvgEntry: 0, priceGainUsd: 0, totalPnlUsd: 0, isOverride: false }
 
     const chainConfig = getChainConfig(chainId)
@@ -303,8 +326,8 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
       asset,
       rowKey: editingKey,
       onChainAvg: asset.positionPnl?.avgEntryPriceUsd ?? 0,
-      // Supply-side only, matching the precedence chain in `applyOverride`.
-      derivedAvg: side === 'supply' ? (derivedAvgEntry[addr] ?? 0) : 0,
+      /** The fill-derived basis for this exact row, or null when the history has none. */
+      derived: derivedBasis[editingKey] ?? null,
       currentPrice,
       isOverride: editingKey in overrides,
     }
@@ -717,11 +740,17 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                 <span className="info-row-value">${editCtx.onChainAvg.toFixed(4)}</span>
               </div>
               {/* What the router actually filled at, which for a leveraged open is the number the
-                  indexer's oracle price is standing in for. Shown only when there is one. */}
-              {editCtx.derivedAvg > 0 && (
+                  indexer's oracle price is standing in for. Quoted in the token that paid for it
+                  rather than in dollars — that is the fill, with nothing converted. */}
+              {editCtx.derived && (
                 <div className="info-row">
-                  <span className="info-row-label">Paid on your swaps</span>
-                  <span className="info-row-value">${editCtx.derivedAvg.toFixed(4)}</span>
+                  <span className="info-row-label">
+                    {editCtx.side === 'supply' ? 'Paid on your swaps' : 'Sold on your swaps'}
+                  </span>
+                  <span className="info-row-value">
+                    {editCtx.derived.perUnit.toFixed(4)}
+                    {editCtx.derived.quoteSymbol ? ` ${editCtx.derived.quoteSymbol}` : ''}
+                  </span>
                 </div>
               )}
               {editCtx.isOverride && (
@@ -742,7 +771,15 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                 if (e.key === 'Enter') saveDraft(editCtx.rowKey)
                 if (e.key === 'Escape') cancelDraft()
               }}
-              placeholder={editCtx.onChainAvg > 0 ? editCtx.onChainAvg.toFixed(4) : '0.00'}
+              // What the box gives you if you type nothing, so it has to agree with what Reset
+              // restores: the fills first, the indexer only when there are none.
+              placeholder={
+                editCtx.derived?.usd
+                  ? editCtx.derived.usd.toFixed(4)
+                  : editCtx.onChainAvg > 0
+                    ? editCtx.onChainAvg.toFixed(4)
+                    : '0.00'
+              }
               style={inputStyle}
             />
 
@@ -752,7 +789,9 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                   onClick={() => resetOverride(editCtx.rowKey)}
                   style={{ marginRight: 'auto', padding: '8px 14px', fontSize: T.fontSize.sm, background: T.dangerBg, color: T.danger, border: `1px solid ${T.dangerBorder}`, borderRadius: T.radius.md, cursor: 'pointer' }}
                 >
-                  Reset to on-chain
+                  {/* Two different numbers are "on-chain" once fills are read back, so the button
+                      names the one it will actually restore. */}
+                  {editCtx.derived?.usd ? 'Reset to swap price' : 'Reset to on-chain'}
                 </button>
               )}
               <button

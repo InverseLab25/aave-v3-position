@@ -10,37 +10,27 @@ const WBTC = '0x2f2a2543B76A4166549F7aaB2e75Bef0aefC5B0f' as Address
 
 const hash = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex
 
-/** $1.00 for the stables, a real price for anything else. */
-const prices = (token: Address): number | undefined => {
-  const at: Record<string, number> = {
-    [USDT.toLowerCase()]: 1,
-    [WBTC.toLowerCase()]: 95_000,
-    [WETH.toLowerCase()]: 1_900,
-  }
-  return at[token.toLowerCase()]
-}
-
 const weth = (n: string) => BigInt(Math.round(parseFloat(n) * 1e6)) * 10n ** 12n
-const usd = (n: number) => BigInt(n) * 10n ** 6n
+const usdt = (n: number) => BigInt(Math.round(n * 1e6))
+const wbtc = (n: number) => BigInt(Math.round(n * 1e8))
 
-/** An open that bought `returnAmount` of `dstToken` for `spentAmount` of `srcToken`. */
-function open(over: {
+function entry(over: {
   hash?: Hex
   at?: number
+  kind?: 'open' | 'close'
   srcToken?: Address
   srcDecimals?: number | null
   dstToken?: Address
   dstDecimals?: number | null
   spentAmount?: bigint
   returnAmount?: bigint
-  kind?: 'open' | 'close'
-} = {}): TxHistoryEntry {
+}): TxHistoryEntry {
   return {
     hash: over.hash ?? hash(1),
     chainId: 42161,
     wallet: WALLET,
     kind: over.kind ?? 'open',
-    at: over.at ?? 1_800_000_000_000,
+    at: over.at ?? 1_000,
     swap: {
       srcToken: over.srcToken ?? USDT,
       dstToken: over.dstToken ?? WETH,
@@ -59,151 +49,247 @@ function open(over: {
   }
 }
 
-describe('avgEntryFromHistory', () => {
-  it('prices a single open at what the swap actually filled at', () => {
-    // Arbitrum 0x4ed0dd94…: 67,754.40695 USDT for 36.112335215858211266 WETH.
-    const avg = avgEntryFromHistory([open()], WETH, prices)
+/** An open that bought `units` of WETH at `price` debt tokens each. */
+const buy = (o: { hash: Hex; at: number; units: string; price: number }) =>
+  entry({
+    hash: o.hash,
+    at: o.at,
+    returnAmount: weth(o.units),
+    spentAmount: usdt(parseFloat(o.units) * o.price),
+  })
 
-    expect(avg).toBeCloseTo(1876.2122843899, 6)
+/** A close sells the collateral, so its legs run the other way round from an open's. */
+const sell = (o: { hash: Hex; at: number; units: string }) =>
+  entry({
+    hash: o.hash,
+    at: o.at,
+    kind: 'close',
+    srcToken: WETH,
+    srcDecimals: 18,
+    dstToken: USDT,
+    dstDecimals: 6,
+    spentAmount: weth(o.units),
+    returnAmount: usdt(1),
+  })
+
+describe('avgEntryFromHistory', () => {
+  it('prices a single open in the token that paid for it', () => {
+    // Arbitrum 0x4ed0dd94…: 67,754.40695 USDT for 36.112335215858211266 WETH. No USD anywhere —
+    // the cost is counted in the token that actually left the wallet.
+    const basis = avgEntryFromHistory([entry({})], WETH, 'supply')
+
+    expect(basis?.perUnit).toBeCloseTo(1876.2122843899, 6)
+    expect(basis?.quoteToken).toBe(USDT)
   })
 
   it('weights two opens by size rather than taking a plain mean', () => {
-    // 10 WETH at $1,800 and 1 WETH at $2,000 is a $1,818.18 basis, not $1,900.
-    const avg = avgEntryFromHistory(
+    // 10 WETH at 1,800 and 1 WETH at 2,000 is a basis of 1,818.18, not 1,900.
+    const basis = avgEntryFromHistory(
       [
-        open({ hash: hash(1), spentAmount: 18_000_000_000n, returnAmount: 10n * 10n ** 18n }),
-        open({ hash: hash(2), spentAmount: 2_000_000_000n, returnAmount: 10n ** 18n }),
+        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        buy({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
       ],
       WETH,
-      prices,
+      'supply',
     )
 
-    expect(avg).toBeCloseTo(1818.1818, 4)
+    expect(basis?.perUnit).toBeCloseTo(1818.1818, 4)
   })
 
-  it('skips an open whose debt token has no honest USD value', () => {
-    // WBTC-denominated debt: the fill rate is WBTC per WETH, and calling that a dollar price
-    // would re-price the basis every time BTC moves.
-    const avg = avgEntryFromHistory([open({ srcToken: WBTC, srcDecimals: 8 })], WETH, prices)
+  it('counts an open paid for in a volatile token', () => {
+    // Previously skipped for having no honest USD value. In token terms the question does not
+    // arise: 0.05 WBTC per WETH is exactly what was paid, whatever BTC is worth today.
+    const basis = avgEntryFromHistory(
+      [entry({ srcToken: WBTC, srcDecimals: 8, spentAmount: wbtc(0.05), returnAmount: weth('1') })],
+      WETH,
+      'supply',
+    )
 
-    expect(avg).toBeNull()
+    expect(basis?.perUnit).toBeCloseTo(0.05, 9)
+    expect(basis?.quoteToken).toBe(WBTC)
+  })
+
+  it('refuses to add costs denominated in two different tokens', () => {
+    // One paid in USDT, one in WBTC. There is no single token-denominated answer, and inventing
+    // one needs the price conversion this function exists to avoid.
+    const basis = avgEntryFromHistory(
+      [
+        buy({ hash: hash(1), at: 1_000, units: '1', price: 1800 }),
+        entry({
+          hash: hash(2), at: 2_000,
+          srcToken: WBTC, srcDecimals: 8, spentAmount: wbtc(0.05), returnAmount: weth('1'),
+        }),
+      ],
+      WETH,
+      'supply',
+    )
+
+    expect(basis).toBeNull()
+  })
+
+  it('ignores an open that bought a different collateral', () => {
+    expect(avgEntryFromHistory([entry({})], WBTC, 'supply')).toBeNull()
   })
 
   it('has nothing to price from a close with no open before it', () => {
-    const avg = avgEntryFromHistory([open({ kind: 'close' })], WETH, prices)
-
-    expect(avg).toBeNull()
+    expect(avgEntryFromHistory([sell({ hash: hash(1), at: 1_000, units: '1' })], WETH, 'supply')).toBeNull()
   })
 
-  /** A close sells the collateral, so its legs run the other way round from an open's. */
-  const close = (o: { hash: Hex; at: number; soldWeth: string }) =>
-    open({
+  it('ignores an open whose decimals were never recorded', () => {
+    expect(avgEntryFromHistory([entry({ dstDecimals: null })], WETH, 'supply')).toBeNull()
+  })
+
+  it('has nothing to say about an empty history', () => {
+    expect(avgEntryFromHistory([], WETH, 'supply')).toBeNull()
+  })
+
+  it('starts a fresh basis after a full close', () => {
+    // open, open, close, open — the first two are GONE once the position is fully closed, so
+    // their cost must not follow the new one around.
+    const basis = avgEntryFromHistory(
+      [
+        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        buy({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
+        sell({ hash: hash(3), at: 3_000, units: '11' }),
+        buy({ hash: hash(4), at: 4_000, units: '2', price: 3000 }),
+      ],
+      WETH,
+      'supply',
+    )
+
+    expect(basis?.perUnit).toBeCloseTo(3000, 6)
+  })
+
+  it('leaves the average alone when a close is only partial', () => {
+    // Sell 5 of 10 bought at 1,800 and the 5 still held cost 1,800 each.
+    const basis = avgEntryFromHistory(
+      [
+        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        sell({ hash: hash(2), at: 2_000, units: '5' }),
+      ],
+      WETH,
+      'supply',
+    )
+
+    expect(basis?.perUnit).toBeCloseTo(1800, 6)
+  })
+
+  it('replays in time order however the rows arrive', () => {
+    // `loadHistory` hands back newest-first, so a function trusting its caller's order would meet
+    // the close before the opens it settles and reset nothing.
+    const basis = avgEntryFromHistory(
+      [
+        buy({ hash: hash(4), at: 4_000, units: '2', price: 3000 }),
+        sell({ hash: hash(3), at: 3_000, units: '11' }),
+        buy({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
+        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+      ],
+      WETH,
+      'supply',
+    )
+
+    expect(basis?.perUnit).toBeCloseTo(3000, 6)
+  })
+
+  it('resets when a close sells more than the fills bought', () => {
+    // Collateral accrues interest, so exiting sells more than was ever bought. Still a full exit.
+    const basis = avgEntryFromHistory(
+      [
+        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        sell({ hash: hash(2), at: 2_000, units: '10.5' }),
+        buy({ hash: hash(3), at: 3_000, units: '1', price: 3000 }),
+      ],
+      WETH,
+      'supply',
+    )
+
+    expect(basis?.perUnit).toBeCloseTo(3000, 6)
+  })
+
+  /**
+   * A short: USDT supplied as collateral, WETH borrowed and sold for it. Same shape as an open,
+   * with the legs the other way round — the debt is the SOURCE.
+   */
+  const short = (o: { hash: Hex; at: number; units: string; price: number }) =>
+    entry({
       hash: o.hash,
       at: o.at,
-      kind: 'close',
       srcToken: WETH,
       srcDecimals: 18,
       dstToken: USDT,
       dstDecimals: 6,
-      spentAmount: weth(o.soldWeth),
-      returnAmount: usd(1),
+      spentAmount: weth(o.units),
+      returnAmount: usdt(parseFloat(o.units) * o.price),
     })
 
-  const buy = (o: { hash: Hex; at: number; units: string; price: number }) =>
-    open({
+  /** Closing a short buys the debt back, so the debt is the DESTINATION. */
+  const cover = (o: { hash: Hex; at: number; units: string }) =>
+    entry({
       hash: o.hash,
       at: o.at,
+      kind: 'close',
+      srcToken: USDT,
+      srcDecimals: 6,
+      dstToken: WETH,
+      dstDecimals: 18,
+      spentAmount: usdt(1),
       returnAmount: weth(o.units),
-      spentAmount: usd(Math.round(parseFloat(o.units) * o.price)),
     })
 
-  it('starts a fresh basis after a full close', () => {
-    // open, open, close, open — the sequence that matters. The first two are GONE once the
-    // position is fully closed, so their cost must not follow the new one around.
-    const avg = avgEntryFromHistory(
+  it('prices a short at what the borrowed asset was sold for', () => {
+    // 2 WETH borrowed and sold for 3,800 USDT is a short entered at 1,900 USDT per WETH. Reading
+    // the collateral leg instead would answer "WETH per USDT", which tells a shorter nothing.
+    const basis = avgEntryFromHistory([short({ hash: hash(1), at: 1_000, units: '2', price: 1900 })], WETH, 'borrow')
+
+    expect(basis?.perUnit).toBeCloseTo(1900, 6)
+    expect(basis?.quoteToken).toBe(USDT)
+  })
+
+  it('weights two shorts by the debt each took on', () => {
+    const basis = avgEntryFromHistory(
       [
-        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
-        buy({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
-        close({ hash: hash(3), at: 3_000, soldWeth: '11' }),
-        buy({ hash: hash(4), at: 4_000, units: '2', price: 3000 }),
+        short({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        short({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
       ],
       WETH,
-      prices,
+      'borrow',
     )
 
-    expect(avg).toBeCloseTo(3000, 6)
+    expect(basis?.perUnit).toBeCloseTo(1818.1818, 4)
   })
 
-  it('leaves the average alone when a close is only partial', () => {
-    // Sell 5 of 10 bought at 1,800 and the 5 still held cost 1,800 each. That is what a
-    // weighted-average cost means, and it is why a partial close must NOT reset anything.
-    const avg = avgEntryFromHistory(
+  it('starts a short fresh once the debt is fully covered', () => {
+    const basis = avgEntryFromHistory(
       [
-        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
-        close({ hash: hash(2), at: 2_000, soldWeth: '5' }),
+        short({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        cover({ hash: hash(2), at: 2_000, units: '10' }),
+        short({ hash: hash(3), at: 3_000, units: '2', price: 3000 }),
       ],
       WETH,
-      prices,
+      'borrow',
     )
 
-    expect(avg).toBeCloseTo(1800, 6)
+    expect(basis?.perUnit).toBeCloseTo(3000, 6)
   })
 
-  it('replays in time order however the rows arrive', () => {
-    // `loadHistory` hands back newest-first, so a function that trusted its caller's order would
-    // process the close before the opens it settles and reset nothing.
-    const avg = avgEntryFromHistory(
+  it('does not read a long as though it were a short', () => {
+    // The long's WETH is collateral, not debt. Asking for the borrow side must find nothing
+    // rather than quote "WETH per USDT" as if it were a short entry.
+    expect(avgEntryFromHistory([entry({})], WETH, 'borrow')).toBeNull()
+  })
+
+  it('blends the three real opens on Arbitrum position 0x1F0F4306', () => {
+    // Verified against the chain: three PositionOpened events, no closes.
+    const basis = avgEntryFromHistory(
       [
-        buy({ hash: hash(4), at: 4_000, units: '2', price: 3000 }),
-        close({ hash: hash(3), at: 3_000, soldWeth: '11' }),
-        buy({ hash: hash(2), at: 2_000, units: '1', price: 2000 }),
-        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
+        entry({ hash: hash(3), at: 3_000, spentAmount: 4_374_538_636n, returnAmount: 2_309_194_102_159_342_953n }),
+        entry({ hash: hash(2), at: 2_000, spentAmount: 2_200_000n, returnAmount: 1_157_347_352_571_367n }),
+        entry({ hash: hash(1), at: 1_000, spentAmount: 67_754_406_950n, returnAmount: 36_112_335_215_858_211_266n }),
       ],
       WETH,
-      prices,
+      'supply',
     )
 
-    expect(avg).toBeCloseTo(3000, 6)
-  })
-
-  it('resets when a close sells more than the fills bought', () => {
-    // Collateral accrues interest, so exiting sells more than was ever bought. That is still a
-    // full exit, and flooring the ledger at zero is what makes it read as one.
-    const avg = avgEntryFromHistory(
-      [
-        buy({ hash: hash(1), at: 1_000, units: '10', price: 1800 }),
-        close({ hash: hash(2), at: 2_000, soldWeth: '10.5' }),
-        buy({ hash: hash(3), at: 3_000, units: '1', price: 3000 }),
-      ],
-      WETH,
-      prices,
-    )
-
-    expect(avg).toBeCloseTo(3000, 6)
-  })
-
-  it('ignores an open that bought a different collateral', () => {
-    const avg = avgEntryFromHistory([open()], WBTC, prices)
-
-    expect(avg).toBeNull()
-  })
-
-  it('ignores an open whose decimals were never recorded', () => {
-    const avg = avgEntryFromHistory([open({ dstDecimals: null })], WETH, prices)
-
-    expect(avg).toBeNull()
-  })
-
-  it('has nothing to say about an empty history', () => {
-    expect(avgEntryFromHistory([], WETH, prices)).toBeNull()
-  })
-
-  it('values the debt in dollars rather than assuming a stable is exactly $1', () => {
-    // A stable trading at $0.99 bought fewer dollars of WETH than its face value suggests.
-    const avg = avgEntryFromHistory([open()], WETH, (t) =>
-      t.toLowerCase() === USDT.toLowerCase() ? 0.99 : prices(t),
-    )
-
-    expect(avg).toBeCloseTo(1876.2122843899 * 0.99, 6)
+    expect(basis?.perUnit).toBeCloseTo(1877.3061, 4)
   })
 })

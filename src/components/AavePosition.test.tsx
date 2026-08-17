@@ -392,6 +392,47 @@ it('keeps a hand-typed avg ahead of the one derived from history', () => {
   expect(screen.getByText('Avg: $2500.00')).toBeTruthy()
 })
 
+/** Same supply, but with an indexer price that is distinguishable from the fill-derived one. */
+const withIndexerPrice = () => ({
+  ...withSupply(),
+  suppliedAssets: [
+    {
+      ...UNPRICED_WETH_SUPPLY,
+      positionPnl: { avgEntryPriceUsd: 1873.66, realizedPnlUsd: 0, interestUsd: 0, totalPnlUsd: 0 },
+    },
+  ],
+})
+
+it('resets a hand-typed avg back to what the swaps paid, not to the indexer', () => {
+  // Three candidate numbers exist at once: 2,500 typed by hand, 1,876.21 from the fills and
+  // 1,873.66 from the indexer. Reset has to land on the fills — that is the honest one.
+  installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withIndexerPrice())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+  fireEvent.click(screen.getByText('Avg: $2500.00'))
+  fireEvent.click(screen.getByText(/^Reset to/))
+
+  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
+})
+
+it('hints the fill-derived price in the editor input, not the indexer one', () => {
+  // The placeholder is what the box offers you if you type nothing, so it has to agree with what
+  // Reset would give you. Showing the indexer's figure there contradicts both.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withIndexerPrice())
+  appendHistory(localStorage, LEVERAGED_OPEN)
+
+  render(<AavePosition />)
+  fireEvent.click(screen.getByText('Avg: $1876.21'))
+
+  const input = screen.getByPlaceholderText('1876.2123')
+  expect(input).toBeTruthy()
+})
+
 it("never prices someone else's position from this browser's fills", () => {
   // The history in this browser belongs to the connected wallet. Viewing another address and
   // pricing THEIR collateral at what I paid would be a confidently wrong number, which is worse
@@ -418,7 +459,61 @@ it('shows the fill-derived price beside the indexer one in the editor', () => {
   fireEvent.click(screen.getByText('Avg: $1876.21'))
 
   expect(screen.getByText('Paid on your swaps')).toBeTruthy()
-  expect(screen.getByText('$1876.2123')).toBeTruthy()
+  // In the token that paid for it, not converted to dollars — that is the fill itself.
+  expect(screen.getByText('1876.2123 USDC')).toBeTruthy()
+})
+
+/** A short: WETH borrowed and sold for USDC collateral, 2 WETH for 3,800 USDC. */
+const SHORT_OPEN = {
+  ...LEVERAGED_OPEN,
+  hash: `0x${'44'.repeat(32)}` as `0x${string}`,
+  swap: {
+    srcToken: WETH.underlyingAsset,
+    dstToken: USDC.underlyingAsset,
+    srcSymbol: 'WETH',
+    srcDecimals: 18,
+    dstSymbol: 'USDC',
+    dstDecimals: 6,
+    spentAmount: 2n * 10n ** 18n,
+    returnAmount: 3_800_000_000n,
+  },
+}
+
+const WETH_DEBT = {
+  symbol: 'WETH',
+  underlyingAsset: WETH.underlyingAsset,
+  decimals: 18,
+  amount: 2,
+  amountRaw: 2n * 10n ** 18n,
+  valueUsd: 6000,
+  priceInUsd: '3000',
+  apy: 3,
+  variableDebtTokenAddress: WETH.variableDebtTokenAddress,
+  interestPaidTokens: 0,
+  interestPaidUsd: 0,
+  positionPnl: { avgEntryPriceUsd: 0, realizedPnlUsd: 0, interestUsd: 0, totalPnlUsd: 0 },
+}
+
+it('prices a short from the debt it sold, not the collateral it bought', () => {
+  // The borrow row is where a short's entry price lives. Reading the collateral leg would answer
+  // "WETH per USDC", which tells a shorter nothing about where they got in.
+  installStorage()
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue({
+    ...EMPTY_PORTFOLIO,
+    collateralUsd: 3800,
+    debtUsd: 6000,
+    borrowedAssets: [WETH_DEBT],
+    isUnsupportedChain: false,
+    chainName: 'Ethereum',
+  })
+  appendHistory(localStorage, SHORT_OPEN)
+
+  render(<AavePosition />)
+  fireEvent.click(screen.getByText('Avg: $1900.00'))
+
+  expect(screen.getByText('Sold on your swaps')).toBeTruthy()
+  expect(screen.getByText('1900.0000 USDC')).toBeTruthy()
 })
 
 it('still lists recent activity for an account that has closed everything', () => {
