@@ -9,9 +9,9 @@
  * first, since the projection beside this panel already describes the position.
  */
 import { formatUnits, type Address } from 'viem'
-import { quoteRate } from '../lib/deleverage'
 import type { TokenMeta } from '../lib/tokenMeta'
 import type { TxOutcome, WalletDelta } from '../lib/txOutcome'
+import { RateLine } from './RateLine'
 import { T } from '../styles/theme'
 
 // Defined next to the builders that produce it, and re-exported here because this is where its
@@ -41,18 +41,6 @@ function amount(value: bigint, decimals: number): string {
     minimumFractionDigits: places,
     maximumFractionDigits: places,
   })
-}
-
-/**
- * Precision follows magnitude, as in RouteDetails: a pair quoted in the thousands is unreadable
- * at four decimals, while its inverse lands near 0.0005 where four decimals is not enough to
- * separate two different rates at all.
- */
-function rate(value: string): string {
-  const n = Number(value)
-  return n >= 1
-    ? n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-    : n.toLocaleString(undefined, { minimumSignificantDigits: 4, maximumSignificantDigits: 6 })
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -87,12 +75,6 @@ export function TxOutcomePanel({ outcome, tokens }: TxOutcomePanelProps) {
   const { swap, fill } = outcome
   const src = swap ? meta(swap.srcToken) : undefined
   const dst = swap ? meta(swap.dstToken) : undefined
-  // Only with both sides' decimals is a rate a rate; without them it is two unscaled integers.
-  const filled =
-    swap && src && dst
-      ? quoteRate(swap.returnAmount, swap.spentAmount, src.decimals, dst.decimals)
-      : null
-
   return (
     <div
       style={{
@@ -117,7 +99,18 @@ export function TxOutcomePanel({ outcome, tokens }: TxOutcomePanelProps) {
         </Row>
       )}
 
-      {filled && src && dst && <Row label="Rate">{`1 ${src.symbol} = ${rate(filled)} ${dst.symbol}`}</Row>}
+      {swap && src && dst && (
+        <Row label="Rate">
+          <RateLine
+            srcSymbol={src.symbol}
+            srcDecimals={src.decimals}
+            dstSymbol={dst.symbol}
+            dstDecimals={dst.decimals}
+            spentAmount={swap.spentAmount}
+            returnAmount={swap.returnAmount}
+          />
+        </Row>
+      )}
 
       {fill && fill.percent !== null && (
         <Row label="vs quote">

@@ -463,7 +463,23 @@ export function LeveragePanel({
    * button on one left it disabled at exactly the moments a user reaches for it. Pressing it now
    * opens the modal, and the modal is what waits for a route.
    */
-  const [confirming, setConfirming] = useState(false)
+  /**
+   * The pair the confirmation was opened against, FROZEN at that moment.
+   *
+   * The modal used to be mounted on `confirming && collateralReserve && debtReserve`, and both
+   * reserves are derived from `useAavePositions` data that refetches. Any refetch that briefly
+   * emptied the reserve list therefore unmounted the modal mid-transaction — and on the boost path
+   * that is not a rare race but the ordinary sequence, because a successful open CHANGES the
+   * position and provokes exactly that refetch, at the same moment the receipt lands. The settled
+   * report was being destroyed as it was written.
+   *
+   * A snapshot instead. Everything the modal must keep fresh — the route, the projection, the
+   * quoting flag — is still passed live; only its right to exist stops depending on a refetch.
+   */
+  const [confirming, setConfirming] = useState<{
+    collateral: AvailableReserve
+    debt: AvailableReserve
+  } | null>(null)
 
   /**
    * A press of Open that is still waiting for a route before it can ask the wallet for anything.
@@ -501,9 +517,12 @@ export function LeveragePanel({
       setPendingOpen(false)
       // Only on success. A rejected approve or signature leaves the user on the form, where the
       // error renders under the button they just pressed.
-      if (authorised) setConfirming(true)
+      // Both are non-null here: `routable` gated the prepare, and it cannot be true without them.
+      if (authorised && collateralReserve && debtReserve) {
+        setConfirming({ collateral: collateralReserve, debt: debtReserve })
+      }
     })()
-  }, [pendingOpen, input, previewError, isQuoting, preview, prepare])
+  }, [pendingOpen, input, previewError, isQuoting, preview, prepare, collateralReserve, debtReserve])
 
   // Someone else's portfolio is read-only. An undeployed contract does NOT hide the panel: it is
   // how the feature is discovered, and hiding it makes it look absent rather than unavailable.
@@ -809,7 +828,7 @@ export function LeveragePanel({
         </div>
       </div>
 
-      {confirming && collateralReserve && debtReserve && (
+      {confirming && (
         <ConfirmLeverageModal
           title={actionLabel}
           marginLine={boosting || !marginReserve
@@ -819,11 +838,11 @@ export function LeveragePanel({
           // figure until then, so the line never reads as zero while a quote is in flight.
           supplyLine={`${display(
             preview?.projection.expectedCollateral ?? estimate?.expectedCollateral ?? supplyAmount,
-            collateralReserve.raw.decimals, 6,
-          )} ${collateralReserve.symbol}`}
+            confirming.collateral.raw.decimals, 6,
+          )} ${confirming.collateral.symbol}`}
           borrowLine={`${display(
-            preview?.borrowAmount ?? seededBorrow ?? 0n, debtReserve.raw.decimals, 6,
-          )} ${debtReserve.symbol}`}
+            preview?.borrowAmount ?? seededBorrow ?? 0n, confirming.debt.raw.decimals, 6,
+          )} ${confirming.debt.symbol}`}
           preview={preview}
           projection={preview?.projection ?? estimate}
           isQuoting={isQuoting}
@@ -835,10 +854,10 @@ export function LeveragePanel({
           slippageBps={slippageBps}
           slippagePercent={slippagePercent}
           onSlippageChange={setSlippagePercent}
-          collateralSymbol={collateralReserve.symbol}
-          debtSymbol={debtReserve.symbol}
-          collateralDecimals={collateralReserve.raw.decimals}
-          debtDecimals={debtReserve.raw.decimals}
+          collateralSymbol={confirming.collateral.symbol}
+          debtSymbol={confirming.debt.symbol}
+          collateralDecimals={confirming.collateral.raw.decimals}
+          debtDecimals={confirming.debt.raw.decimals}
           step={step}
           execError={execError}
           remedyHint={remedyHint}
@@ -851,7 +870,7 @@ export function LeveragePanel({
           onHardRefresh={hardRefresh}
           onResign={forgetSignature}
           onConfirm={() => void submit()}
-          onClose={() => setConfirming(false)}
+          onClose={() => setConfirming(null)}
         />
       )}
     </div>

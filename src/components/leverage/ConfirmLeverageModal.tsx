@@ -137,8 +137,43 @@ export function ConfirmLeverageModal({
   return (
     <div className="modal-overlay">
       <div className="modal-content">
-        <div className="modal-header">
-          <h2>{title}</h2>
+        <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: T.space[2] }}>
+          {/* Once it has landed the title stops describing an offer and starts describing a
+              result. Leaving "Open long WETH" up is what made a settled modal read as one still
+              waiting to be confirmed. */}
+          <h2 style={{ flex: 1 }}>
+            {done ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                <svg
+                  width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.success}
+                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="12" cy="12" r="10" strokeWidth="2" />
+                  <path d="M8 12.5l2.5 2.5L16 9.5" />
+                </svg>
+                Swap complete
+              </span>
+            ) : (
+              title
+            )}
+          </h2>
+          {/* An exit that is not also an action. The footer's button is the primary way out, but a
+              report the user is finished reading should not need one labelled "Done" to leave. */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close"
+            className="btn-ghost"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              padding: '4px', lineHeight: 1, fontSize: '1.25rem', color: T.textMuted,
+              background: 'none', border: 'none', cursor: 'pointer',
+            }}
+          >
+            ×
+          </button>
         </div>
 
         <div className="modal-body">

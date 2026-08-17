@@ -166,6 +166,31 @@ it('replaces confirmation with a receipt once the open has landed', () => {
   expect(screen.getByRole('button', { name: 'Done' })).toBeDefined()
 })
 
+it('says the swap is complete instead of still offering to open one', () => {
+  // The heading still read "Open long WETH" after it had already been opened, which is the one
+  // moment the title is answering a question nobody is asking any more.
+  setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })
+
+  expect(screen.getByText(/Swap complete/i)).toBeDefined()
+  expect(screen.queryByText('Open long WETH')).toBeNull()
+})
+
+it('keeps its own title until the swap has actually landed', () => {
+  setup({ step: 'sending' })
+
+  expect(screen.getByText('Open long WETH')).toBeDefined()
+  expect(screen.queryByText(/Swap complete/i)).toBeNull()
+})
+
+it('can be dismissed from the header, not only from the footer', () => {
+  // A settled modal is a report, and a report needs an exit that is not labelled like an action.
+  const props = setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })
+
+  fireEvent.click(screen.getByRole('button', { name: /close/i }))
+
+  expect(props.onClose).toHaveBeenCalled()
+})
+
 it('offers the slippage presets and reports a pick to the caller', () => {
   const props = setup()
 

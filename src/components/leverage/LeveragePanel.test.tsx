@@ -205,6 +205,38 @@ it('opens the confirmation once the wallet has granted both', async () => {
   expect(await screen.findByRole('button', { name: 'Confirm' })).toBeTruthy()
 })
 
+it('keeps the confirmation open when the reserve list churns underneath it', async () => {
+  // The modal used to be gated on `collateralReserve && debtReserve`, which are derived from
+  // refetchable position data. Any refetch that briefly emptied the reserve list therefore
+  // UNMOUNTED the modal mid-transaction — and on the boost path that is the ordinary sequence,
+  // because a successful open changes the position and provokes exactly that refetch. The receipt
+  // arrives at the same moment, so the settled report was destroyed as it was being written.
+  setHook({ preview: PREVIEW })
+  const view = mount()
+  fillForm()
+
+  fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
+  await screen.findByRole('button', { name: 'Confirm' })
+
+  // A refetch in flight: same props, nothing resolvable in the list.
+  view.rerender(
+    <LeveragePanel
+      suppliedAssets={[]}
+      borrowedAssets={[]}
+      availableReserves={[]}
+      collateralFlags={{}}
+      hasAnyCollateralEnabled={false}
+      eModeExcludedReserves={{}}
+      existingCollateralUsd={0n}
+      existingDebtUsd={0n}
+      existingLtvBps={0n}
+      existingLiquidationThresholdBps={0n}
+    />,
+  )
+
+  expect(screen.queryByRole('button', { name: 'Confirm' })).toBeTruthy()
+})
+
 it('leaves the user on the form when the wallet is rejected', async () => {
   prepare.mockResolvedValue(false)
   setHook({ preview: PREVIEW })
