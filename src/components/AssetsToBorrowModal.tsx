@@ -13,7 +13,7 @@ import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle, MODAL_WIDTH } from '../styles/theme'
 import { Modal } from './Modal'
 
 interface AssetsToBorrowModalProps {
@@ -141,7 +141,8 @@ export function AssetsToBorrowModal({ chainId, availableReserves, ethPriceUsd = 
     <Modal
       title={selectedAsset ? `Borrow ${selectedAsset.symbol}` : 'Assets to Borrow'}
       onClose={onClose}
-      maxWidth="600px"
+      // See AssetsToSupplyModal: list width for the table, form width for the form.
+      maxWidth={selectedAsset ? MODAL_WIDTH.form : MODAL_WIDTH.list}
       dismissable={!isProcessing}
       // Only once an asset is chosen: the picker view is a list with nothing to confirm, and a
       // footer over it would offer an action for something not yet selected.

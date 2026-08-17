@@ -105,3 +105,25 @@ describe('Modal', () => {
     expect(screen.getByRole('button', { name: /close/i })).toBeTruthy()
   })
 })
+
+describe('modal widths', () => {
+  it('offers a width per kind of content, not per screen', async () => {
+    const { MODAL_WIDTH } = await import('../styles/theme')
+
+    // Named so that two screens showing the same thing cannot end up different sizes — which is
+    // what happened when the asset pickers rendered the withdraw modal's form at list width.
+    expect(MODAL_WIDTH.form).toBe('440px')
+    expect(MODAL_WIDTH.confirm).toBe('500px')
+    expect(MODAL_WIDTH.list).toBe('600px')
+  })
+
+  it('applies the width it is given', () => {
+    const { container } = render(
+      <Modal title="Assets to supply" onClose={vi.fn()} maxWidth="600px">
+        <p>body</p>
+      </Modal>,
+    )
+
+    expect(container.querySelector<HTMLElement>('.modal-content')?.style.maxWidth).toBe('600px')
+  })
+})

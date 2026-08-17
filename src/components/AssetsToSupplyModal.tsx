@@ -14,7 +14,7 @@ import type { AvailableReserve, ReserveOption } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle, MODAL_WIDTH } from '../styles/theme'
 import { Modal } from './Modal'
 
 const SUPPLY_GAS_LIMIT = 250000n /* Aave supply */
@@ -178,7 +178,9 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
     <Modal
       title={selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'}
       onClose={onClose}
-      maxWidth="600px"
+      // The list needs the room; the form it opens into does not, and is the same form the
+      // withdraw modal shows at form width.
+      maxWidth={selectedAsset ? MODAL_WIDTH.form : MODAL_WIDTH.list}
       dismissable={!isProcessing}
       // Only once an asset is chosen: the picker view is a list with nothing to confirm, and a
       // footer over it would offer an action for something not yet selected.

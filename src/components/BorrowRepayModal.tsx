@@ -14,7 +14,7 @@ import { computeLiquidationView } from '../utils/liquidation'
 import type { SuppliedAssetLike } from '../utils/liquidation'
 import type { BorrowedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
-import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle, MODAL_WIDTH } from '../styles/theme'
 import { Modal } from './Modal'
 
 const RATE_MODE = 2n
@@ -219,7 +219,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
     <Modal
       title={asset.symbol}
       onClose={onClose}
-      maxWidth="440px"
+      maxWidth={MODAL_WIDTH.form}
       dismissable={!isProcessing}
       // In the shell's footer, not trailing the body — see WithdrawModal.
       footer={

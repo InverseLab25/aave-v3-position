@@ -14,7 +14,7 @@ import type { AvailableReserve, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { wethGatewayAbi } from '../config/wethGatewayAbi'
 import { aavePoolAbi } from '../config/aavev3Abi'
-import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle } from '../styles/theme'
+import { T, labelStyle, inputStyle, alertStyle, primaryBtnStyle, MODAL_WIDTH } from '../styles/theme'
 
 interface WithdrawModalProps {
   asset: SuppliedAsset
@@ -129,7 +129,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
     <Modal
       title={`Withdraw ${asset.symbol}`}
       onClose={onClose}
-      maxWidth="440px"
+      maxWidth={MODAL_WIDTH.form}
       dismissable={!isProcessing}
       // In the shell's footer, not trailing the body. Inline it scrolled away with the form and
       // sat at a different inset from every other modal's actions.

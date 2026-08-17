@@ -22,7 +22,7 @@ export interface ModalProps {
   children: ReactNode
   /** Actions. Omitted entirely for a screen that is only read. */
   footer?: ReactNode
-  /** Wider than the 500px default — the asset pickers are tables and need the room. */
+  /** One of {@link MODAL_WIDTH}. Falls back to the theme's own default when omitted. */
   maxWidth?: string
   /**
    * Whether a backdrop click or Escape may dismiss it. Default true.

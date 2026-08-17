@@ -13,7 +13,7 @@ import { simulateAndWrite } from '../utils/contract'
 import { Modal } from './Modal'
 import { TxReport } from './TxReport'
 import { SlippageField } from './leverage/SlippageField'
-import { T } from '../styles/theme'
+import { T, MODAL_WIDTH } from '../styles/theme'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
 import { hideTokens } from '../lib/txOutcome'
 import { useRecordOutcome } from '../hooks/useRecordOutcome'
@@ -395,6 +395,7 @@ export function ClosePositionModal({
     <Modal
       title="Close Borrow Position"
       onClose={onClose}
+      maxWidth={MODAL_WIDTH.confirm}
       // A close in flight owns the screen until its receipt lands. Dismissing it with a stray
       // click outside is how a user loses the only report that their debt was repaid.
       dismissable={!isProcessing}

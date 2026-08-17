@@ -7,7 +7,7 @@ import { SwapExecutor } from './SwapExecutor';
 import { TxOutcomePanel } from './TxOutcome';
 import { readOutcome } from '../lib/txOutcome';
 import { ExplorerLink } from './ExplorerLink';
-import { T } from '../styles/theme';
+import { T, MODAL_WIDTH } from '../styles/theme';
 
 interface ConfirmSwapModalProps {
   quote: QuoteResponse;
@@ -149,7 +149,7 @@ export function ConfirmSwapModal({
         )
       }
       onClose={onClose}
-      maxWidth="420px"
+      maxWidth={MODAL_WIDTH.confirm}
       // A send in flight must not be dismissable by a stray click outside it: losing the report is
       // how a user ends up not knowing whether their money moved.
       dismissable={!sending}

@@ -82,6 +82,22 @@ export const T = {
 // ── Pre-built style objects ────────────────────────────────────────────────
 // Ready-to-spread React style objects for the most common patterns.
 
+/**
+ * Widths, named after what is inside rather than after which screen it is.
+ *
+ * There were five: 420, 440, 500 twice by default, and 600. Two of those were the same amount form
+ * at different widths — the asset pickers open at list width and then render the SAME form the
+ * withdraw modal does, so choosing an asset used to change the size of the form around it.
+ */
+export const MODAL_WIDTH = {
+  /** A single-asset amount form. */
+  form: '440px',
+  /** A transaction confirmation: route, projection, settled report. */
+  confirm: '500px',
+  /** A table of assets to choose between. */
+  list: '600px',
+} as const
+
 /** White modal panel */
 export const modalStyle: React.CSSProperties = {
   background: T.surface,

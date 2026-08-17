@@ -18,7 +18,7 @@ import type { TokenMeta } from '../TxOutcome'
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
 import { SlippageField } from './SlippageField'
-import { T } from '../../styles/theme'
+import { T, MODAL_WIDTH } from '../../styles/theme'
 
 /**
  * Rest between one quote settling and the next being requested — NOT a fixed interval.
@@ -162,6 +162,7 @@ export function ConfirmLeverageModal({
         )
       }
       onClose={onClose}
+      maxWidth={MODAL_WIDTH.confirm}
       // Not while the wallet has it, and not while the receipt is the only record on screen: a
       // stray click outside must not take away the report of a send.
       dismissable={!busy && !done}
