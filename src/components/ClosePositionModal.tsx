@@ -79,13 +79,16 @@ const SAME_ASSET_REPAY_GAS_LIMIT = 300_000n
  */
 const pillButtonStyle = (active: boolean): CSSProperties => ({
   padding: '2px 8px',
-  fontSize: 'var(--text-xs)',
+  fontSize: T.fontSize.xs,
   fontWeight: 700,
   lineHeight: 1.5,
-  color: active ? 'var(--color-primary-text)' : 'var(--color-primary)',
-  background: active ? 'var(--color-primary)' : '#eff6ff',
-  border: '1px solid #bfdbfe',
-  borderRadius: 'var(--radius-sm)',
+  color: active ? T.primaryText : T.primary,
+  // Transparent rather than a hand-picked tint: the two hexes here were a blue wash and a blue
+  // border that exist nowhere in the token set, so they were the only colours on this screen that
+  // could not follow a theme change.
+  background: active ? T.primary : 'transparent',
+  border: `1px solid ${T.border}`,
+  borderRadius: T.radius.sm,
   cursor: 'pointer',
 })
 
@@ -435,18 +438,18 @@ export function ClosePositionModal({
       dismissable={!isProcessing}
     >
         <div>
-          <div className="info-row" style={{ marginBottom: borrowedAsset.priceInUsd != null ? 'var(--space-2)' : 'var(--space-4)' }}>
+          <div className="info-row" style={{ marginBottom: borrowedAsset.priceInUsd != null ? T.space[2] : T.space[4] }}>
             <span className="info-row-label">Debt to Close</span>
-            <span className="info-row-value" style={{ fontSize: 'var(--text-lg)', color: 'var(--color-danger)' }}>
+            <span className="info-row-value" style={{ fontSize: T.fontSize.lg, color: T.danger }}>
               {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}
             </span>
           </div>
           {borrowedAsset.priceInUsd != null && (
-            <div className="info-row" style={{ marginBottom: 'var(--space-4)' }}>
+            <div className="info-row" style={{ marginBottom: T.space[4] }}>
               <span className="info-row-label">{borrowedAsset.symbol} Price</span>
               <span className="info-row-value">
                 ${Number(borrowedAsset.priceInUsd).toLocaleString(undefined, { maximumFractionDigits: 4 })}
-                <span style={{ color: 'var(--color-text-muted)', fontWeight: 400 }}>
+                <span style={{ color: T.textMuted, fontWeight: 400 }}>
                   {' · ≈ $'}
                   {(borrowedAsset.amount * Number(borrowedAsset.priceInUsd)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </span>
@@ -454,8 +457,8 @@ export function ClosePositionModal({
             </div>
           )}
 
-          <div style={{ marginBottom: 'var(--space-5)' }}>
-            <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
+          <div style={{ marginBottom: T.space[5] }}>
+            <label style={{ display: 'block', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[2], fontWeight: 500 }}>
               Select Collateral to Use
             </label>
             <select
@@ -478,8 +481,8 @@ export function ClosePositionModal({
           </div>
 
           {isSameAsset ? (
-            <div style={{ marginBottom: 'var(--space-5)' }}>
-              <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
+            <div style={{ marginBottom: T.space[5] }}>
+              <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[2], fontWeight: 500 }}>
                 <span>Amount to Repay (in {borrowedAsset.symbol})</span>
                 <button
                   className="btn-ghost"
@@ -487,7 +490,7 @@ export function ClosePositionModal({
                     setAmountStr(borrowedAsset.amount.toFixed(borrowedAsset.decimals))
                     setIsMax(true)
                   }}
-                  style={{ fontSize: 'var(--text-xs)', padding: '2px 6px', background: 'var(--color-primary)', color: 'var(--color-primary-text)', borderRadius: 'var(--radius-sm)' }}
+                  style={{ fontSize: T.fontSize.xs, padding: '2px 6px', background: T.primary, color: T.primaryText, borderRadius: T.radius.sm }}
                 >
                   MAX
                 </button>
@@ -505,8 +508,8 @@ export function ClosePositionModal({
             </div>
           ) : (
             <>
-            <div style={{ marginBottom: 'var(--space-5)' }}>
-              <label style={{ display: 'block', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)', marginBottom: 'var(--space-2)', fontWeight: 500 }}>
+            <div style={{ marginBottom: T.space[5] }}>
+              <label style={{ display: 'block', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[2], fontWeight: 500 }}>
                 Collateral to Swap ({selectedCollateral?.symbol})
               </label>
               <div style={{ position: 'relative' }}>
@@ -567,23 +570,23 @@ export function ClosePositionModal({
             </>
           )}
 
-          <div className={isSameAsset || closeAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: 'var(--space-5)' }}>
-            <h4 style={{ margin: '0 0 8px 0', fontSize: 'var(--text-sm)', color: 'inherit' }}>Execution Path</h4>
+          <div className={isSameAsset || closeAvailable ? "alert alert-success" : "alert alert-warning"} style={{ marginBottom: T.space[5] }}>
+            <h4 style={{ margin: '0 0 8px 0', fontSize: T.fontSize.sm, color: 'inherit' }}>Execution Path</h4>
             {isSameAsset ? (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                 <span>✅</span>
-                <span style={{ fontSize: 'var(--text-sm)' }}>Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)</span>
+                <span style={{ fontSize: T.fontSize.sm }}>Native Aave <strong>repayWithATokens</strong> (Zero Fees, 1 Transaction)</span>
               </div>
             ) : closeAvailable ? (
               <div>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                   {isQuoting ? <span>⏳</span> : <span>✅</span>}
-                  <span style={{ fontSize: 'var(--text-sm)' }}>
+                  <span style={{ fontSize: T.fontSize.sm }}>
                     One transaction — Morpho Blue zero-fee flash loan{' '}
                     {preview ? <strong>(via {preview.aggregator})</strong> : isQuoting ? <span style={{ opacity: 0.7 }}>(Finding best route...)</span> : ''}
                   </span>
                 </div>
-                <p style={{ fontSize: 'var(--text-xs)', marginTop: '8px', marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
+                <p style={{ fontSize: T.fontSize.xs, marginTop: '8px', marginBottom: 0, opacity: 0.85, lineHeight: 1.4 }}>
                   {collateralIn === undefined
                     ? `Swaps only enough ${selectedCollateral?.symbol ?? ''} to repay ${borrowedAsset.amount.toFixed(4)} ${borrowedAsset.symbol}.`
                     : `Swaps the ${selectedCollateral?.symbol ?? ''} amount you chose; anything beyond the debt comes back as ${borrowedAsset.symbol}.`}{' '}
@@ -594,7 +597,7 @@ export function ClosePositionModal({
             ) : (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <span>⚠️</span>
-                <span style={{ fontSize: 'var(--text-sm)' }}>One-click close is not available on this network yet.</span>
+                <span style={{ fontSize: T.fontSize.sm }}>One-click close is not available on this network yet.</span>
               </div>
             )}
           </div>
@@ -605,10 +608,10 @@ export function ClosePositionModal({
             successful transaction. Show what actually happened instead.
           */}
           {isComplete && (
-            <div className="alert alert-success" style={{ marginBottom: 'var(--space-5)' }}>
+            <div className="alert alert-success" style={{ marginBottom: T.space[5] }}>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                 <span>✅</span>
-                <span style={{ fontSize: 'var(--text-sm)' }}>
+                <span style={{ fontSize: T.fontSize.sm }}>
                   {isSameAsset
                     ? `Repayment submitted. Your ${borrowedAsset.symbol} position will update once it confirms.`
                     : `Position closed. Your ${borrowedAsset.symbol} debt is repaid and the unswapped ${selectedCollateral?.symbol} stays supplied in Aave.`}
@@ -620,10 +623,10 @@ export function ClosePositionModal({
           {slippageTooTight && !isComplete && (() => {
             const suggestion = suggestWiderSlippage(slippage, SLIPPAGE_PRESETS, SLIPPAGE_SUGGESTION_CAP)
             return (
-              <div className="alert alert-warning" style={{ marginBottom: 'var(--space-5)' }}>
+              <div className="alert alert-warning" style={{ marginBottom: T.space[5] }}>
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                   <span>⚠️</span>
-                  <div style={{ fontSize: 'var(--text-sm)' }}>
+                  <div style={{ fontSize: T.fontSize.sm }}>
                     <strong style={{ display: 'block', marginBottom: '2px' }}>
                       Max slippage is too tight for this route
                     </strong>
@@ -646,10 +649,10 @@ export function ClosePositionModal({
           })()}
 
           {signedUntil !== null && !isComplete && (
-            <div className="alert alert-success" style={{ marginBottom: 'var(--space-5)' }}>
+            <div className="alert alert-success" style={{ marginBottom: T.space[5] }}>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                 <span>🔑</span>
-                <span style={{ fontSize: 'var(--text-sm)' }}>
+                <span style={{ fontSize: T.fontSize.sm }}>
                   Approval signed — valid for{' '}
                   <strong>
                     {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, '0')}
@@ -662,7 +665,7 @@ export function ClosePositionModal({
           )}
 
           {!isSameAsset && closeAvailable && !isComplete && (
-            <div style={{ marginBottom: 'var(--space-5)' }}>
+            <div style={{ marginBottom: T.space[5] }}>
               <div style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 marginTop: T.space[4], marginBottom: T.space[2],
@@ -701,7 +704,7 @@ export function ClosePositionModal({
                   </div>
                   <div className="info-row">
                     <span className="info-row-label">Min debt out (router)</span>
-                    <span className="info-row-value" style={{ color: preview.guaranteed ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                    <span className="info-row-value" style={{ color: preview.guaranteed ? T.success : T.danger }}>
                       {formatAmount(preview.minDebtOut)} {preview.debtSymbol}
                     </span>
                   </div>
@@ -710,14 +713,14 @@ export function ClosePositionModal({
                       <span className="info-row-label" style={{ fontWeight: 600 }}>
                         Sent to your wallet (est.)
                       </span>
-                      <span className="info-row-value" style={{ color: 'var(--color-success)', fontWeight: 600 }}>
+                      <span className="info-row-value" style={{ color: T.success, fontWeight: 600 }}>
                         {formatAmount(preview.debtReturned)} {preview.debtSymbol}
                       </span>
                     </div>
                   )}
                   <div className="info-row">
                     <span className="info-row-label" style={{ fontWeight: 600 }}>Stays supplied in Aave (est.)</span>
-                    <span className="info-row-value" style={{ color: 'var(--color-success)', fontWeight: 600 }}>
+                    <span className="info-row-value" style={{ color: T.success, fontWeight: 600 }}>
                       {formatAmount(preview.collateralKeptSupplied)} {preview.collateralSymbol}
                       {preview.collateralKeptSuppliedUsd != null ? ` (~$${preview.collateralKeptSuppliedUsd.toFixed(2)})` : ''}
                     </span>
@@ -734,7 +737,7 @@ export function ClosePositionModal({
                         style={{
                           color:
                             preview.routeCostPercent > PRICE_IMPACT_HIGH_PERCENT
-                              ? 'var(--color-danger)'
+                              ? T.danger
                               : undefined,
                         }}
                       >
@@ -764,11 +767,11 @@ export function ClosePositionModal({
                     </div>
                   )}
                   {!preview.guaranteed && (
-                    <div style={{ marginTop: '10px', fontSize: 'var(--text-xs)', color: 'var(--color-danger)', lineHeight: 1.4 }}>
+                    <div style={{ marginTop: '10px', fontSize: T.fontSize.xs, color: T.danger, lineHeight: 1.4 }}>
                       ⚠️ At {slippage}% slippage the router only guarantees {formatAmount(preview.minDebtOut)} {preview.debtSymbol}, short of the {formatAmount(preview.debtRequired)} {preview.debtSymbol} needed to cover your {formatAmount(preview.debtRepaid)} {preview.debtSymbol} debt plus the interest accruing before this lands. Closing is blocked so you don't sign for a swap that would revert on-chain — lower the slippage to guarantee it.
                     </div>
                   )}
-                  <p style={{ fontSize: 'var(--text-xs)', marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
+                  <p style={{ fontSize: T.fontSize.xs, marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
                     {collateralIn === undefined
                       ? `Only enough ${preview.collateralSymbol} is swapped for the router's guaranteed output to repay the debt at ${slippage}% slippage; the rest stays supplied in Aave.`
                       : `You chose how much ${preview.collateralSymbol} to swap. The debt is repaid first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
@@ -779,7 +782,7 @@ export function ClosePositionModal({
                 <div className="alert alert-warning" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                     <span>⚠️</span>
-                    <span style={{ fontSize: 'var(--text-sm)' }}>
+                    <span style={{ fontSize: T.fontSize.sm }}>
                       {collateralIn === undefined
                         ? 'Collateral won’t cover the debt — the position is underwater. Try a different collateral.'
                         : 'That much collateral won’t cover the debt. Increase the amount, or clear it to let the swap size itself.'}
@@ -787,7 +790,7 @@ export function ClosePositionModal({
                   </div>
                 </div>
               ) : isQuoting ? (
-                <div style={{ padding: '14px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)' }}>
+                <div style={{ padding: '14px', backgroundColor: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: T.radius.md, fontSize: T.fontSize.sm, color: T.textMuted }}>
                   Calculating your output…
                 </div>
               ) : previewError ? (
@@ -798,7 +801,7 @@ export function ClosePositionModal({
                 <div className="alert alert-warning" style={{ margin: 0 }}>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
                     <span>⚠️</span>
-                    <div style={{ fontSize: 'var(--text-sm)' }}>
+                    <div style={{ fontSize: T.fontSize.sm }}>
                       <strong style={{ display: 'block', marginBottom: '2px' }}>
                         {previewError.kind === 'deployment'
                           ? 'One-click close is unavailable right now'
@@ -818,7 +821,7 @@ export function ClosePositionModal({
                   </div>
                 </div>
               ) : (
-                <div style={{ padding: '14px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', fontSize: 'var(--text-sm)', color: 'var(--color-text-muted)' }}>
+                <div style={{ padding: '14px', backgroundColor: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: T.radius.md, fontSize: T.fontSize.sm, color: T.textMuted }}>
                   No swap route available for this pair right now.
                 </div>
               )}
@@ -826,7 +829,7 @@ export function ClosePositionModal({
           )}
 
           {uiMaxFee && uiMaxPriority && (
-            <div style={{ padding: '12px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)' }}>
+            <div style={{ padding: '12px', backgroundColor: T.surfaceAlt, border: `1px solid ${T.border}`, borderRadius: T.radius.md }}>
               {estimatedFeeUsd > 0 && (
                 <div className="info-row">
                   <span className="info-row-label" style={{ fontWeight: 600 }}>Network Fee (Estimated)</span>
