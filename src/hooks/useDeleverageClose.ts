@@ -237,7 +237,17 @@ export interface CloseResult {
   slippageTooTight?: boolean
 }
 
-export type CloseStep = 'idle' | 'running' | 'done' | 'error'
+/**
+ * Where a close has got to.
+ *
+ * `running` used to cover all of it, which meant the modal could say only "Processing…" for three
+ * distinct waits — two wallet prompts and an on-chain send. A user with a wallet that had not
+ * surfaced its second prompt had no way to tell that from a transaction in flight.
+ *
+ * Named after what the user is being asked for: a withdrawal permit, then the revoke that follows
+ * it at the next nonce, then the transaction itself.
+ */
+export type CloseStep = 'idle' | 'permit' | 'revoke' | 'sending' | 'done' | 'error'
 
 /**
  * The aggregator refused on output. Distinguished from a generic failure because the remedy
@@ -552,7 +562,7 @@ export function useDeleverageClose() {
   const close = useCallback(
     async (input: CloseInput): Promise<CloseResult> => {
       setLogs([])
-      setStep('running')
+      setStep('permit')
       // Belongs to the previous attempt. Leaving it up would caption this one with it.
       setOutcome(null)
 
@@ -599,6 +609,7 @@ export function useDeleverageClose() {
         const deadline = BigInt(Math.floor(Date.now() / 1000) + PERMIT_TTL_S)
         const domain = { aToken: p.aToken, aTokenName: p.aTokenName, chainId, owner: address, spender: p.strategies }
 
+        setStep('permit')
         log('Requesting permit signature (1 of 2)…')
         const grant = parseSignature(
           await walletClient.signTypedData({
@@ -611,6 +622,7 @@ export function useDeleverageClose() {
         // ever apply after the grant, and it is signed here so the contract never has to trust
         // a value the user did not authorise. Same deadline: both are consumed in the same
         // transaction, so a separate expiry would only let one half outlive the other.
+        setStep('revoke')
         log('Requesting revoke signature (2 of 2)…')
         const revoke = parseSignature(
           await walletClient.signTypedData({
@@ -936,6 +948,7 @@ export function useDeleverageClose() {
         }
 
         log('Submitting close transaction…')
+        setStep('sending')
         const hash = await walletClient.writeContract(gas ? { ...request, gas } : request)
         log(`Tx submitted: ${hash}`)
 

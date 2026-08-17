@@ -14,6 +14,7 @@ import { simulateAndWrite } from '../utils/contract'
 import { ExplorerLink } from './ExplorerLink'
 import { Modal } from './Modal'
 import { TxOutcomePanel } from './TxOutcome'
+import { TxSteps } from './TxSteps'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
 import { hideTokens } from '../lib/txOutcome'
 import { useRecordOutcome } from '../hooks/useRecordOutcome'
@@ -389,7 +390,12 @@ export function ClosePositionModal({
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.
   const shownLogs = isSameAsset ? logs : closeLogs
-  const isProcessing = isSameAsset ? step === 1 : closeStep === 'running'
+  /** Only the latest line is shown; the rest was a record nobody read. */
+  const lastLog = shownLogs[shownLogs.length - 1] ?? ''
+  /** Any of the three waits: either wallet prompt, or the transaction itself. */
+  const isProcessing = isSameAsset
+    ? step === 1
+    : closeStep === 'permit' || closeStep === 'revoke' || closeStep === 'sending'
 
   // Re-quote on a cadence, because a close plan cannot be carried forward — the router freezes
   // its output floor into the calldata at build time, so a preview left sitting stops
@@ -857,11 +863,41 @@ export function ClosePositionModal({
             </div>
           )}
 
-          {shownLogs.length > 0 && (
-            <div style={{ marginTop: 'var(--space-5)', padding: '12px', backgroundColor: 'var(--color-surface-alt)', border: '1px solid var(--color-border)', color: 'var(--color-text-muted)', borderRadius: 'var(--radius-md)', fontSize: '12px', fontFamily: 'var(--font-mono)', maxHeight: '150px', overflowY: 'auto' }}>
-              {shownLogs.map((l, i) => (
-                <div key={i} style={{ marginBottom: '4px' }}>{l}</div>
-              ))}
+          {/* What the user is being asked for, rather than a scrolling record of it. The close
+              needs two signatures — a withdrawal permit, then the revoke that follows it at the
+              next nonce — and then the transaction. A single "Processing…" could not tell a
+              wallet that had not surfaced its second prompt from a send already in flight. */}
+          {!isSameAsset && (
+            <TxSteps
+              steps={[
+                {
+                  label: 'withdraw',
+                  done: signedUntil !== null || closeStep === 'sending' || isComplete,
+                  active: closeStep === 'permit',
+                },
+                {
+                  label: 'revoke',
+                  done: signedUntil !== null || closeStep === 'sending' || isComplete,
+                  active: closeStep === 'revoke',
+                },
+                { label: 'swap', done: isComplete, active: closeStep === 'sending' },
+              ]}
+            />
+          )}
+
+          {/* The last thing that happened, not all of it. The full run used to render as a
+              scrolling monospace list, which reads as debug output in the middle of a transaction
+              screen — and the settled panel below already reports what actually happened. */}
+          {lastLog && (
+            <div
+              className={closeStep === 'error' ? 'alert alert-warning' : undefined}
+              style={{
+                marginTop: 'var(--space-4)',
+                fontSize: 'var(--text-sm)',
+                color: closeStep === 'error' ? undefined : 'var(--color-text-muted)',
+              }}
+            >
+              {lastLog}
             </div>
           )}
 

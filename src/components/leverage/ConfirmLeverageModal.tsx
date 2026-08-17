@@ -15,6 +15,7 @@ import { PRICE_IMPACT_HIGH_PERCENT } from '../../lib/swapRoute'
 import { ExplorerLink } from '../ExplorerLink'
 import { Modal } from '../Modal'
 import { TxOutcomePanel, type TokenMeta } from '../TxOutcome'
+import { TxSteps } from '../TxSteps'
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
 import { SlippageField } from './SlippageField'
@@ -330,12 +331,13 @@ export function ConfirmLeverageModal({
 
             {/* The first two are already behind the user by the time this renders — shown ticked
                 rather than hidden, so it is clear what has been spent if they cancel here. */}
-            <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.textMuted }}>
-              <span style={{ color: T.text }}>✓ approved · ✓ signed · </span>
-              <span style={{ fontWeight: busy || done ? 700 : 400, color: busy || done ? T.text : T.textMuted }}>
-                send
-              </span>
-            </div>
+            <TxSteps
+              steps={[
+                { label: 'approved', done: true },
+                { label: 'signed', done: true },
+                { label: 'send', done, active: busy || done },
+              ]}
+            />
             </>
           )}
 

@@ -1,3 +1,4 @@
+import { TxSteps } from './TxSteps';
 import { useEffect, useState } from 'react';
 import { extractRevertMessage } from '../utils/errors'
 import { useConnection, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
@@ -223,15 +224,12 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
     return (
       <div style={{ marginTop: '20px' }}>
         {!isFromNative && (
-          <div style={{ marginTop: '16px', fontSize: '14px', color: '#6b7280', marginBottom: '16px' }}>
-            <span style={{ color: hasApproved ? '#111' : '#6b7280', fontWeight: hasApproved ? 700 : 400 }}>
-              {hasApproved ? '✓ approved' : 'approve'}
-            </span>
-            {' · '}
-            <span style={{ color: isSending ? '#111' : '#6b7280', fontWeight: isSending ? 700 : 400 }}>
-              send
-            </span>
-          </div>
+          <TxSteps
+            steps={[
+              { label: 'approved', done: hasApproved },
+              { label: 'send', done: false, active: isSending },
+            ]}
+          />
         )}
 
         {step === 'error' && (

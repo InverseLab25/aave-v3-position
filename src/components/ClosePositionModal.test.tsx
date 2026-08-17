@@ -350,3 +350,40 @@ it('forgets what the last close settled at when the collateral changes', () => {
 
   expect(clearOutcome).toHaveBeenCalled()
 })
+
+describe('the close reports which of its three waits it is on', () => {
+  /** The hook mock, with a step and a log line. */
+  const atStep = (step: string, logs: string[] = []) =>
+    mocks.useDeleverageClose.mockReturnValue({
+      preview: previewFn, close: closeFn, logs, step, clearSignatures, clearOutcome, warmup,
+    })
+
+  it('names the two signatures and the swap, rather than one "Processing"', async () => {
+    // A close needs a withdrawal permit, then the revoke that follows it at the next nonce, then
+    // the transaction. One combined step could not tell a wallet that had not surfaced its second
+    // prompt from a send already in flight.
+    atStep('permit')
+    mount()
+
+    const progress = await screen.findByRole('status')
+    expect(progress.textContent).toBe('withdraw · revoke · swap')
+  })
+
+  it('ticks the signatures once the transaction is going out', async () => {
+    atStep('sending')
+    mount()
+
+    const progress = await screen.findByRole('status')
+    expect(progress.textContent).toBe('✓ withdraw · ✓ revoke · swap')
+  })
+
+  it('shows the latest line rather than the whole run', async () => {
+    // The full log used to render as a scrolling monospace list, which reads as debug output in
+    // the middle of a transaction screen.
+    atStep('revoke', ['Requesting permit signature (1 of 2)…', 'Requesting revoke signature (2 of 2)…'])
+    mount()
+
+    expect(await screen.findByText('Requesting revoke signature (2 of 2)…')).toBeTruthy()
+    expect(screen.queryByText('Requesting permit signature (1 of 2)…')).toBeNull()
+  })
+})
