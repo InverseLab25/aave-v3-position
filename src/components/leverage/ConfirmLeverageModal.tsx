@@ -177,152 +177,161 @@ export function ConfirmLeverageModal({
         </div>
 
         <div className="modal-body">
-          <div className="info-row">
-            <span className="info-row-label">You supply</span>
-            <span className="info-row-value">{supplyLine}</span>
-          </div>
-          {marginLine && (
-            <div className="info-row">
-              <span className="info-row-label">From your wallet</span>
-              <span className="info-row-value">{marginLine}</span>
-            </div>
-          )}
-          <div className="info-row">
-            <span className="info-row-label">You borrow</span>
-            <span className="info-row-value" style={{ color: T.danger }}>{borrowLine}</span>
-          </div>
-          {projection && (
-            <div className="info-row">
-              <span className="info-row-label">Health factor after</span>
-              <span className="info-row-value">
-                {formatHealthFactor(projection.expectedHealthFactorBps)}
-              </span>
-            </div>
-          )}
-
-          <div style={{
-            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-            marginTop: T.space[4], marginBottom: T.space[2],
-          }}>
-            <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Route</h4>
-            <button
-              onClick={onHardRefresh}
-              disabled={isQuoting || busy}
-              className="btn-ghost"
-              title="Re-price this route now"
-              style={{
-                fontSize: T.fontSize.xs, padding: '3px 8px',
-                cursor: isQuoting || busy ? 'default' : 'pointer', opacity: isQuoting || busy ? 0.6 : 1,
-              }}
-            >
-              ↻ {isQuoting ? 'Pricing…' : 'Refresh'}
-            </button>
-          </div>
-
-          {preview ? (
+          {/* Everything below belongs to DECIDING, and a settled transaction has decided.
+              Leaving it up left a forecast contradicting the receipt beneath it, a tolerance for a
+              swap already filled, a step tracker for steps already taken — and, worst of all, a
+              route that could no longer be priced rendering "Could not price this position" over a
+              swap that had just succeeded. */}
+          {!done && (
             <>
+            <div className="info-row">
+              <span className="info-row-label">You supply</span>
+              <span className="info-row-value">{supplyLine}</span>
+            </div>
+            {marginLine && (
               <div className="info-row">
-                <span className="info-row-label">Via</span>
-                <span className="info-row-value">{preview.aggregator}</span>
-              </div>
-              <RouteDetails
-                expectedOut={preview.expectedOut}
-                minOut={preview.minOut}
-                swapIn={preview.swapIn}
-                collateralSymbol={collateralSymbol}
-                debtSymbol={debtSymbol}
-                collateralDecimals={collateralDecimals}
-                debtDecimals={debtDecimals}
-                slippageBps={slippageBps}
-              />
-              {impact != null && (
-                <div className="info-row">
-                  <span className="info-row-label">Price impact &amp; fees</span>
-                  <span
-                    className="info-row-value"
-                    style={{ color: impact > PRICE_IMPACT_HIGH_PERCENT ? T.danger : undefined }}
-                  >
-                    {impact < 0 ? '+' : '−'}{Math.abs(impact).toFixed(3)}%
-                  </span>
-                </div>
-              )}
-            </>
-          ) : isQuoting ? (
-            <div style={{ fontSize: T.fontSize.sm, color: T.textMuted }}>Pricing the route…</div>
-          ) : (
-            <div className="alert alert-warning" style={{ margin: 0 }}>
-              <span style={{ fontSize: T.fontSize.sm }}>
-                {previewMessage ?? 'No route available for this pair right now.'}
-              </span>
-            </div>
-          )}
-
-          {/* The pinned borrow is what the held signature authorises, so a route that has moved
-              past it cannot be fixed by waiting — the signature has to go. */}
-          {showResign && (
-            <div className="alert alert-warning" style={{ marginTop: T.space[4] }}>
-              <div style={{ fontSize: T.fontSize.sm }}>
-                <strong style={{ display: 'block', marginBottom: '2px' }}>
-                  The route moved past your signed size
-                </strong>
-                Nothing was submitted. Re-signing sizes the borrow to the current route.
-                <button onClick={onResign} className="btn-ghost" style={{ marginLeft: T.space[2] }}>
-                  Re-sign at the new size
-                </button>
-              </div>
-            </div>
-          )}
-
-          {reusableSignature && !done && (
-            <div className="alert alert-success" style={{ marginTop: T.space[4] }}>
-              <span style={{ fontSize: T.fontSize.sm }}>
-                🔑 Delegation already signed for{' '}
-                <strong>{formatUnits(reusableSignature.value, debtDecimals)} {debtSymbol}</strong>
-                {' '}— valid for{' '}
-                <strong>
-                  {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, '0')}
-                </strong>
-                . Confirming submits with no further wallet prompt.
-              </span>
-            </div>
-          )}
-
-          {priceImpactBlocked && (
-            <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.danger }}>
-              This route would give up {impact?.toFixed(2)}% of the position to price impact — too
-              much to submit. Wait for deeper liquidity or supply less.
-            </div>
-          )}
-
-          {/* Editable here, not only on the panel behind it: this is where a user finds out the
-              tolerance was too tight, and sending them back to the form to change it loses the
-              route they were looking at. */}
-          <div style={{ marginTop: T.space[4] }}>
-            <SlippageField
-              percent={slippagePercent}
-              onChange={onSlippageChange}
-              ariaLabel="Confirm max slippage percent"
-              disabled={busy || done}
-            />
-            {/* The borrow stays pinned to what was signed, so re-pricing is free. The one case it
-                cannot absorb is a tolerance the signed borrow no longer funds — that surfaces as
-                the re-sign prompt above, and saying so here stops it reading as random. */}
-            {reusableSignature && !done && (
-              <div style={{ marginTop: T.space[2], fontSize: T.fontSize.xs, color: T.textMuted }}>
-                Re-pricing keeps the signature you already gave. Only a tolerance the signed borrow
-                cannot cover asks you to re-sign.
+                <span className="info-row-label">From your wallet</span>
+                <span className="info-row-value">{marginLine}</span>
               </div>
             )}
-          </div>
+            <div className="info-row">
+              <span className="info-row-label">You borrow</span>
+              <span className="info-row-value" style={{ color: T.danger }}>{borrowLine}</span>
+            </div>
+            {projection && (
+              <div className="info-row">
+                <span className="info-row-label">Health factor after</span>
+                <span className="info-row-value">
+                  {formatHealthFactor(projection.expectedHealthFactorBps)}
+                </span>
+              </div>
+            )}
 
-          {/* The first two are already behind the user by the time this renders — shown ticked
-              rather than hidden, so it is clear what has been spent if they cancel here. */}
-          <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.textMuted }}>
-            <span style={{ color: T.text }}>✓ approved · ✓ signed · </span>
-            <span style={{ fontWeight: busy || done ? 700 : 400, color: busy || done ? T.text : T.textMuted }}>
-              send
-            </span>
-          </div>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              marginTop: T.space[4], marginBottom: T.space[2],
+            }}>
+              <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Route</h4>
+              <button
+                onClick={onHardRefresh}
+                disabled={isQuoting || busy}
+                className="btn-ghost"
+                title="Re-price this route now"
+                style={{
+                  fontSize: T.fontSize.xs, padding: '3px 8px',
+                  cursor: isQuoting || busy ? 'default' : 'pointer', opacity: isQuoting || busy ? 0.6 : 1,
+                }}
+              >
+                ↻ {isQuoting ? 'Pricing…' : 'Refresh'}
+              </button>
+            </div>
+
+            {preview ? (
+              <>
+                <div className="info-row">
+                  <span className="info-row-label">Via</span>
+                  <span className="info-row-value">{preview.aggregator}</span>
+                </div>
+                <RouteDetails
+                  expectedOut={preview.expectedOut}
+                  minOut={preview.minOut}
+                  swapIn={preview.swapIn}
+                  collateralSymbol={collateralSymbol}
+                  debtSymbol={debtSymbol}
+                  collateralDecimals={collateralDecimals}
+                  debtDecimals={debtDecimals}
+                  slippageBps={slippageBps}
+                />
+                {impact != null && (
+                  <div className="info-row">
+                    <span className="info-row-label">Price impact &amp; fees</span>
+                    <span
+                      className="info-row-value"
+                      style={{ color: impact > PRICE_IMPACT_HIGH_PERCENT ? T.danger : undefined }}
+                    >
+                      {impact < 0 ? '+' : '−'}{Math.abs(impact).toFixed(3)}%
+                    </span>
+                  </div>
+                )}
+              </>
+            ) : isQuoting ? (
+              <div style={{ fontSize: T.fontSize.sm, color: T.textMuted }}>Pricing the route…</div>
+            ) : (
+              <div className="alert alert-warning" style={{ margin: 0 }}>
+                <span style={{ fontSize: T.fontSize.sm }}>
+                  {previewMessage ?? 'No route available for this pair right now.'}
+                </span>
+              </div>
+            )}
+
+            {/* The pinned borrow is what the held signature authorises, so a route that has moved
+                past it cannot be fixed by waiting — the signature has to go. */}
+            {showResign && (
+              <div className="alert alert-warning" style={{ marginTop: T.space[4] }}>
+                <div style={{ fontSize: T.fontSize.sm }}>
+                  <strong style={{ display: 'block', marginBottom: '2px' }}>
+                    The route moved past your signed size
+                  </strong>
+                  Nothing was submitted. Re-signing sizes the borrow to the current route.
+                  <button onClick={onResign} className="btn-ghost" style={{ marginLeft: T.space[2] }}>
+                    Re-sign at the new size
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {reusableSignature && !done && (
+              <div className="alert alert-success" style={{ marginTop: T.space[4] }}>
+                <span style={{ fontSize: T.fontSize.sm }}>
+                  🔑 Delegation already signed for{' '}
+                  <strong>{formatUnits(reusableSignature.value, debtDecimals)} {debtSymbol}</strong>
+                  {' '}— valid for{' '}
+                  <strong>
+                    {Math.floor(secondsLeft / 60)}:{String(secondsLeft % 60).padStart(2, '0')}
+                  </strong>
+                  . Confirming submits with no further wallet prompt.
+                </span>
+              </div>
+            )}
+
+            {priceImpactBlocked && (
+              <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.danger }}>
+                This route would give up {impact?.toFixed(2)}% of the position to price impact — too
+                much to submit. Wait for deeper liquidity or supply less.
+              </div>
+            )}
+
+            {/* Editable here, not only on the panel behind it: this is where a user finds out the
+                tolerance was too tight, and sending them back to the form to change it loses the
+                route they were looking at. */}
+            <div style={{ marginTop: T.space[4] }}>
+              <SlippageField
+                percent={slippagePercent}
+                onChange={onSlippageChange}
+                ariaLabel="Confirm max slippage percent"
+                disabled={busy || done}
+              />
+              {/* The borrow stays pinned to what was signed, so re-pricing is free. The one case it
+                  cannot absorb is a tolerance the signed borrow no longer funds — that surfaces as
+                  the re-sign prompt above, and saying so here stops it reading as random. */}
+              {reusableSignature && !done && (
+                <div style={{ marginTop: T.space[2], fontSize: T.fontSize.xs, color: T.textMuted }}>
+                  Re-pricing keeps the signature you already gave. Only a tolerance the signed borrow
+                  cannot cover asks you to re-sign.
+                </div>
+              )}
+            </div>
+
+            {/* The first two are already behind the user by the time this renders — shown ticked
+                rather than hidden, so it is clear what has been spent if they cancel here. */}
+            <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm, color: T.textMuted }}>
+              <span style={{ color: T.text }}>✓ approved · ✓ signed · </span>
+              <span style={{ fontWeight: busy || done ? 700 : 400, color: busy || done ? T.text : T.textMuted }}>
+                send
+              </span>
+            </div>
+            </>
+          )}
 
           {execError && (
             <div style={{ marginTop: T.space[3], fontSize: T.fontSize.sm, color: T.danger }}>

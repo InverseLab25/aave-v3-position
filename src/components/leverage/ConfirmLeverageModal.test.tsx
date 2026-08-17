@@ -182,6 +182,40 @@ it('keeps its own title until the swap has actually landed', () => {
   expect(screen.queryByText(/Swap complete/i)).toBeNull()
 })
 
+it('collapses to a receipt once the swap has landed', () => {
+  // A settled modal is a report. Everything that belonged to DECIDING — the forecast, the route,
+  // the tolerance, the step tracker — is answering a question that has already been answered, and
+  // the settled panel below states what actually happened.
+  setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })
+
+  expect(screen.queryByRole('button', { name: /Refresh/ })).toBeNull()
+  expect(screen.queryByText('Route')).toBeNull()
+  expect(screen.queryByText(/MAX SLIPPAGE/i)).toBeNull()
+  expect(screen.queryByText(/approved/)).toBeNull()
+  expect(screen.queryByText('You supply')).toBeNull()
+  expect(screen.queryByText('Health factor after')).toBeNull()
+})
+
+it('never warns about pricing a position it has already opened', () => {
+  // The worst of them: a route that cannot be re-priced after the fact rendered "Could not price
+  // this position — try a smaller supply" over a swap that had just succeeded.
+  setup({
+    step: 'done',
+    txHash: `0x${'11'.repeat(32)}`,
+    preview: null,
+    previewMessage: 'Could not price this position — try a smaller supply',
+  })
+
+  expect(screen.queryByText(/Could not price/)).toBeNull()
+})
+
+it('still reports what the transaction settled at', () => {
+  setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })
+
+  expect(screen.getByText(/Swap complete/i)).toBeDefined()
+  expect(screen.getByRole('button', { name: 'Done' })).toBeDefined()
+})
+
 it('can be dismissed from the header, not only from the footer', () => {
   // A settled modal is a report, and a report needs an exit that is not labelled like an action.
   const props = setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })
