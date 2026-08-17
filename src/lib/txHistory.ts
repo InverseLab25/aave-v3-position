@@ -14,26 +14,6 @@ import type { DelegationStorage } from './delegationCache'
 
 export const HISTORY_KEY = 'defi-route.txhistory.v1'
 
-/**
- * How many transactions to keep PER WALLET AND CHAIN.
- *
- * Enough to cover any session a user would scroll back through, and small enough that the whole
- * list is parsed in one go without noticing. Storage is a few kB per fifty entries.
- *
- * Scoped rather than global because the sync backfills every configured chain: under one shared
- * cap, a wallet with fifty Arbitrum opens would evict its entire Base history to fit them, and the
- * eviction would look exactly like a chain whose history had never been recorded.
- */
-export const HISTORY_LIMIT = 50
-
-/**
- * How many rows the store may hold across every wallet and chain together.
- *
- * The per-scope cap alone bounds nothing: scopes are created by connecting another wallet, and a
- * browser that has seen twenty of them would carry a thousand rows. This is the quota backstop.
- */
-export const HISTORY_TOTAL_LIMIT = 500
-
 /** The swap leg, with the metadata needed to format it long after the token list has moved on. */
 export interface HistorySwap {
   srcToken: Address
@@ -232,23 +212,19 @@ function byTimeDescending(a: TxHistoryEntry, b: TxHistoryEntry): number {
   return a.hash.toLowerCase() < b.hash.toLowerCase() ? -1 : 1
 }
 
-const scopeOf = (e: TxHistoryEntry) => `${e.wallet.toLowerCase()}:${e.chainId}`
-
-/** Sorted, then trimmed to {@link HISTORY_LIMIT} per scope and {@link HISTORY_TOTAL_LIMIT} overall. */
-function sortAndCap(entries: readonly TxHistoryEntry[]): TxHistoryEntry[] {
-  const sorted = [...entries].sort(byTimeDescending)
-  const perScope = new Map<string, number>()
-  const kept: TxHistoryEntry[] = []
-
-  for (const entry of sorted) {
-    if (kept.length >= HISTORY_TOTAL_LIMIT) break
-    const scope = scopeOf(entry)
-    const seen = perScope.get(scope) ?? 0
-    if (seen >= HISTORY_LIMIT) continue
-    perScope.set(scope, seen + 1)
-    kept.push(entry)
-  }
-  return kept
+/**
+ * Newest first, and nothing dropped.
+ *
+ * There were two caps here once — fifty per wallet-and-chain, five hundred overall — both there to
+ * bound `localStorage`. Neither survives, because `historyBasis` REPLAYS these rows to price a
+ * position: evicting the oldest open does not hide an old line, it silently changes an average
+ * entry price, and the number that replaces it looks every bit as plausible.
+ *
+ * What makes that affordable is that a row is a distilled `Swapped` event — two tokens, their
+ * decimals and two amounts — rather than the receipt it came from.
+ */
+function sortAll(entries: readonly TxHistoryEntry[]): TxHistoryEntry[] {
+  return [...entries].sort(byTimeDescending)
 }
 
 function readAll(storage: DelegationStorage | null): TxHistoryEntry[] {
@@ -332,7 +308,7 @@ function mergeSwap(authoritative: HistorySwap | null, other: HistorySwap | null)
 }
 
 function write(storage: DelegationStorage, entries: readonly TxHistoryEntry[]): void {
-  storage.setItem(HISTORY_KEY, JSON.stringify(sortAndCap(entries).map(encode)))
+  storage.setItem(HISTORY_KEY, JSON.stringify(sortAll(entries).map(encode)))
 }
 
 /**
@@ -414,7 +390,7 @@ export function mergeHistory(storage: DelegationStorage | null, input: MergeHist
 
     // Compared rather than assumed: a sync that finds no news runs on every connect, and the
     // panel re-renders on every announcement.
-    const after = JSON.stringify(sortAndCap(next).map(encode))
+    const after = JSON.stringify(sortAll(next).map(encode))
     if (after === before) return
 
     storage.setItem(HISTORY_KEY, after)

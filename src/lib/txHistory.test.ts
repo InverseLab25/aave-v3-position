@@ -4,8 +4,6 @@ import {
   HISTORY_KEY,
   historyVersion,
   subscribeHistory,
-  HISTORY_LIMIT,
-  HISTORY_TOTAL_LIMIT,
   appendHistory,
   clearHistory,
   loadHistory,
@@ -104,14 +102,17 @@ describe('txHistory', () => {
     expect(loadHistory(storage)).toHaveLength(2)
   })
 
-  it('drops the oldest once it is full, so it cannot grow without bound', () => {
+  it('keeps the oldest row however many arrive after it', () => {
+    // Nothing is evicted. `historyBasis` replays these rows to price a position, so dropping the
+    // first open would not hide an old line — it would change an average entry price to one that
+    // looks just as plausible.
     const storage = memoryStorage()
-    for (let i = 0; i <= HISTORY_LIMIT; i++) appendHistory(storage, entry({ hash: hash(i), at: i }))
+    for (let i = 0; i <= 200; i++) appendHistory(storage, entry({ hash: hash(i), at: i }))
 
     const kept = loadHistory(storage)
 
-    expect(kept).toHaveLength(HISTORY_LIMIT)
-    expect(kept.map((e) => e.hash)).not.toContain(hash(0))
+    expect(kept).toHaveLength(201)
+    expect(kept.map((e) => e.hash)).toContain(hash(0))
   })
 
   it('returns only the wallet and chain asked for', () => {
@@ -258,35 +259,17 @@ describe('txHistory', () => {
     expect(loadHistory(storage).map((e) => e.hash)).toEqual([hash(1), hash(3), hash(2)])
   })
 
-  it('caps per wallet and chain rather than across all of them', () => {
-    // A global cap means a backfill on one chain silently evicts another chain's history.
+  it('never lets one chain evict another', () => {
     const storage = memoryStorage()
-    for (let i = 0; i < HISTORY_LIMIT; i++) {
+    for (let i = 0; i < 60; i++) {
       appendHistory(storage, entry({ hash: hash(i), chainId: 8453, at: i }))
     }
     appendHistory(storage, entry({ hash: hash(999), chainId: 42161, at: 1 }))
 
-    expect(loadHistory(storage, { chainId: 8453 })).toHaveLength(HISTORY_LIMIT)
+    expect(loadHistory(storage, { chainId: 8453 })).toHaveLength(60)
     expect(loadHistory(storage, { chainId: 42161 })).toHaveLength(1)
   })
 
-  it('bounds the whole store however many scopes there are', () => {
-    const storage = memoryStorage()
-    const scopes = Math.ceil(HISTORY_TOTAL_LIMIT / HISTORY_LIMIT) + 2
-
-    for (let c = 0; c < scopes; c++) {
-      mergeHistory(storage, {
-        wallet: WALLET,
-        chainId: c + 1,
-        range: null,
-        entries: Array.from({ length: HISTORY_LIMIT }, (_, i) =>
-          entry({ hash: hash(c * 1000 + i), chainId: c + 1, at: c * 1000 + i }),
-        ),
-      })
-    }
-
-    expect(loadHistory(storage).length).toBeLessThanOrEqual(HISTORY_TOTAL_LIMIT)
-  })
 })
 
 describe('mergeHistory', () => {

@@ -13,9 +13,10 @@ const mocks = vi.hoisted(() => ({
   useConfig: vi.fn(),
   useReadContracts: vi.fn(),
   watchEvent: vi.fn(),
-  syncChain: vi.fn(),
+  syncChainFromHashes: vi.fn(),
+  fetchUserTxHashes: vi.fn(),
   syncableChains: vi.fn(),
-  clearAllCursors: vi.fn(),
+  clearScreened: vi.fn(),
 }))
 
 vi.mock('wagmi', () => ({
@@ -26,20 +27,23 @@ vi.mock('wagmi', () => ({
 vi.mock('viem/actions', () => ({
   watchEvent: mocks.watchEvent,
   getBlock: vi.fn(),
-  getBlockNumber: vi.fn(),
   getTransactionReceipt: vi.fn(),
 }))
-vi.mock('../lib/historySync', async (orig) => ({
+vi.mock('../lib/hashSync', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  syncChain: mocks.syncChain,
+  syncChainFromHashes: mocks.syncChainFromHashes,
+}))
+vi.mock('../lib/aaveTxHashes', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  fetchUserTxHashes: mocks.fetchUserTxHashes,
 }))
 vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   syncableChains: mocks.syncableChains,
 }))
-vi.mock('../lib/syncCursor', async (orig) => ({
+vi.mock('../lib/screenCache', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  clearAllCursors: mocks.clearAllCursors,
+  clearScreened: mocks.clearScreened,
 }))
 
 import { useHistorySync } from './useHistorySync'
@@ -67,7 +71,8 @@ beforeEach(() => {
   mocks.useConnection.mockReturnValue({ address: WALLET })
   mocks.useConfig.mockReturnValue({ chains: [], getClient: () => ({}) })
   mocks.watchEvent.mockReturnValue(() => {})
-  mocks.syncChain.mockResolvedValue({ scanned: { from: 1n, to: 2n }, found: 0 })
+  mocks.syncChainFromHashes.mockResolvedValue({ examined: 0, found: 0 })
+  mocks.fetchUserTxHashes.mockResolvedValue([])
   mocks.syncableChains.mockReturnValue([
     { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
   ])
@@ -84,8 +89,8 @@ describe('useHistorySync', () => {
 
     renderHook(() => useHistorySync())
 
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalledTimes(2))
-    expect(mocks.syncChain.mock.calls.map((c) => c[0].chainId).sort((a, b) => a - b)).toEqual([
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(2))
+    expect(mocks.syncChainFromHashes.mock.calls.map((c) => c[0].chainId).sort((a, b) => a - b)).toEqual([
       8453, 42161,
     ])
   })
@@ -96,7 +101,7 @@ describe('useHistorySync', () => {
     renderHook(() => useHistorySync())
 
     await waitFor(() => expect(mocks.watchEvent).not.toHaveBeenCalled())
-    expect(mocks.syncChain).not.toHaveBeenCalled()
+    expect(mocks.syncChainFromHashes).not.toHaveBeenCalled()
   })
 
   it('waits for the metadata that makes a recovered row readable', async () => {
@@ -107,21 +112,21 @@ describe('useHistorySync', () => {
     renderHook(() => useHistorySync())
 
     await waitFor(() => expect(mocks.watchEvent).toHaveBeenCalled())
-    expect(mocks.syncChain).not.toHaveBeenCalled()
+    expect(mocks.syncChainFromHashes).not.toHaveBeenCalled()
   })
 
   it('hands over the token names and the position tokens to hide', async () => {
     renderHook(() => useHistorySync())
 
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalled())
-    const input = mocks.syncChain.mock.calls[0][0]
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalled())
+    const input = mocks.syncChainFromHashes.mock.calls[0][0]
     expect(input.tokens[WETH.toLowerCase()]).toEqual({ symbol: 'WETH', decimals: 18 })
     expect(input.hidden).toEqual([A_WETH, D_WETH])
   })
 
   it('reports a failure rather than throwing it at the screen', async () => {
     // A rate-limited RPC must not take a position panel down with it.
-    mocks.syncChain.mockRejectedValue(new Error('rate limited'))
+    mocks.syncChainFromHashes.mockRejectedValue(new Error('rate limited'))
 
     const { result } = renderHook(() => useHistorySync())
 
@@ -149,11 +154,11 @@ describe('useHistorySync', () => {
   it('re-reads the chain when a watched event lands', async () => {
     // The part standing in for a backend: a position opened on another device shows up here.
     renderHook(() => useHistorySync())
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
 
     mocks.watchEvent.mock.calls[0][1].onLogs([{}])
 
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(2))
   })
 
   it('lets go of its subscriptions when it goes away', async () => {
@@ -167,14 +172,16 @@ describe('useHistorySync', () => {
     expect(unwatch).toHaveBeenCalledTimes(2)
   })
 
-  it('forgets every cursor when asked to resync, and reads again', async () => {
+  it('forgets every verdict when asked to resync, and reads again', async () => {
     const { result } = renderHook(() => useHistorySync())
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
 
     result.current.resync()
 
-    await waitFor(() => expect(mocks.syncChain).toHaveBeenCalledTimes(2))
-    expect(mocks.clearAllCursors).toHaveBeenCalled()
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(2))
+    // There is no cursor to rewind any more. What stands between a user and a fresh read of the
+    // chain is the screen cache, so that is what Resync clears.
+    expect(mocks.clearScreened).toHaveBeenCalled()
   })
 
   it('survives a chain it cannot get a client for', async () => {

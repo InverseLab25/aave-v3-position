@@ -11,27 +11,21 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useConfig, useConnection, useReadContracts } from 'wagmi'
-import { getBlock, getBlockNumber, getTransactionReceipt, watchEvent } from 'viem/actions'
+import { getBlock, getTransactionReceipt, watchEvent } from 'viem/actions'
 import {
-  encodeEventTopics,
-  numberToHex,
-  pad,
-  parseEventLogs,
   type Address,
   type Client,
-  type Hex,
 } from 'viem'
 import { getChainConfig, syncableChains } from '../config/chains'
 import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { browserStorage } from '../lib/delegationCache'
-import { syncChain, type ChainSyncClient } from '../lib/historySync'
+import { syncChainFromHashes, type HashSyncClient } from '../lib/hashSync'
+import { fetchUserTxHashes } from '../lib/aaveTxHashes'
 import {
   POSITION_CLOSED,
-  POSITION_EVENTS,
   POSITION_OPENED,
-  type RawPositionLog,
 } from '../lib/strategiesLogs'
-import { clearAllCursors } from '../lib/syncCursor'
+import { clearScreened } from '../lib/screenCache'
 import { buildTokenMap, positionTokens, type TokenMeta } from '../lib/tokenMeta'
 
 /**
@@ -82,49 +76,18 @@ interface ChainMeta {
  * than a second one pointed at the same RPC. It carries no public actions of its own, hence the
  * standalone action imports.
  */
-function syncClient(client: Client): ChainSyncClient {
+function syncClient(client: Client): HashSyncClient {
   return {
-    getBlockNumber: () => getBlockNumber(client),
-    getLogs: async ({ address, wallet, fromBlock, toBlock }) => {
-      /**
-       * Both events in one request, narrowed to one user by the node.
-       *
-       * Dropped to the raw method because viem's typed `getLogs` accepts an `args` filter only
-       * alongside a SINGLE event, and asking once per event would double the request count of
-       * every scan. The topic array says exactly what the typed form would: topic 0 is either
-       * signature, topic 1 is this wallet. Both events declare `user` first and indexed, which is
-       * what lets one topic position cover them together.
-       */
-      const signatures = POSITION_EVENTS.map(
-        (event) => encodeEventTopics({ abi: [event] })[0] as Hex,
-      )
-      const raw = await client.request({
-        method: 'eth_getLogs',
-        params: [
-          {
-            address,
-            topics: [signatures, pad(wallet, { size: 32 })],
-            fromBlock: numberToHex(fromBlock),
-            toBlock: numberToHex(toBlock),
-          },
-        ],
-      })
-
-      // The raw method answers in hex; everything downstream counts in bigints and numbers.
-      const logs = raw.map((log) => ({
-        ...log,
-        blockNumber: log.blockNumber === null ? null : BigInt(log.blockNumber),
-        logIndex: log.logIndex === null ? null : Number(log.logIndex),
-      }))
-
-      // Decoded here rather than in `lib`: this is the layer that owns viem. Anything that fails
-      // to decode is dropped by `parseEventLogs`, and the scanner validates whatever survives.
-      return parseEventLogs({
-        abi: POSITION_EVENTS,
-        logs: logs as never,
-      }) as unknown as RawPositionLog[]
+    getTransactionReceipt: async ({ hash }) => {
+      const receipt = await getTransactionReceipt(client, { hash })
+      return {
+        hash,
+        to: receipt.to,
+        status: receipt.status,
+        blockNumber: receipt.blockNumber,
+        logs: receipt.logs,
+      }
     },
-    getTransactionReceipt: ({ hash }) => getTransactionReceipt(client, { hash }),
     getBlock: ({ blockNumber }) => getBlock(client, { blockNumber }),
   }
 }
@@ -197,20 +160,29 @@ export function useHistorySync(): HistorySync {
         // Cast at this one boundary: `getClient` is typed to the configured chain ids, and
         // `syncableChains` only ever yields ids that are in that list.
         const client = config.getClient({ chainId: chainId as (typeof config.chains)[number]['id'] })
-        await syncChain({
+
+        // Discovery goes through Aave's indexer. A leveraged open is a supply and a borrow, so
+        // it has a row for every one — which turns discovery into a point lookup per candidate
+        // transaction instead of walking the chain from the deployment block in windows a
+        // provider may cap at any size. On a real Base account that is three receipts rather than
+        // roughly forty `eth_getLogs`, and zero receipts once the screen cache is warm.
+        const market = getChainConfig(chainId)?.aave.poolAddress
+        if (!market) return
+
+        await syncChainFromHashes({
           client: syncClient(client),
           storage: browserStorage(),
-          address: chain.address,
+          strategies: chain.address,
           wallet,
           chainId,
-          fromBlock: chain.fromBlock,
+          hashes: await fetchUserTxHashes({ user: wallet, chainId, market }),
           tokens: chainMeta.tokens,
           hidden: chainMeta.hidden,
         })
         setStatus((s) => ({ ...s, error: null, syncedAt: Date.now() }))
       } catch (error) {
         // Reported, never thrown. A rate-limited RPC must not take a position panel down with it,
-        // and `syncChain` has already guaranteed that a failure changed nothing.
+        // and `syncChainFromHashes` has already guaranteed that a failure changed nothing.
         setStatus((s) => ({ ...s, error: error instanceof Error ? error.message : 'sync failed' }))
       } finally {
         running.current.delete(chainId)
@@ -264,7 +236,7 @@ export function useHistorySync(): HistorySync {
   }, [wallet, chains, config, runChain])
 
   const resync = useCallback(() => {
-    clearAllCursors(browserStorage())
+    clearScreened(browserStorage())
     setStatus((s) => ({ ...s, error: null }))
     setAttempt((n) => n + 1)
   }, [])

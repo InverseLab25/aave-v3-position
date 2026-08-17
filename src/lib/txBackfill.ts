@@ -150,9 +150,35 @@ export async function entriesFromEvents(
 ): Promise<TxHistoryEntry[]> {
   if (events.length === 0) return []
 
+  const receipts = await mapWithLimit(events, RECEIPT_CONCURRENCY, (event) =>
+    client.getTransactionReceipt({ hash: event.hash }),
+  )
+
+  return entriesFromReceipts(
+    client,
+    events.map((event, i) => ({ event, receipt: receipts[i] })),
+    context,
+  )
+}
+
+/**
+ * The same rows, from receipts the caller ALREADY HAS.
+ *
+ * Discovery through the indexer reads every candidate receipt to find out which were ours at all
+ * — see `receiptScreen` — so by the time the matches are known their receipts are in hand. Going
+ * back to the chain for them would double the request count of the cheaper path and undo the
+ * reason for taking it.
+ */
+export async function entriesFromReceipts(
+  client: Pick<ReceiptClient, 'getBlock'>,
+  found: readonly { event: PositionEvent; receipt: PositionReceipt }[],
+  context: BackfillContext,
+): Promise<TxHistoryEntry[]> {
+  if (found.length === 0) return []
+
   // Several events can share a block, and a block's timestamp is the same for all of them. Asking
   // once per event would multiply the request count for no extra information.
-  const blocks = [...new Set(events.map((e) => e.blockNumber))]
+  const blocks = [...new Set(found.map((f) => f.event.blockNumber))]
   const timestamps = new Map(
     await mapWithLimit(blocks, RECEIPT_CONCURRENCY, async (blockNumber): Promise<[bigint, bigint]> => {
       const { timestamp } = await client.getBlock({ blockNumber })
@@ -160,12 +186,10 @@ export async function entriesFromEvents(
     }),
   )
 
-  const receipts = await mapWithLimit(events, RECEIPT_CONCURRENCY, (event) =>
-    client.getTransactionReceipt({ hash: event.hash }),
-  )
-
-  return events
-    .map((event, i) => buildEntry(event, receipts[i], timestamps.get(event.blockNumber) ?? 0n, context))
+  return found
+    .map(({ event, receipt }) =>
+      buildEntry(event, receipt, timestamps.get(event.blockNumber) ?? 0n, context),
+    )
     .filter((entry): entry is TxHistoryEntry => entry !== null)
 }
 
