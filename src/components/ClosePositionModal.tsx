@@ -808,18 +808,28 @@ export function ClosePositionModal({
           >
             {isComplete ? 'Done' : 'Cancel'}
           </button>
-          <button
-            onClick={executeClose}
-            disabled={isProcessing || !canExecute}
-            className="btn-primary"
-            style={{ flex: 1, padding: '10px' }}
-          >
-            {isProcessing
-              ? 'Processing…'
-              : isSameAsset || signedUntil !== null
-                ? 'Execute Close'
-                : 'Sign Approval'}
-          </button>
+          {/* Gone once it has landed, as the open's is. It used to stay live and offer to close
+              again: a second attempt spends the same permit nonce and reverts, but not before
+              asking the user for another signature to find that out. */}
+          {!isComplete && (
+            <button
+              onClick={executeClose}
+              disabled={isProcessing || !canExecute}
+              className="btn-primary"
+              style={{ flex: 1, padding: '10px' }}
+            >
+              {isProcessing
+                ? 'Processing…'
+                : isQuoting
+                  ? 'Pricing…'
+                  : isSameAsset || signedUntil !== null
+                    ? // The word the open uses for the press that sends.
+                      'Confirm'
+                    : // Two, not one: a withdrawal permit and the revoke that follows it at the
+                      // next nonce. "Sign Approval" understated what the wallet was about to ask.
+                      'Sign 2 approvals'}
+            </button>
+          )}
         </div>
     </Modal>
   )

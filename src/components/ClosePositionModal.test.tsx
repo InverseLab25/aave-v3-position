@@ -9,8 +9,8 @@ import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
  * covered by its own suite — so these mock the hook and assert on what the modal DOES with each
  * outcome it can be handed.
  *
- * The action button's own label is the clearest signal available: "Sign Approval" before an
- * approval is held, "Execute Close" once one is.
+ * The action button's own label is the clearest signal available: "Sign 2 approvals" before they
+ * are held, "Confirm" once they are — the same word the open uses for the press that sends.
  */
 const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
@@ -174,7 +174,7 @@ const mount = () =>
 
 /** The action button, whichever of its three labels it currently wears. */
 const actionButton = () =>
-  screen.getByRole('button', { name: /Sign Approval|Execute Close|Processing/ }) as HTMLButtonElement
+  screen.getByRole('button', { name: /Sign 2 approvals|Confirm|Processing|Pricing/ }) as HTMLButtonElement
 
 const isEnabled = () => !actionButton().disabled
 
@@ -182,7 +182,7 @@ describe('ClosePositionModal — the action button gate', () => {
   it('offers to sign once a covered, guaranteed preview lands', async () => {
     mount()
     await waitFor(() => expect(isEnabled()).toBe(true))
-    expect(actionButton().textContent).toContain('Sign Approval')
+    expect(actionButton().textContent).toContain('Sign 2 approvals')
   })
 
   it('stays disabled while there is no preview yet', () => {
@@ -221,7 +221,7 @@ describe('ClosePositionModal — the two-press flow', () => {
 
     fireEvent.click(actionButton())
 
-    await waitFor(() => expect(actionButton().textContent).toContain('Execute Close'))
+    await waitFor(() => expect(actionButton().textContent).toContain('Confirm'))
     expect(closeFn).toHaveBeenCalledTimes(1)
   })
 
@@ -237,13 +237,14 @@ describe('ClosePositionModal — the two-press flow', () => {
     await waitFor(() => expect(isEnabled()).toBe(true))
 
     fireEvent.click(actionButton())
-    await waitFor(() => expect(actionButton().textContent).toContain('Execute Close'))
+    await waitFor(() => expect(actionButton().textContent).toContain('Confirm'))
     fireEvent.click(actionButton())
 
-    // resetForm clears the preview, which is what re-disables the button. Without it every
-    // gate stayed satisfied and another click cost two more signatures before reverting.
+    // The button is removed once it has landed, not merely disabled. Leaving it up offered to
+    // close again — and a second attempt spends the same permit nonce and reverts, but not before
+    // asking the user for another signature to find that out.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy())
-    expect(isEnabled()).toBe(false)
+    expect(screen.queryByRole('button', { name: /Sign 2 approvals|Confirm/ })).toBeNull()
     expect(closeFn).toHaveBeenCalledTimes(2)
   })
 
@@ -430,4 +431,23 @@ it('does not narrate the automatic sizing', async () => {
   await screen.findByLabelText('Close max slippage percent')
   expect(screen.queryByText(/is swapped for the router's guaranteed output/)).toBeNull()
   expect(screen.queryByText(/Execution Path/)).toBeNull()
+})
+
+
+describe('the close footer says what the next press does', () => {
+  const withHook = (over: Record<string, unknown>) =>
+    mocks.useDeleverageClose.mockReturnValue({
+      preview: previewFn, close: closeFn, logs: [], step: 'idle',
+      clearSignatures, clearOutcome, warmup, ...over,
+    })
+
+  it('says two approvals are coming, because two are', async () => {
+    // It said "Sign Approval" — one — while the flow takes a withdrawal permit AND the revoke that
+    // follows it, which the progress line directly above now spells out.
+    withHook({})
+    mount()
+
+    expect(await screen.findByRole('button', { name: 'Sign 2 approvals' })).toBeTruthy()
+  })
+
 })
