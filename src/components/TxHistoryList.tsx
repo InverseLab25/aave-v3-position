@@ -67,8 +67,8 @@ function PageButton({ label, disabled, onClick }: { label: string; disabled: boo
 function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   const { swap } = entry
   // Default to inverted if it's Stable -> Volatile, to show Volatile -> Stable
-  const isStable = (sym?: string) => ['USDC', 'USDT', 'DAI', 'USDS'].includes(sym?.toUpperCase() ?? '')
-  const isBase = (sym?: string) => ['WETH', 'WBTC', 'WSTETH', 'CBETH', 'RETH'].includes(sym?.toUpperCase() ?? '')
+  const isStable = (sym?: string | null) => ['USDC', 'USDT', 'DAI', 'USDS'].includes(sym?.toUpperCase() ?? '')
+  const isBase = (sym?: string | null) => ['WETH', 'WBTC', 'WSTETH', 'CBETH', 'RETH'].includes(sym?.toUpperCase() ?? '')
   const defaultInvert = isStable(swap?.srcSymbol) || isBase(swap?.dstSymbol)
   const [invertRate, setInvertRate] = useState(defaultInvert)
 
