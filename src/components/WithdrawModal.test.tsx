@@ -238,3 +238,55 @@ describe('WithdrawModal — failure handling', () => {
     expect(submit().textContent).toContain('Withdraw')
   })
 })
+
+describe('WithdrawModal — unwrapping WETH to ETH', () => {
+  it('offers the choice when the supplied asset is the wrapped native', () => {
+    // Aave holds WETH; the reserve's symbol is WETH, never ETH. So the gateway path existed but
+    // nothing on these chains could reach it — a user with WETH collateral could only ever take
+    // WETH back out.
+    mount()
+
+    expect(screen.getByLabelText(/Withdraw as ETH/i)).toBeTruthy()
+  })
+
+  it('withdraws WETH as WETH while the box is unticked', async () => {
+    mocks.useReadContract.mockReturnValue({ data: maxUint256, refetch: vi.fn() })
+    mount()
+    type('0.5')
+    fireEvent.click(submit())
+
+    await waitFor(() => expect(mocks.simulateAndWrite).toHaveBeenCalled())
+    const call = mocks.simulateAndWrite.mock.calls[0][2]
+    expect(call.address).toBe(POOL)
+    expect(call.functionName).toBe('withdraw')
+  })
+
+  it('routes through the gateway once the box is ticked', async () => {
+    mocks.useReadContract.mockReturnValue({ data: maxUint256, refetch: vi.fn() })
+    mount()
+
+    fireEvent.click(screen.getByLabelText(/Withdraw as ETH/i))
+    type('0.5')
+    fireEvent.click(submit())
+
+    await waitFor(() => expect(mocks.simulateAndWrite).toHaveBeenCalled())
+    const call = mocks.simulateAndWrite.mock.calls[0][2]
+    expect(call.address).toBe(GATEWAY)
+    expect(call.functionName).toBe('withdrawETH')
+  })
+
+  it('does not offer it on a chain with no gateway deployed', () => {
+    // Without one there is nothing to unwrap through, and the box would promise ETH it cannot send.
+    mocks.getChainConfig.mockReturnValue({ aave: { poolAddress: POOL } })
+    mount()
+
+    expect(screen.queryByLabelText(/Withdraw as ETH/i)).toBeNull()
+  })
+
+  it('does not offer it for an asset that is not the wrapped native', () => {
+    const usdc = wethAsset({ symbol: 'USDC', decimals: 6 })
+    mount({ asset: usdc, suppliedAssets: [usdc], availableReserves: [{ symbol: 'USDC', liquidationThreshold: 0.85 }] })
+
+    expect(screen.queryByLabelText(/Withdraw as ETH/i)).toBeNull()
+  })
+})

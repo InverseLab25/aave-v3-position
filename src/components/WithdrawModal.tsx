@@ -36,6 +36,20 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const [step, setStep] = useState(0)
   const [logs, setLogs] = useState<string[]>([])
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>(undefined)
+  /**
+   * Take the wrapped native back out as the native coin.
+   *
+   * Aave holds WETH and its reserve reports the symbol WETH, never ETH — so the gateway path below
+   * existed but nothing on these chains could reach it, and a user with WETH collateral could only
+   * ever take WETH back out. Same shape as the toggle in BorrowRepayModal.
+   */
+  const [unwrapToEth, setUnwrapToEth] = useState(false)
+
+  const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
+  const isWeth = asset.symbol === 'WETH'
+  /** Either the reserve IS the native coin, or it is the wrapper and the user asked to unwrap. */
+  const isNativeEth = asset.symbol === 'ETH' || (isWeth && unwrapToEth)
+  const canUnwrap = isWeth && !!gatewayAddress
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const config = useConfig()
@@ -44,10 +58,10 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const { maxFee, maxPriority, estimatedFeeUsd } = useAdjustedGas(250000n /* Aave withdraw */, ethPriceUsd, parseFloat(amountStr) > 0)
 
   const { data: aTokenAllowance, refetch: refetchATokenAllowance } = useReadContract({ chainId,
-    address: asset?.symbol === 'ETH' ? asset.aTokenAddress : undefined,
+    address: isNativeEth ? asset.aTokenAddress : undefined,
     abi: erc20Abi, functionName: 'allowance',
-    args: (address && asset && asset.symbol === 'ETH' && chainConfig?.aave?.wethGateway) ? [address, chainConfig.aave.wethGateway] : undefined,
-    query: { enabled: !!address && !!asset && asset.symbol === 'ETH' && !!chainConfig?.aave?.wethGateway },
+    args: address && isNativeEth && gatewayAddress ? [address, gatewayAddress] : undefined,
+    query: { enabled: !!address && isNativeEth && !!gatewayAddress },
   })
 
   const log = (msg: string) => setLogs(p => [...p, msg])
@@ -58,9 +72,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
       setStep(1)
       const amountParsed = parseUnits(amountStr, asset.decimals)
       const finalAmount = isMax ? maxUint256 : amountParsed
-      const gatewayAddress = chainConfig?.aave?.wethGateway as `0x${string}` | undefined
-
-      if (asset.symbol === 'ETH' && gatewayAddress) {
+      if (isNativeEth && gatewayAddress) {
         const currentAllowance = (aTokenAllowance as bigint) ?? 0n
         if (currentAllowance < amountParsed) {
           log('Simulating aToken approval…')
@@ -155,6 +167,20 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
             <span>Available to withdraw</span>
             <span style={{ color: T.text, fontFamily: T.font.mono, fontWeight: 600 }}>{asset.amount?.toFixed(4) ?? '0.00'} {asset.symbol}</span>
           </div>
+
+          {canUnwrap && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: T.space[2], marginBottom: T.space[4] }}>
+              <input
+                type="checkbox"
+                id="unwrapToEth"
+                checked={unwrapToEth}
+                onChange={(e) => setUnwrapToEth(e.target.checked)}
+              />
+              <label htmlFor="unwrapToEth" style={{ fontSize: T.fontSize.sm, color: T.text, cursor: 'pointer' }}>
+                Withdraw as ETH
+              </label>
+            </div>
+          )}
 
           {/* Amount input */}
           <div style={{ marginBottom: T.space[4], position: 'relative' }}>
