@@ -216,6 +216,21 @@ it('still reports what the transaction settled at', () => {
   expect(screen.getByRole('button', { name: 'Done' })).toBeDefined()
 })
 
+it('says a receipt never arrived without calling the open a failure', () => {
+  // The transaction is submitted either way, so this is not an error — but the flow used to catch
+  // a timeout and an unreadable receipt in one empty block, which meant a user whose receipt never
+  // came got no explanation of any kind.
+  setup({
+    step: 'done',
+    txHash: `0x${'11'.repeat(32)}`,
+    settleNote: 'No receipt after 5 minutes. It may still land — check the explorer before retrying.',
+  })
+
+  expect(screen.getByText(/No receipt after 5 minutes/)).toBeDefined()
+  // Still complete, not failed.
+  expect(screen.getByText(/Swap complete/i)).toBeDefined()
+})
+
 it('can be dismissed from the header, not only from the footer', () => {
   // A settled modal is a report, and a report needs an exit that is not labelled like an action.
   const props = setup({ step: 'done', txHash: `0x${'11'.repeat(32)}` })

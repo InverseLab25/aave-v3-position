@@ -3,7 +3,7 @@ import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig 
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
 import {
   erc20Abi, formatUnits, parseSignature, parseUnits,
-  WaitForTransactionReceiptTimeoutError, type Address,
+  type Address,
 } from 'viem'
 import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
@@ -38,7 +38,8 @@ import {
 } from '../lib/closePlan'
 import { aaveV3StrategiesAbi, planClose } from '../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../lib/sizing'
-import { readOutcome, type TxOutcome } from '../lib/txOutcome'
+import type { TxOutcome } from '../lib/txOutcome'
+import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../lib/aaveStatics'
 
 /*//////////////////////////////////////////////////////////////
@@ -67,7 +68,7 @@ const SIZING_ROUNDS = 3
  * leaves the UI claiming to be processing forever. A dropped or replaced transaction does the
  * same thing on any RPC.
  */
-export const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
+export { RECEIPT_TIMEOUT_MS } from '../lib/settle'
 
 /**
  * How long a permit signature stays valid (seconds).
@@ -938,11 +939,22 @@ export function useDeleverageClose() {
         const hash = await walletClient.writeContract(gas ? { ...request, gas } : request)
         log(`Tx submitted: ${hash}`)
 
-        let receipt
-        try {
-          receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: RECEIPT_TIMEOUT_MS })
-        } catch (e) {
-          // Two different situations, and naming the wrong one sends the user to the wrong place.
+        // The four things an awaited receipt can turn out to be are classified in `lib/settle`,
+        // which is this flow's own reading extracted so the open could stop guessing at it. What
+        // stays here is the wording, which differs per flow for good reasons.
+        const settlement = await settleTransaction({
+          client: publicClient,
+          hash,
+          wallet: address,
+          pair: { srcToken: p.collateralAddr, dstToken: p.debtAddr },
+          expectedOut: builtOut,
+          minOut,
+        })
+
+        if (settlement.kind === 'timeout') {
+          // Timed out, not failed: it may still land later, or may never have been included at
+          // all — an MEV-protected RPC includes only transactions that would succeed, so one that
+          // would revert simply never appears. Calling that a revert would be a guess.
           //
           // Either way the transaction IS submitted, so the hash comes back rather than the null
           // the generic failure path returns — it is the only way to find out what became of it.
@@ -950,45 +962,36 @@ export function useDeleverageClose() {
           // Re-pressing is safe even if it eventually lands. Both attempts spend the same aToken
           // permit nonce, so whichever arrives second reverts inside `permit` rather than closing
           // the position twice.
-          if (e instanceof WaitForTransactionReceiptTimeoutError) {
-            // Timed out, not failed: it may still land later, or may never have been included at
-            // all — an MEV-protected RPC includes only transactions that would succeed, so one
-            // that would revert simply never appears. Calling that a revert would be a guess.
-            log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
-          } else {
-            // The receipt READ failed — an RPC error, a dropped connection. That says nothing
-            // about the transaction, and quoting the timeout here would send the user off to
-            // watch an explorer over something that was never the problem.
-            const detail =
-              (e as { shortMessage?: string }).shortMessage ?? (e as Error).message ?? String(e)
-            log(`Could not read the receipt: ${detail}. The transaction was submitted — check the explorer before retrying.`)
-          }
+          log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
           setStep('error')
           return { hash, status: 'error' }
         }
 
-        if (receipt.status === 'success') {
-          // Everything shown until now was a forecast. The receipt is what happened, and it is
-          // already in hand — the fill is measured against `builtOut`, the figure `minOut` was
-          // derived from, so the comparison is against the route that actually executed.
-          setOutcome(
-            readOutcome({
-              logs: receipt.logs ?? [],
-              wallet: address,
-              pair: { srcToken: p.collateralAddr, dstToken: p.debtAddr },
-              expectedOut: builtOut,
-              minOut,
-            }),
-          )
-          log('Position closed ✓')
+        if (settlement.kind === 'unreadable') {
+          // The receipt READ failed — an RPC error, a dropped connection. That says nothing about
+          // the transaction, and quoting the timeout here would send the user off to watch an
+          // explorer over something that was never the problem.
+          log(`Could not read the receipt: ${settlement.detail}. The transaction was submitted — check the explorer before retrying.`)
+          setStep('error')
+          return { hash, status: 'error' }
+        }
+
+        if (settlement.kind === 'settled') {
+          // Everything shown until now was a forecast. The receipt is what happened, and the fill
+          // is measured against `builtOut`, the figure `minOut` was derived from — so the
+          // comparison is against the route that actually executed.
+          setOutcome(settlement.outcome)
           // Consumed: the nonce has advanced, so these can never authorise anything again.
           signatures.current = null
           setStep('done')
-        } else {
-          log('Transaction reverted')
-          setStep('error')
+          return { hash, status: 'success' }
         }
-        return { hash, status: receipt.status }
+
+        log('Transaction reverted')
+        setStep('error')
+        // `reverted`, not `error`: the caller distinguishes a transaction the chain rejected from
+        // one that never got sent, and a test pins that distinction.
+        return { hash, status: 'reverted' }
       } catch (e: unknown) {
         const err = e as { shortMessage?: string; message?: string }
         log(`Error: ${err.shortMessage || err.message || String(e)}`)

@@ -46,7 +46,8 @@ import {
   type HeldDelegation,
 } from '../lib/delegationCache'
 import { routeCostPercent } from '../lib/swapRoute'
-import { readOutcome, type TxOutcome } from '../lib/txOutcome'
+import type { TxOutcome } from '../lib/txOutcome'
+import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
 import { getAdaptersForChain } from '../adapters'
 import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
 import type { Adapter, QuoteResponse } from '../adapters/types'
@@ -152,7 +153,6 @@ const DEBOUNCE_MS = 400
  * consequences: nothing here is retried or re-signed on the strength of it, so a wait that runs
  * out costs only the settled figures, and the hash is already on screen.
  */
-const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
 
 /** Solve, then at most one correction. Pricing is non-linear; a third round buys nothing. */
 const MAX_REFINE_ROUNDS = 2
@@ -243,6 +243,14 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   /** What the last open actually did, read off its receipt. Null until one lands. */
   const [outcome, setOutcome] = useState<TxOutcome | null>(null)
   const [execRemedy, setExecRemedy] = useState<StrategiesRemedy | null>(null)
+  /**
+   * Something worth saying about the receipt that is NOT a failure.
+   *
+   * Separate from `execError` on purpose. A timeout or an unreadable receipt leaves a submitted
+   * transaction whose fate is unknown, and putting that in the error channel would tell a user the
+   * open failed when it may well have succeeded.
+   */
+  const [settleNote, setSettleNote] = useState<string | null>(null)
 
   /** Set while a signature is being spent, to stop the preview moving underneath it. */
   const frozen = useRef(false)
@@ -293,6 +301,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     setTxHash(undefined)
     setExecError(null)
     setExecRemedy(null)
+    setSettleNote(null)
     setOutcome(null)
     currentSend.current = null
     // The grant belongs to the attempt being forgotten. Carrying it into the next one would let a
@@ -764,6 +773,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     frozen.current = true
     setExecError(null)
     setExecRemedy(null)
+    setSettleNote(null)
     try {
       const chainConfig = getChainConfig(chainId)
       if (!chainConfig) throw new Error('Unsupported chain')
@@ -897,6 +907,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     frozen.current = true
     setExecError(null)
     setExecRemedy(null)
+    setSettleNote(null)
     /** The hash, once there is one — read outside the block so the receipt can be waited on. */
     let sent: Hex | undefined
     try {
@@ -938,35 +949,46 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     // unfrozen, so a receipt that takes a block — or never comes — holds nothing else up. A
     // failure here is not a failed open, so it never reaches `execError`.
     if (!sent || !client || !owner) return
-    try {
-      const receipt = await client.waitForTransactionReceipt({ hash: sent, timeout: RECEIPT_TIMEOUT_MS })
+    const settlement = await settleTransaction({
+      client,
+      hash: sent,
+      wallet: owner,
+      // The swap funds the collateral leg: borrowed debt in, collateral out.
+      pair: { srcToken: effectivePreview.debtAsset, dstToken: effectivePreview.collateral },
+      expectedOut: effectivePreview.expectedOut,
+      minOut: effectivePreview.minOut,
       // Abandoned while this was in flight. Whatever it says belongs to a screen that is gone.
-      if (currentSend.current !== sent) return
+      isCurrent: () => currentSend.current === sent,
+    })
 
+    switch (settlement.kind) {
+      case 'settled':
+        setOutcome(settlement.outcome)
+        return
       // `step` went to 'done' on submission, which is all that was known then. The receipt knows
       // better: an included-and-reverted open holds no position, and leaving "done" on screen
-      // tells the user the opposite of what the chain says. The close flow reads the same field
-      // for the same reason (useDeleverageClose.ts).
-      if (receipt.status !== 'success') {
+      // tells the user the opposite of what the chain says.
+      case 'reverted':
         setExecError('The open reverted on chain, so no position was opened. Nothing was spent but gas.')
         setStep('error')
         return
-      }
-
-      setOutcome(
-        readOutcome({
-          logs: receipt.logs ?? [],
-          wallet: owner,
-          // The swap funds the collateral leg: borrowed debt in, collateral out.
-          pair: { srcToken: effectivePreview.debtAsset, dstToken: effectivePreview.collateral },
-          expectedOut: effectivePreview.expectedOut,
-          minOut: effectivePreview.minOut,
-        }),
-      )
-    } catch {
-      // Timed out, or the receipt read itself failed. The transaction is submitted either way and
-      // `txHash` is on screen, so there is nothing to say here that the explorer would not say
-      // better — and calling it an error would send the user to re-open a position they may hold.
+      // The two below are NOT errors, and must not be shown as ones: the transaction is submitted
+      // either way, and calling it a failure would send the user to re-open a position they may
+      // hold. But saying nothing was worse — this flow used to catch both in one empty block, so a
+      // user whose receipt never arrived got no explanation of any kind. They are reported as
+      // notes, and `step` stays where it was.
+      case 'timeout':
+        setSettleNote(
+          `No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`,
+        )
+        return
+      case 'unreadable':
+        setSettleNote(
+          `Could not read the receipt: ${settlement.detail}. The open was submitted — check the explorer before retrying.`,
+        )
+        return
+      case 'abandoned':
+        return
     }
   }, [input, effectivePreview, client, owner, deps, refresh, forget])
 
@@ -994,6 +1016,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */
     hardRefresh,
     step, txHash, execError, execRemedy,
+    /** A submitted open whose receipt never arrived, or could not be read. Not a failure. */
+    settleNote,
     /** Approve and delegate. Prompts the wallet; opens nothing. */
     prepare,
     /** Send what `prepare` authorised, against the route currently on screen. */

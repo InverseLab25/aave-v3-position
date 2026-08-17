@@ -442,7 +442,7 @@ export function LeveragePanel({
   })()
 
   const {
-    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, txHash, refresh, hardRefresh, outcome,
+    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
 
@@ -860,6 +860,7 @@ export function LeveragePanel({
           debtDecimals={confirming.debt.raw.decimals}
           step={step}
           execError={execError}
+          settleNote={settleNote}
           remedyHint={remedyHint}
           txHash={txHash}
           chainId={chainId}

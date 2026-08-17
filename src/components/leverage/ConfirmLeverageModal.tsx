@@ -71,6 +71,13 @@ interface ConfirmLeverageModalProps {
   execError: string | null
   /** What to do about `execError`, when the decoded revert suggests something. */
   remedyHint: string | null
+  /**
+   * A submitted open whose receipt never arrived, or could not be read. NOT a failure.
+   *
+   * Shown alongside the settled report rather than in place of it: the transaction is on chain
+   * either way, and calling it an error would send a user to re-open a position they may hold.
+   */
+  settleNote?: string | null
   txHash: `0x${string}` | undefined
   chainId: number
   /** What the open settled at, once its receipt is in. Null until then. */
@@ -102,7 +109,7 @@ export function ConfirmLeverageModal({
   preview, projection, isQuoting, previewMessage, showResign,
   priceImpactBlocked, slippageBps, slippagePercent, onSlippageChange,
   collateralSymbol, debtSymbol, collateralDecimals, debtDecimals,
-  step, execError, remedyHint, txHash, chainId, outcome, outcomeTokens,
+  step, execError, remedyHint, settleNote, txHash, chainId, outcome, outcomeTokens,
   reusableSignature, onRefresh, onHardRefresh, onResign, onConfirm, onClose,
 }: ConfirmLeverageModalProps) {
   const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000))
@@ -336,6 +343,12 @@ export function ConfirmLeverageModal({
             <div style={{ marginTop: T.space[3], fontSize: T.fontSize.sm, color: T.danger }}>
               {execError}
               {remedyHint && <span style={{ color: T.textMuted }}> {remedyHint}</span>}
+            </div>
+          )}
+
+          {settleNote && (
+            <div className="alert alert-warning" style={{ marginTop: T.space[3] }}>
+              <span style={{ fontSize: T.fontSize.sm }}>{settleNote}</span>
             </div>
           )}
 
