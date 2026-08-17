@@ -113,7 +113,7 @@ export function LeveragePanel({
   const [marginAssetOverride, setMarginAssetOverride] = useState<MarginAsset | null>(null)
   const [positionOverride, setPositionOverride] = useState<string | null>(null)
   /** Which leg the boost amount is typed in — the supply asset or the borrow asset. */
-  const [boostDenom, setBoostDenom] = useState<'collateral' | 'debt'>('debt')
+  const [boostDenomOverride, setBoostDenomOverride] = useState<'collateral' | 'debt' | null>(null)
   const [marginStr, setMarginStr] = useState('')
   const [supplyStr, setSupplyStr] = useState('')
   const [danger, setDanger] = useState(false)
@@ -243,6 +243,11 @@ export function LeveragePanel({
   const marginAsset: MarginLocation = boosting ? 'none' : marginAssetOverride ?? autoMarginAsset
 
   const marginReserve = marginAsset === 'debt' ? debtReserve : collateralReserve
+
+  // Default to sizing by the volatile leg (the subject of the position):
+  // For long, the subject is the collateral. For short, the subject is the debt.
+  const autoBoostDenom: 'collateral' | 'debt' = direction === 'long' ? 'collateral' : 'debt'
+  const boostDenom = boostDenomOverride ?? autoBoostDenom
 
   /** How to format the tokens an open's receipt can name: the pair's two underlyings. */
   const outcomeTokens = useMemo(
@@ -641,7 +646,7 @@ export function LeveragePanel({
             symbol={(sizedBy === 'borrow' ? debtReserve : collateralReserve)?.symbol ?? '—'}
             choices={boosting ? marginChoices : undefined}
             selected={boosting ? boostDenom : undefined}
-            onSelect={boosting ? (next) => setBoostDenom(next as 'collateral' | 'debt') : undefined}
+            onSelect={boosting ? (next) => setBoostDenomOverride(next as 'collateral' | 'debt') : undefined}
             max={maxSupply > 0n ? formatUnits(maxSupply, typedDecimals) : null}
             hint={maxSupply > 0n
               ? `Max ${display(maxSupply, typedDecimals, 4)} ${(sizedBy === 'borrow' ? debtReserve : collateralReserve)?.symbol ?? ''}${boosting ? ' from your borrow power' : ''}`

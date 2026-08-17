@@ -66,6 +66,12 @@ function PageButton({ label, disabled, onClick }: { label: string; disabled: boo
 
 function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   const { swap } = entry
+  // Default to inverted if it's Stable -> Volatile, to show Volatile -> Stable
+  const isStable = (sym?: string) => ['USDC', 'USDT', 'DAI', 'USDS'].includes(sym?.toUpperCase() ?? '')
+  const isBase = (sym?: string) => ['WETH', 'WBTC', 'WSTETH', 'CBETH', 'RETH'].includes(sym?.toUpperCase() ?? '')
+  const defaultInvert = isStable(swap?.srcSymbol) || isBase(swap?.dstSymbol)
+  const [invertRate, setInvertRate] = useState(defaultInvert)
+
   return (
     <div
       style={{
@@ -81,7 +87,26 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
       </div>
 
       {swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
-        <span>{`1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {invertRate 
+            ? `1 ${swap.dstSymbol} = ${rate((1 / Number(entry.rate)).toString())} ${swap.srcSymbol}`
+            : `1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`
+          }
+          <button
+            type="button"
+            onClick={() => setInvertRate(!invertRate)}
+            style={{
+              background: 'none', border: 'none', padding: 0,
+              cursor: 'pointer', opacity: 0.6, display: 'flex',
+              alignItems: 'center'
+            }}
+            title="Swap rate direction"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/>
+            </svg>
+          </button>
+        </span>
       ) : (
         <span style={{ color: T.textMuted }}>No swap recorded on this transaction</span>
       )}
@@ -197,13 +222,19 @@ export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
   }
 
   return (
-    <div style={{ marginTop: T.space[4], fontSize: T.fontSize.sm }}>
+    <div style={{ 
+      marginTop: T.space[4], fontSize: T.fontSize.sm,
+      background: T.surface, border: `1px solid ${T.border}`,
+      borderRadius: T.radius.lg, padding: T.space[4],
+      boxShadow: T.shadow.sm
+    }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
         style={{
           border: 'none', background: 'none', padding: 0, cursor: 'pointer',
-          color: T.textMuted, fontWeight: 600, fontSize: T.fontSize.sm,
+          color: T.text, fontWeight: 600, fontSize: T.fontSize.base,
+          display: 'flex', alignItems: 'center', gap: T.space[1]
         }}
       >
         {open ? '▾' : '▸'} Recent activity ({entries.length})
