@@ -355,9 +355,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .modal-body { padding: var(--space-5); }
 
+/*
+ * No rule above the buttons.
+ *
+ * It read as a divider belonging to whatever ended the body rather than as the footer's own edge —
+ * most visibly on the close, where the progress line now sits directly above it and the line
+ * looked like part of "withdraw · revoke · swap". The buttons are their own visual weight; the
+ * padding is what separates them.
+ */
 .modal-footer {
   padding: var(--space-4) var(--space-5);
-  border-top: 1px solid var(--color-border);
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);

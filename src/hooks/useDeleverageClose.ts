@@ -302,6 +302,20 @@ export function useDeleverageClose() {
   const [step, setStep] = useState<CloseStep>('idle')
   /** What the last close actually did, read off its receipt. Null until one lands. */
   const [outcome, setOutcome] = useState<TxOutcome | null>(null)
+  /**
+   * Why the last attempt failed, as one sentence — not a log line.
+   *
+   * The modal used to render the log array, which meant a user read "Requesting permit signature
+   * (1 of 2)…" and "Tx submitted: 0x…" as though those were things they had to act on. The open
+   * has always kept a decoded failure separate from its progress, and this is that channel.
+   */
+  const [execError, setExecError] = useState<string | null>(null)
+  /**
+   * A submitted close whose receipt never arrived, or could not be read. NOT a failure — the
+   * transaction is on chain either way, and reporting it as failed would send a user to repay a
+   * debt that may already be repaid.
+   */
+  const [settleNote, setSettleNote] = useState<string | null>(null)
   const log = useCallback((m: string) => setLogs((prev) => [...prev, m]), [])
 
   /**
@@ -563,8 +577,10 @@ export function useDeleverageClose() {
     async (input: CloseInput): Promise<CloseResult> => {
       setLogs([])
       setStep('permit')
-      // Belongs to the previous attempt. Leaving it up would caption this one with it.
+      // Belongs to the previous attempt. Leaving any of it up would caption this one with it.
       setOutcome(null)
+      setExecError(null)
+      setSettleNote(null)
 
       /**
        * Reuse the held permits, or take fresh ones and stop.
@@ -975,7 +991,9 @@ export function useDeleverageClose() {
           // Re-pressing is safe even if it eventually lands. Both attempts spend the same aToken
           // permit nonce, so whichever arrives second reverts inside `permit` rather than closing
           // the position twice.
-          log(`No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`)
+          const timedOut = `No receipt after ${RECEIPT_TIMEOUT_MS / 60000} minutes. It may still land — check the explorer before retrying.`
+          log(timedOut)
+          setSettleNote(timedOut)
           setStep('error')
           return { hash, status: 'error' }
         }
@@ -984,7 +1002,9 @@ export function useDeleverageClose() {
           // The receipt READ failed — an RPC error, a dropped connection. That says nothing about
           // the transaction, and quoting the timeout here would send the user off to watch an
           // explorer over something that was never the problem.
-          log(`Could not read the receipt: ${settlement.detail}. The transaction was submitted — check the explorer before retrying.`)
+          const unreadable = `Could not read the receipt: ${settlement.detail}. The transaction was submitted — check the explorer before retrying.`
+          log(unreadable)
+          setSettleNote(unreadable)
           setStep('error')
           return { hash, status: 'error' }
         }
@@ -1001,13 +1021,16 @@ export function useDeleverageClose() {
         }
 
         log('Transaction reverted')
+        setExecError('The close reverted on chain, so the debt was not repaid. Nothing was spent but gas.')
         setStep('error')
         // `reverted`, not `error`: the caller distinguishes a transaction the chain rejected from
         // one that never got sent, and a test pins that distinction.
         return { hash, status: 'reverted' }
       } catch (e: unknown) {
         const err = e as { shortMessage?: string; message?: string }
-        log(`Error: ${err.shortMessage || err.message || String(e)}`)
+        const message = err.shortMessage || err.message || String(e)
+        log(`Error: ${message}`)
+        setExecError(message)
         setStep('error')
         return { hash: null, status: 'error', slippageTooTight: e instanceof SlippageTooTightError }
       }
@@ -1015,5 +1038,5 @@ export function useDeleverageClose() {
     [address, chainId, publicClient, walletClient, log, config, buildPlan],
   )
 
-  return { preview, close, logs, step, outcome, clearOutcome, clearSignatures, warmup }
+  return { preview, close, logs, step, outcome, execError, settleNote, clearOutcome, clearSignatures, warmup }
 }

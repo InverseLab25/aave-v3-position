@@ -126,9 +126,10 @@ export function ClosePositionModal({
   const {
     preview: quotePreview,
     close: closePosition,
-    logs: closeLogs,
     step: closeStep,
     outcome: closeOutcome,
+    execError: closeExecError,
+    settleNote: closeSettleNote,
     clearOutcome,
     clearSignatures,
     warmup,
@@ -347,9 +348,15 @@ export function ClosePositionModal({
   }
 
   // Cross-asset progress comes from the hook; same-asset uses local logs.
-  const shownLogs = isSameAsset ? logs : closeLogs
-  /** Only the latest line is shown; the rest was a record nobody read. */
-  const lastLog = shownLogs[shownLogs.length - 1] ?? ''
+  /**
+   * The same-asset path runs from this component rather than the hook, so its failure is decoded
+   * here. Its progress is not reported at all: a plain pool call has one wait and the button
+   * already says "Processing…".
+   */
+  const sameAssetError = (() => {
+    const last = logs[logs.length - 1] ?? ''
+    return last.startsWith('Error:') ? last.slice('Error:'.length).trim() : null
+  })()
   /** Any of the three waits: either wallet prompt, or the transaction itself. */
   const isProcessing = isSameAsset
     ? step === 1
@@ -777,8 +784,12 @@ export function ClosePositionModal({
             }
             // The latest line, not the whole run: the full log rendered as a scrolling monospace
             // list, which reads as debug output in the middle of a transaction screen.
-            error={closeStep === 'error' ? lastLog || null : null}
-            note={closeStep === 'error' ? null : lastLog || null}
+            // A decoded failure and a not-a-failure, exactly as the open reports them. The log
+            // array is not shown at all: "Requesting permit signature (1 of 2)…" and
+            // "Tx submitted: 0x…" are a record of the flow, not something a user acts on, and the
+            // progress line above already says which wait they are in.
+            error={isSameAsset ? sameAssetError : closeExecError}
+            note={isSameAsset ? null : closeSettleNote}
             outcome={settled}
             outcomeTokens={outcomeTokens}
             txHash={txHash}

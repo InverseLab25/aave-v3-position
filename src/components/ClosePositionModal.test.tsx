@@ -375,14 +375,27 @@ describe('the close reports which of its three waits it is on', () => {
     expect(progress.textContent).toBe('✓ withdraw · ✓ revoke · swap')
   })
 
-  it('shows the latest line rather than the whole run', async () => {
-    // The full log used to render as a scrolling monospace list, which reads as debug output in
-    // the middle of a transaction screen.
+  it('shows no log lines at all', async () => {
+    // The flow's own record — "Requesting permit signature (1 of 2)…", "Tx submitted: 0x…" — is
+    // not something a user acts on, and the progress line above already says which wait they are
+    // in. The open never showed its equivalent; nor does this now.
     atStep('revoke', ['Requesting permit signature (1 of 2)…', 'Requesting revoke signature (2 of 2)…'])
     mount()
 
-    expect(await screen.findByText('Requesting revoke signature (2 of 2)…')).toBeTruthy()
-    expect(screen.queryByText('Requesting permit signature (1 of 2)…')).toBeNull()
+    await screen.findByRole('status')
+    expect(screen.queryByText(/Requesting permit signature/)).toBeNull()
+    expect(screen.queryByText(/Requesting revoke signature/)).toBeNull()
+  })
+
+  it('still reports a failure, as a sentence rather than a log line', async () => {
+    mocks.useDeleverageClose.mockReturnValue({
+      preview: previewFn, close: closeFn, logs: ['Error: whatever'], step: 'error',
+      execError: 'The close reverted on chain, so the debt was not repaid. Nothing was spent but gas.',
+      clearSignatures, clearOutcome, warmup,
+    })
+    mount()
+
+    expect(await screen.findByText(/reverted on chain, so the debt was not repaid/)).toBeTruthy()
   })
 })
 
