@@ -69,8 +69,8 @@ export function ConfirmSwapModal({
   const priceImpactColor = priceImpactPct === null
     ? '#111'
     : priceImpactPct >= 3 ? '#dc2626'
-    : priceImpactPct >= 1 ? '#d97706'
-    : '#111';
+      : priceImpactPct >= 1 ? '#d97706'
+        : '#111';
 
   // Detect a mid-modal quote change so we can flash a "Quote updated" indicator.
   const prevAmountOutRef = useRef<string>(quote.amountOut);
@@ -154,194 +154,195 @@ export function ConfirmSwapModal({
       // how a user ends up not knowing whether their money moved.
       dismissable={!sending}
     >
-            <div style={{ display: done ? 'none' : 'block' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', marginTop: '4px' }}>
-              <span style={{ color: '#6b7280', fontSize: '13px' }}>
-                Route via <strong style={{ color: '#111' }}>{quote.aggregator}</strong>
-              </span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
-                {isRefreshing ? (
-                  <span style={{ color: '#2563eb' }}>Refreshing quote…</span>
-                ) : flashUpdated ? (
-                  <span style={{ color: '#10b981' }}>✓ Quote updated</span>
-                ) : secondsSinceRefresh !== null ? (
-                  <span style={{ color: '#6b7280' }}>Updated {secondsSinceRefresh}s ago</span>
-                ) : null}
-                {onRefresh && (
-                  <button
-                    onClick={onRefresh}
-                    disabled={isRefreshing}
-                    style={{
-                      fontSize: '12px', padding: '4px 10px', cursor: isRefreshing ? 'not-allowed' : 'pointer',
-                      border: '1px solid #e5e7eb', background: '#fff', color: '#111',
-                      borderRadius: '6px', fontWeight: 500, opacity: isRefreshing ? 0.6 : 1,
-                    }}
-                  >
-                    Refresh
-                  </button>
-                )}
-              </span>
-            </div>
-
-            <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px' }}>
-              Rate: <span style={{ color: '#111', fontWeight: '500' }}>1 {fromAsset.symbol} = {rate} {toAsset.symbol} ⇌</span>
-            </div>
-
-            <div style={{ 
-              border: '1px solid #e5e7eb', 
-              borderRadius: '12px', 
-              padding: '16px',
-              position: 'relative',
-              backgroundColor: '#f9fafb'
-            }}>
-              {/* Input Amount */}
-              <div style={{ marginBottom: '24px' }}>
-                <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>Input Amount</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: '24px', fontWeight: '500' }}>{amountIn}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {inputUsd !== '0.00' && inputUsd !== 'NaN' && <span style={{ color: '#6b7280', fontSize: '14px' }}>~${inputUsd}</span>}
-                    <div style={{ 
-                      backgroundColor: '#3b82f6', 
-                      color: 'white', 
-                      width: '24px', 
-                      height: '24px', 
-                      borderRadius: '50%', 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'center',
-                      fontSize: '10px',
-                      fontWeight: 'bold'
-                    }}>{fromAsset.symbol.slice(0, 1)}</div>
-                    <span style={{ fontSize: '18px', fontWeight: '500' }}>{fromAsset.symbol}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Arrow Divider */}
-              <div style={{ 
-                position: 'absolute', 
-                left: '50%', 
-                top: '50%', 
-                transform: 'translate(-50%, -50%)',
-                width: '28px',
-                height: '28px',
-                borderRadius: '50%',
-                backgroundColor: '#fff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: '1px solid #e5e7eb',
-                boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
-              }}>
-                <span style={{ fontSize: '12px', color: '#6b7280' }}>↓</span>
-              </div>
-
-              {/* Output Amount */}
-              <div>
-                <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px', marginTop: '8px' }}>Output Amount</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: '24px', fontWeight: '500' }}>{amountOutFormatted.toFixed(6)}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    {outputUsd !== '0.00' && outputUsd !== 'NaN' && <span style={{ color: '#6b7280', fontSize: '14px' }}>~${outputUsd}</span>}
-                    <div style={{ 
-                      backgroundColor: '#10b981', 
-                      color: 'white', 
-                      width: '24px', 
-                      height: '24px', 
-                      borderRadius: '50%', 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'center',
-                      fontSize: '10px',
-                      fontWeight: 'bold'
-                    }}>{toAsset.symbol.slice(0, 1)}</div>
-                    <span style={{ fontSize: '18px', fontWeight: '500' }}>{toAsset.symbol}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Details Box */}
-            <div style={{ 
-              border: '1px solid #e5e7eb', 
-              borderRadius: '12px', 
-              padding: '16px',
-              marginTop: '16px',
-              fontSize: '13px'
-            }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Minimum Receiving</span>
-                <span style={{ fontWeight: '500' }}>{minOutputFormatted} {toAsset.symbol}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Maximum Receiving</span>
-                <span style={{ fontWeight: '500' }}>{amountOutFormatted.toFixed(6)} {toAsset.symbol}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Price Impact</span>
-                <span style={{ fontWeight: '500', color: priceImpactColor }}>
-                  {priceImpactPct === null
-                    ? 'n/a'
-                    : Math.abs(priceImpactPct) < 0.01
-                      ? '< 0.01%'
-                      : `${priceImpactPct >= 0 ? '-' : '+'}${Math.abs(priceImpactPct).toFixed(2)}%`}
-                </span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Estimated Total Gas</span>
-                <span style={{ fontWeight: '500' }}>${Number(quote.gasUsd).toFixed(2)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Max Slippage</span>
-                <span style={{ fontWeight: '500' }}>{slippage}%</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
-                <span style={{ color: '#6b7280' }}>Slippage Buffer</span>
-                <span style={{ fontWeight: '500' }}>
-                  {Number(formatUnits(BigInt(quote.amountOut) - minOutputBigInt, toAsset.decimals)).toFixed(6)} {toAsset.symbol}
-                  <span style={{ color: '#6b7280', marginLeft: '6px', fontSize: '12px' }}>({slippage}% of max)</span>
-                </span>
-              </div>
-
-              <div style={{ borderTop: '1px solid #e5e7eb', margin: '0 -16px 12px -16px' }}></div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-                <span style={{ color: '#6b7280' }}>Recipient</span>
-                <span style={{ color: '#3b82f6', textDecoration: 'underline' }}>{formatAddress(address as string)}</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                <span style={{ color: '#6b7280' }}>Contract Address</span>
-                <span style={{ textDecoration: 'underline', color: '#111' }}>{formatAddress(txPayload.to)}</span>
-              </div>
-            </div>
-
-            <SwapExecutor
-              txPayload={txPayload}
-              fromAsset={fromAsset}
-              amountIn={amountIn}
-              onClose={onClose}
-              onSwapStart={onSwapStart}
-              isEmbedded={true}
-              onStepChange={(step, hash) => { setExecStep(step); if (hash) setExecHash(hash); }}
-            />
-            </div>
-
-            {done && (
-              <div style={{ marginTop: '16px' }}>
-                <TxOutcomePanel outcome={outcome} tokens={outcomeTokens} />
-                {execHash && (
-                  <div style={{ marginTop: '16px' }}>
-                    <ExplorerLink hash={execHash as `0x${string}`} chainId={chainId} />
-                  </div>
-                )}
-                <div className="modal-footer">
-                  <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
-                    Done
-                  </button>
-                </div>
-              </div>
+      <div style={{ display: done ? 'none' : 'block' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', marginTop: '4px' }}>
+          <span style={{ color: '#6b7280', fontSize: '13px' }}>
+            Route via <strong style={{ color: '#111' }}>{quote.aggregator}</strong>
+          </span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+            {isRefreshing ? (
+              <span style={{ color: '#2563eb' }}>Refreshing quote…</span>
+            ) : flashUpdated ? (
+              <span style={{ color: '#10b981' }}>✓ Quote updated</span>
+            ) : secondsSinceRefresh !== null ? (
+              <span style={{ color: '#6b7280' }}>Updated {secondsSinceRefresh}s ago</span>
+            ) : null}
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                disabled={isRefreshing}
+                style={{
+                  fontSize: '12px', padding: '4px 10px', cursor: isRefreshing ? 'not-allowed' : 'pointer',
+                  border: '1px solid #e5e7eb', background: '#fff', color: '#111',
+                  borderRadius: '6px', fontWeight: 500, opacity: isRefreshing ? 0.6 : 1,
+                }}
+              >
+                Refresh
+              </button>
             )}
+          </span>
+        </div>
+
+        <div style={{ fontSize: '13px', color: '#6b7280', marginBottom: '16px' }}>
+          Rate: <span style={{ color: '#111', fontWeight: '500' }}>1 {fromAsset.symbol} = {rate} {toAsset.symbol} ⇌</span>
+        </div>
+
+        <div style={{
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '16px',
+          position: 'relative',
+          backgroundColor: '#f9fafb'
+        }}>
+          {/* Input Amount */}
+          <div style={{ marginBottom: '24px' }}>
+            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px' }}>Input Amount</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '24px', fontWeight: '500' }}>{amountIn}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {inputUsd !== '0.00' && inputUsd !== 'NaN' && <span style={{ color: '#6b7280', fontSize: '14px' }}>~${inputUsd}</span>}
+                <div style={{
+                  backgroundColor: '#3b82f6',
+                  color: 'white',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '10px',
+                  fontWeight: 'bold'
+                }}>{fromAsset.symbol.slice(0, 1)}</div>
+                <span style={{ fontSize: '18px', fontWeight: '500' }}>{fromAsset.symbol}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Arrow Divider */}
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            width: '28px',
+            height: '28px',
+            borderRadius: '50%',
+            backgroundColor: '#fff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            border: '1px solid #e5e7eb',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.05)'
+          }}>
+            <span style={{ fontSize: '12px', color: '#6b7280' }}>↓</span>
+          </div>
+
+          {/* Output Amount */}
+          <div>
+            <div style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px', marginTop: '8px' }}>Output Amount</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ fontSize: '24px', fontWeight: '500' }}>{amountOutFormatted.toFixed(6)}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {outputUsd !== '0.00' && outputUsd !== 'NaN' && <span style={{ color: '#6b7280', fontSize: '14px' }}>~${outputUsd}</span>}
+                <div style={{
+                  backgroundColor: '#10b981',
+                  color: 'white',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '50%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '10px',
+                  fontWeight: 'bold'
+                }}>{toAsset.symbol.slice(0, 1)}</div>
+                <span style={{ fontSize: '18px', fontWeight: '500' }}>{toAsset.symbol}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Details Box */}
+        <div style={{
+          border: '1px solid #e5e7eb',
+          borderRadius: '12px',
+          padding: '16px',
+          marginTop: '16px',
+          fontSize: '13px'
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Minimum Receiving</span>
+            <span style={{ fontWeight: '500' }}>{minOutputFormatted} {toAsset.symbol}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Maximum Receiving</span>
+            <span style={{ fontWeight: '500' }}>{amountOutFormatted.toFixed(6)} {toAsset.symbol}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Price Impact</span>
+            <span style={{ fontWeight: '500', color: priceImpactColor }}>
+              {priceImpactPct === null
+                ? 'n/a'
+                : Math.abs(priceImpactPct) < 0.01
+                  ? '< 0.01%'
+                  : `${priceImpactPct >= 0 ? '-' : '+'}${Math.abs(priceImpactPct).toFixed(2)}%`}
+            </span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Estimated Total Gas</span>
+            <span style={{ fontWeight: '500' }}>${Number(quote.gasUsd).toFixed(2)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Max Slippage</span>
+            <span style={{ fontWeight: '500' }}>{slippage}%</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <span style={{ color: '#6b7280' }}>Slippage Buffer</span>
+            <span style={{ fontWeight: '500' }}>
+              {Number(formatUnits(BigInt(quote.amountOut) - minOutputBigInt, toAsset.decimals)).toFixed(6)} {toAsset.symbol}
+              <span style={{ color: '#6b7280', marginLeft: '6px', fontSize: '12px' }}>({slippage}% of max)</span>
+            </span>
+          </div>
+
+          <div style={{ borderTop: '1px solid #e5e7eb', margin: '0 -16px 12px -16px' }}></div>
+
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
+            <span style={{ color: '#6b7280' }}>Recipient</span>
+            <span style={{ color: '#3b82f6', textDecoration: 'underline' }}>{formatAddress(address as string)}</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ color: '#6b7280' }}>Contract Address</span>
+            <span style={{ textDecoration: 'underline', color: '#111' }}>{formatAddress(txPayload.to)}</span>
+          </div>
+        </div>
+
+        <SwapExecutor
+          txPayload={txPayload}
+          fromAsset={fromAsset}
+          amountIn={amountIn}
+          onClose={onClose}
+          onSwapStart={onSwapStart}
+          isEmbedded={true}
+          onStepChange={(step, hash) => { setExecStep(step); if (hash) setExecHash(hash); }}
+        />
+      </div>
+
+      {done && (
+        <div style={{ marginTop: '16px' }}>
+          <TxOutcomePanel outcome={outcome} tokens={outcomeTokens} />
+          {execHash && (
+            <div style={{ marginTop: T.space[4], display: 'flex', justifyContent: 'center' }}>
+              <ExplorerLink hash={execHash as `0x${string}`} chainId={chainId} />
+
+            </div>
+          )}
+          <div className="modal-footer" style={{ marginTop: T.space[4] }}>
+            <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }

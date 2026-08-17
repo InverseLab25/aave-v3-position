@@ -41,6 +41,14 @@ function amount(value: bigint, decimals: number | null): string {
   })
 }
 
+function isDisplayZero(value: bigint, decimals: number | null): boolean {
+  if (value === 0n) return true
+  if (decimals === null) return false
+  const places = Math.min(decimals, 6)
+  const num = Number(formatUnits(value < 0n ? -value : value, decimals))
+  return Number(num.toFixed(places)) === 0
+}
+
 const shortAddress = (token: Address) => `${token.slice(0, 6)}…${token.slice(-4)}`
 
 /** Rows per page. Five is what fits under a panel without becoming a second screen. */
@@ -130,7 +138,7 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
 
       {/* 4. Slippage / Performance */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
-        {entry.fill?.delta !== undefined && entry.fill.delta !== null && entry.fill.delta !== 0n && swap && swap.dstDecimals !== null && (
+        {entry.fill?.delta !== undefined && entry.fill.delta !== null && swap && swap.dstDecimals !== null && !isDisplayZero(entry.fill.delta, swap.dstDecimals) && (
           <span style={{ 
             fontSize: T.fontSize.xs,
             fontWeight: 500,
@@ -193,10 +201,11 @@ function SyncFooter({ sync, expanded, inline }: { sync: HistorySync; expanded: b
           disabled={scanning}
           style={{
             border: `1px solid ${T.border}`, borderRadius: T.radius.sm,
-            background: 'transparent', padding: '2px 8px',
+            background: 'transparent', padding: '4px 12px',
             color: scanning ? T.textMuted : T.primary,
             cursor: scanning ? 'default' : 'pointer',
-            opacity: scanning ? 0.5 : 1, fontSize: T.fontSize.xs,
+            opacity: scanning ? 0.5 : 1, fontSize: T.fontSize.sm,
+            fontWeight: 500,
           }}
         >
           Resync
@@ -266,7 +275,16 @@ export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
             display: 'flex', alignItems: 'center', gap: T.space[1]
           }}
         >
-          {open ? '▾' : '▸'} Recent activity ({entries.length})
+          {open ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+          )}
+          Recent activity ({entries.length})
         </button>
 
         {sync && <SyncFooter sync={sync} expanded={open} inline />}

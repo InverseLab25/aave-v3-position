@@ -22,11 +22,9 @@ import { BPS } from '../../lib/strategies-sdk/sizing'
 import { PRICE_IMPACT_BLOCK_PERCENT } from '../../lib/swapRoute'
 import { getStrategiesAddress } from '../../config/chains'
 import { isVolatilePrice, toCollateralInputs } from '../../utils/liquidation'
-import { ExplorerLink } from '../ExplorerLink'
 import { AmountField } from './AmountField'
 import { ConfirmLeverageModal } from './ConfirmLeverageModal'
 import { SlippageField } from './SlippageField'
-import { TxOutcomePanel } from '../TxOutcome'
 import { useRecordOutcome } from '../../hooks/useRecordOutcome'
 import { buildTokenMap, positionTokens, type TokenMetaSource } from '../../lib/tokenMeta'
 import { hideTokens } from '../../lib/txOutcome'
@@ -45,12 +43,12 @@ import { T } from '../../styles/theme'
 const toTokenSource = (r: AvailableReserve | undefined): TokenMetaSource | null =>
   r
     ? {
-        symbol: r.symbol,
-        decimals: r.raw.decimals,
-        underlyingAsset: r.underlyingAsset,
-        aTokenAddress: r.aTokenAddress,
-        variableDebtTokenAddress: r.variableDebtTokenAddress,
-      }
+      symbol: r.symbol,
+      decimals: r.raw.decimals,
+      underlyingAsset: r.underlyingAsset,
+      aTokenAddress: r.aTokenAddress,
+      variableDebtTokenAddress: r.variableDebtTokenAddress,
+    }
     : null
 
 interface LeveragePanelProps {
@@ -310,8 +308,8 @@ export function LeveragePanel({
   const { flashAmount: supplyFlash } = deriveOpen({ marginAsset, marginAmount, supplyAmount })
   const estimatedSwapOut = collateralReserve && debtReserve && borrowAmount > 0n
     ? (borrowAmount * debtReserve.raw.priceUsd * 10n ** BigInt(collateralReserve.raw.decimals)
-        * (BPS - slippageBps))
-      / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals) * BPS)
+      * (BPS - slippageBps))
+    / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals) * BPS)
     : 0n
   const flashAmount = sizedBy === 'borrow' ? estimatedSwapOut : supplyFlash
 
@@ -320,7 +318,7 @@ export function LeveragePanel({
   const seededBorrow = sizedBy === 'borrow'
     ? borrowAmount
     : collateralReserve && debtReserve && flashAmount > 0n
-    ? seedBorrow({
+      ? seedBorrow({
         flashAmount,
         debtMargin: marginAsset === 'debt' ? marginAmount : 0n,
         slipNum: BPS - slippageBps,
@@ -329,7 +327,7 @@ export function LeveragePanel({
         collateralDecimals: collateralReserve.raw.decimals,
         debtDecimals: debtReserve.raw.decimals,
       })
-    : null
+      : null
 
   /**
    * Whether Aave will actually count this supply toward the user's borrow power.
@@ -340,17 +338,17 @@ export function LeveragePanel({
    */
   const enablement = collateralReserve
     ? collateralEnablement({
-        scaledATokenBalance:
-          collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.scaledATokenBalance ?? 0n,
-        enabledOnUser:
-          collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.enabledOnUser ?? false,
-        usageAsCollateralEnabled: collateralReserve.raw.usageAsCollateralEnabled,
-        ltvBps: collateralReserve.raw.ltvBps,
-        debtCeiling: collateralReserve.raw.debtCeiling,
-        eModeExcluded:
-          eModeExcludedReserves[collateralReserve.underlyingAsset.toLowerCase()] ?? false,
-        hasOtherCollateral: hasAnyCollateralEnabled,
-      })
+      scaledATokenBalance:
+        collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.scaledATokenBalance ?? 0n,
+      enabledOnUser:
+        collateralFlags[collateralReserve.underlyingAsset.toLowerCase()]?.enabledOnUser ?? false,
+      usageAsCollateralEnabled: collateralReserve.raw.usageAsCollateralEnabled,
+      ltvBps: collateralReserve.raw.ltvBps,
+      debtCeiling: collateralReserve.raw.debtCeiling,
+      eModeExcluded:
+        eModeExcludedReserves[collateralReserve.underlyingAsset.toLowerCase()] ?? false,
+      hasOtherCollateral: hasAnyCollateralEnabled,
+    })
     : null
 
   // What the position becomes, at oracle prices, before any router is asked. Costs no network
@@ -359,25 +357,25 @@ export function LeveragePanel({
   // it exactly, which makes the supplied collateral come out as the supply the user typed.
   const estimate = collateralReserve && debtReserve && seededBorrow !== null && flashAmount > 0n
     ? projectOpen({
-        marginAsset,
-        marginAmount,
-        borrowAmount: seededBorrow,
-        expectedSwapOut: flashAmount,
-        collateralPriceUsd: collateralReserve.raw.priceUsd,
-        debtPriceUsd: debtReserve.raw.priceUsd,
-        collateralDecimals: collateralReserve.raw.decimals,
-        debtDecimals: debtReserve.raw.decimals,
-        // Zeroed when Aave will not count this reserve: `calculateUserAccountData` skips such a
-        // supply entirely, so blending its own LTV in would show a health factor and liquidation
-        // price the account is not actually going to have.
-        ltvBps: enablement && !enablement.willCount ? 0n : collateralReserve.raw.ltvBps,
-        liquidationThresholdBps:
-          enablement && !enablement.willCount ? 0n : collateralReserve.raw.liquidationThresholdBps,
-        existingCollateralUsd,
-        existingDebtUsd,
-        existingLtvBps,
-        existingLiquidationThresholdBps,
-      })
+      marginAsset,
+      marginAmount,
+      borrowAmount: seededBorrow,
+      expectedSwapOut: flashAmount,
+      collateralPriceUsd: collateralReserve.raw.priceUsd,
+      debtPriceUsd: debtReserve.raw.priceUsd,
+      collateralDecimals: collateralReserve.raw.decimals,
+      debtDecimals: debtReserve.raw.decimals,
+      // Zeroed when Aave will not count this reserve: `calculateUserAccountData` skips such a
+      // supply entirely, so blending its own LTV in would show a health factor and liquidation
+      // price the account is not actually going to have.
+      ltvBps: enablement && !enablement.willCount ? 0n : collateralReserve.raw.ltvBps,
+      liquidationThresholdBps:
+        enablement && !enablement.willCount ? 0n : collateralReserve.raw.liquidationThresholdBps,
+      existingCollateralUsd,
+      existingDebtUsd,
+      existingLtvBps,
+      existingLiquidationThresholdBps,
+    })
     : null
 
   // Checked here as well as inside the hook, and for a different reason: this is instant, and it
@@ -389,12 +387,12 @@ export function LeveragePanel({
     // rather than to a blocked form.
     pricing: collateralReserve && debtReserve
       ? {
-          slipNum: BPS - slippageBps,
-          collateralPriceUsd: collateralReserve.raw.priceUsd,
-          debtPriceUsd: debtReserve.raw.priceUsd,
-          collateralDecimals: collateralReserve.raw.decimals,
-          debtDecimals: debtReserve.raw.decimals,
-        }
+        slipNum: BPS - slippageBps,
+        collateralPriceUsd: collateralReserve.raw.priceUsd,
+        debtPriceUsd: debtReserve.raw.priceUsd,
+        collateralDecimals: collateralReserve.raw.decimals,
+        debtDecimals: debtReserve.raw.decimals,
+      }
       : null,
   })
 
@@ -536,24 +534,24 @@ export function LeveragePanel({
   const marginWorth =
     marginAsset === 'debt' && collateralReserve && debtReserve && collateralReserve.raw.priceUsd > 0n
       ? display(
-          (marginAmount * debtReserve.raw.priceUsd * 10n ** BigInt(collateralReserve.raw.decimals))
-            / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals)),
-          collateralReserve.raw.decimals,
-          4,
-        )
+        (marginAmount * debtReserve.raw.priceUsd * 10n ** BigInt(collateralReserve.raw.decimals))
+        / (collateralReserve.raw.priceUsd * 10n ** BigInt(debtReserve.raw.decimals)),
+        collateralReserve.raw.decimals,
+        4,
+      )
       : null
   const message = errorCode && collateralReserve && marginReserve
     ? leverageErrorMessage(errorCode, {
-        collateralSymbol: collateralReserve.symbol,
-        marginSymbol: marginReserve.symbol,
-        marginBalance: display(marginBalance, marginReserve.raw.decimals, 4),
-        maxSupply: display(safeMax, collateralReserve.raw.decimals, 4),
-        dangerMaxSupply: danger || dangerMax <= safeMax
-          ? null
-          : display(dangerMax, collateralReserve.raw.decimals, 4),
-        marginWorth,
-        collateral: enablement,
-      })
+      collateralSymbol: collateralReserve.symbol,
+      marginSymbol: marginReserve.symbol,
+      marginBalance: display(marginBalance, marginReserve.raw.decimals, 4),
+      maxSupply: display(safeMax, collateralReserve.raw.decimals, 4),
+      dangerMaxSupply: danger || dangerMax <= safeMax
+        ? null
+        : display(dangerMax, collateralReserve.raw.decimals, 4),
+      marginWorth,
+      collateral: enablement,
+    })
     : null
 
   const busy = step === 'approving' || step === 'signing' || step === 'sending'
@@ -584,9 +582,9 @@ export function LeveragePanel({
 
   const marginChoices = collateralReserve && debtReserve
     ? [
-        { value: 'collateral', label: collateralReserve.symbol },
-        { value: 'debt', label: debtReserve.symbol },
-      ]
+      { value: 'collateral', label: collateralReserve.symbol },
+      { value: 'debt', label: debtReserve.symbol },
+    ]
     : []
 
   const actionLabel = boosting ? `Boost ${direction} ${subject?.symbol ?? ''}` : `Open ${direction} ${subject?.symbol ?? ''}`
@@ -817,14 +815,6 @@ export function LeveragePanel({
               </button>
             </div>
           )}
-
-          {!confirming && step === 'done' && txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
-
-          {/* Also here, not only in the modal. `step` reaches 'done' on the hash, which is a block
-              or more before the receipt that produces these figures — so the ordinary sequence
-              (Confirm, see Done, press Done) closed the only place they were shown. */}
-          {!confirming && <TxOutcomePanel outcome={settled} tokens={outcomeTokens} />}
-
         </div>
       </div>
 

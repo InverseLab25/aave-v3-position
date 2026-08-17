@@ -44,7 +44,7 @@ function App() {
       <header className="header">
         <h1 className="header-logo">DeFi Dashboard</h1>
         <nav className="header-tabs">
-          <button 
+          <button
             onClick={() => setSelectedTab('aave')}
             style={{
               background: activeTab === 'aave' ? '#111' : 'transparent',
@@ -72,22 +72,22 @@ function App() {
         <div className="header-network">
           <div style={{
             display: 'flex',
-            alignItems: 'center', 
-            gap: '6px', 
-            padding: '4px 12px', 
-            borderRadius: '20px', 
-            fontSize: '12px', 
+            alignItems: 'center',
+            gap: '6px',
+            padding: '4px 12px',
+            borderRadius: '20px',
+            fontSize: '12px',
             fontWeight: 'bold',
             backgroundColor: isTestnet ? '#fef3c7' : '#ecfdf5',
             color: isTestnet ? '#92400e' : '#065f46',
             border: `1px solid ${isTestnet ? '#fbbf24' : '#6ee7b7'}`,
             whiteSpace: 'nowrap'
           }}>
-            <div style={{ 
-              width: '8px', 
-              height: '8px', 
-              borderRadius: '50%', 
-              backgroundColor: isTestnet ? '#f59e0b' : '#10b981' 
+            <div style={{
+              width: '8px',
+              height: '8px',
+              borderRadius: '50%',
+              backgroundColor: isTestnet ? '#f59e0b' : '#10b981'
             }}></div>
             {chainName}
           </div>

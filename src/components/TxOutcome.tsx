@@ -43,6 +43,13 @@ function amount(value: bigint, decimals: number): string {
   })
 }
 
+function isDisplayZero(value: bigint, decimals: number): boolean {
+  if (value === 0n) return true
+  const places = Math.min(decimals, MAX_PLACES)
+  const num = Number(formatUnits(value < 0n ? -value : value, decimals))
+  return Number(num.toFixed(places)) === 0
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: T.space[3], alignItems: 'baseline' }}>
@@ -112,11 +119,10 @@ export function TxOutcomePanel({ outcome, tokens }: TxOutcomePanelProps) {
         </Row>
       )}
 
-      {fill && fill.percent !== null && (
+      {fill && dst && !isDisplayZero(fill.delta, dst.decimals) && (
         <Row label="vs quote">
-          <span style={{ color: fill.delta < 0n ? T.warning : T.success }}>
-            {`${Math.abs(fill.percent).toFixed(4)}% ${fill.delta < 0n ? 'below' : 'above'} the quote`}
-            {dst && ` (${amount(fill.delta < 0n ? -fill.delta : fill.delta, dst.decimals)} ${dst.symbol})`}
+          <span style={{ color: fill.delta < 0n ? T.danger : T.success }}>
+            {fill.delta > 0n ? '+' : '-'}{amount(fill.delta < 0n ? -fill.delta : fill.delta, dst.decimals)} {dst.symbol}
           </span>
         </Row>
       )}

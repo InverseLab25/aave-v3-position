@@ -52,16 +52,25 @@ describe('TxOutcomePanel', () => {
     expect(screen.getByText(/1 WETH = 3,?405\.1/)).toBeTruthy()
   })
 
-  it('reports a fill under the quote as a shortfall against it', () => {
+  it('reports a fill under the quote as an amount short, in the token received', () => {
+    // An amount answers "how much did that cost me"; a percentage of a figure shown nowhere on the
+    // panel does not. -2.7 USDC on a 3,405.1 USDC fill.
     show(outcome())
 
-    expect(screen.getByText(/0\.0792% below the quote/i)).toBeTruthy()
+    expect(screen.getByText(/-2\.700000 USDC/)).toBeTruthy()
   })
 
-  it('reports a fill above the quote as coming in better than it', () => {
+  it('reports a fill above the quote the same way, signed the other direction', () => {
     show(outcome({ fill: { delta: 3_407800n, percent: 0.1, belowFloor: false } }))
 
-    expect(screen.getByText(/0\.1000% above the quote/i)).toBeTruthy()
+    expect(screen.getByText(/\+3\.407800 USDC/)).toBeTruthy()
+  })
+
+  it('says nothing when the fill matched the quote to the displayed precision', () => {
+    // A row reading "+0.000000 USDC" is a line whose content is that nothing happened.
+    show(outcome({ fill: { delta: 0n, percent: 0, belowFloor: false } }))
+
+    expect(screen.queryByText(/vs quote/)).toBeNull()
   })
 
   it('flags a fill that came in under the floor the transaction enforced', () => {
