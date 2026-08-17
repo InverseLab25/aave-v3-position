@@ -114,7 +114,7 @@ describe('SwapExecutor — the derived step machine', () => {
   it('waits on the allowance read before offering anything', () => {
     // `undefined` means the read has not landed, which is NOT the same as an allowance of zero.
     mount()
-    expect(screen.getByText('Checking Allowance...')).toBeTruthy()
+    expect(screen.getByText('Checking...')).toBeTruthy()
   })
 
   it('asks for approval when the allowance is short of the amount', () => {
@@ -126,14 +126,14 @@ describe('SwapExecutor — the derived step machine', () => {
   it('goes straight to executing when the allowance already covers the amount', () => {
     mocks.useReadContract.mockReturnValue({ data: AMOUNT_WEI, refetch: refetchAllowance })
     mount()
-    expect(screen.getByText('Execute Swap')).toBeTruthy()
+    expect(screen.getByText('Confirm')).toBeTruthy()
   })
 
   it('skips the whole approval leg for a native sell', () => {
     // Native rides along as tx `value`, so there is no ERC-20 allowance to check — and the
     // allowance read stays disabled, so `undefined` must not strand it on "Checking".
     mount({ fromAsset: NATIVE_ASSET, amountIn: '1' })
-    expect(screen.getByText('Execute Swap')).toBeTruthy()
+    expect(screen.getByText('Confirm')).toBeTruthy()
   })
 
   it('shows approving while the approval is pending', () => {
@@ -141,7 +141,7 @@ describe('SwapExecutor — the derived step machine', () => {
       mutateAsync: vi.fn(), data: undefined, isPending: true, error: null, reset: resetApprove,
     })
     mount()
-    expect(screen.getByText('Approving...')).toBeTruthy()
+    expect(screen.getByText('Processing...')).toBeTruthy()
   })
 
   it('stays on approving after the approval is sent but before it confirms', () => {
@@ -149,14 +149,14 @@ describe('SwapExecutor — the derived step machine', () => {
       mutateAsync: vi.fn(), data: '0xapprovehash', isPending: false, error: null, reset: resetApprove,
     })
     mount()
-    expect(screen.getByText('Approving...')).toBeTruthy()
+    expect(screen.getByText('Processing...')).toBeTruthy()
   })
 
   it('lets an in-flight swap outrank a SATISFIED allowance', () => {
     // The precedence that actually matters, and the one a zero-allowance case cannot prove:
     // with the allowance already covering the amount, both the `executing` and `approved`
     // branches are live, so only the most-advanced-first ordering keeps the button from
-    // reverting to "Execute Swap" over a swap that is already in flight — one click from a
+    // reverting to "Confirm" over a swap that is already in flight — one click from a
     // double submit.
     mocks.useReadContract.mockReturnValue({ data: AMOUNT_WEI, refetch: refetchAllowance })
     mocks.useSendTransaction.mockReturnValue({
@@ -164,8 +164,10 @@ describe('SwapExecutor — the derived step machine', () => {
     })
     mount()
 
-    expect(screen.getByText('Executing Swap...')).toBeTruthy()
-    expect(screen.queryByText('Execute Swap')).toBeNull()
+    // Approving and executing share the "Processing..." label now, so what this pins is that the
+    // button is NOT back on Confirm — one click from a double submit.
+    expect(screen.getByText('Processing...')).toBeTruthy()
+    expect(screen.queryByText('Confirm')).toBeNull()
   })
 
   it('lets an in-flight swap outrank a still-short allowance too', () => {
@@ -177,17 +179,33 @@ describe('SwapExecutor — the derived step machine', () => {
     })
     mount()
 
-    expect(screen.getByText('Executing Swap...')).toBeTruthy()
+    expect(screen.getByText('Processing...')).toBeTruthy()
     expect(screen.queryByText('Approve USDC')).toBeNull()
   })
 
-  it('reports success once the swap receipt confirms', () => {
+  it('takes itself off screen once the swap confirms', () => {
+    // Success is the parent modal's to report, with the fill it can read off the receipt. Leaving
+    // a button here as well would offer to send again what has already been sent.
     mocks.useSendTransaction.mockReturnValue({
       mutate: sendTransaction, data: '0xswaphash', isPending: false, error: null, reset: resetSwap,
     })
     mocks.useWaitForTransactionReceipt.mockReturnValue({ isSuccess: true })
-    mount()
-    expect(screen.getByText(/Swap Successful|Done|Close/i)).toBeTruthy()
+
+    const { container } = mount()
+
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('tells the parent which step it is on, and the hash once there is one', () => {
+    // How the parent knows to show "Processing..." and then a receipt: this component owns the
+    // step machine, and the modal around it owns what the user reads.
+    const onStepChange = vi.fn()
+    mocks.useSendTransaction.mockReturnValue({
+      mutate: sendTransaction, data: '0xswaphash', isPending: false, error: null, reset: resetSwap,
+    })
+    mount({ onStepChange })
+
+    expect(onStepChange).toHaveBeenCalledWith('executing', '0xswaphash')
   })
 
   it('lets a swap error outrank an in-flight swap', () => {
@@ -211,7 +229,7 @@ describe('SwapExecutor — the pre-flight before sending', () => {
     approved()
     mount()
 
-    fireEvent.click(screen.getByText('Execute Swap'))
+    fireEvent.click(screen.getByText('Confirm'))
 
     await waitFor(() => expect(sendTransaction).toHaveBeenCalled())
     const sent = sendTransaction.mock.calls[0][0]
@@ -228,7 +246,7 @@ describe('SwapExecutor — the pre-flight before sending', () => {
     mocks.estimateGas.mockRejectedValue(new Error('execution reverted'))
     mount()
 
-    fireEvent.click(screen.getByText('Execute Swap'))
+    fireEvent.click(screen.getByText('Confirm'))
 
     await waitFor(() => expect(screen.getByText(/Swap would revert/)).toBeTruthy())
     expect(sendTransaction).not.toHaveBeenCalled()
@@ -239,7 +257,7 @@ describe('SwapExecutor — the pre-flight before sending', () => {
     mocks.estimateGas.mockRejectedValue(new Error('execution reverted'))
     mount()
 
-    fireEvent.click(screen.getByText('Execute Swap'))
+    fireEvent.click(screen.getByText('Confirm'))
     await waitFor(() => expect(screen.getByText('Retry')).toBeTruthy())
 
     fireEvent.click(screen.getByText('Retry'))
@@ -247,7 +265,7 @@ describe('SwapExecutor — the pre-flight before sending', () => {
     // Both mutations are reset, and the local pre-flight error is dropped.
     expect(resetApprove).toHaveBeenCalled()
     expect(resetSwap).toHaveBeenCalled()
-    await waitFor(() => expect(screen.getByText('Execute Swap')).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Confirm')).toBeTruthy())
   })
 
   it('tells the parent to freeze quote refresh the moment the user commits', async () => {
@@ -256,7 +274,7 @@ describe('SwapExecutor — the pre-flight before sending', () => {
     const onSwapStart = vi.fn()
     mount({ onSwapStart })
 
-    fireEvent.click(screen.getByText('Execute Swap'))
+    fireEvent.click(screen.getByText('Confirm'))
 
     expect(onSwapStart).toHaveBeenCalledTimes(1)
   })

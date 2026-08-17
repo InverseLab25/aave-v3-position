@@ -1,8 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { formatUnits } from 'viem';
-import { useConnection } from 'wagmi';
+import { useConnection, useWaitForTransactionReceipt } from 'wagmi';
 import type { QuoteResponse, TransactionPayload, Asset } from '../adapters/types';
 import { SwapExecutor } from './SwapExecutor';
+import { TxOutcomePanel } from './TxOutcome';
+import { readOutcome } from '../lib/txOutcome';
+import { ExplorerLink } from './ExplorerLink';
+import { T } from '../styles/theme';
 
 interface ConfirmSwapModalProps {
   quote: QuoteResponse;
@@ -35,7 +39,9 @@ export function ConfirmSwapModal({
   onRefresh,
   onSwapStart,
 }: ConfirmSwapModalProps) {
-  const { address } = useConnection();
+  const { address, chainId } = useConnection();
+  const [execStep, setExecStep] = useState<string>('');
+  const [execHash, setExecHash] = useState<string | undefined>();
 
   const amountOutFormatted = Number(formatUnits(BigInt(quote.amountOut), toAsset.decimals));
   const amountInNum = parseFloat(amountIn);
@@ -97,6 +103,29 @@ export function ConfirmSwapModal({
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   };
 
+  const { data: receipt } = useWaitForTransactionReceipt({
+    hash: execHash as `0x${string}` | undefined,
+    query: { enabled: !!execHash },
+  });
+
+  const outcome = useMemo(() => {
+    if (!receipt || !address) return null;
+    return readOutcome({
+      logs: receipt.logs,
+      wallet: address as `0x${string}`,
+      pair: { srcToken: fromAsset.underlyingAsset as `0x${string}`, dstToken: toAsset.underlyingAsset as `0x${string}` },
+      expectedOut: BigInt(quote.amountOut),
+      minOut: minOutputBigInt,
+    });
+  }, [receipt, address, fromAsset, toAsset, quote.amountOut, minOutputBigInt]);
+
+  const outcomeTokens = useMemo(() => ({
+    [fromAsset.underlyingAsset.toLowerCase()]: { symbol: fromAsset.symbol, decimals: fromAsset.decimals },
+    [toAsset.underlyingAsset.toLowerCase()]: { symbol: toAsset.symbol, decimals: toAsset.decimals },
+  }), [fromAsset, toAsset]);
+
+  const done = execStep === 'success';
+
   return (
     <div className="modal-overlay">
       <div 
@@ -113,7 +142,23 @@ export function ConfirmSwapModal({
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600' }}>Confirm Swap Details</h2>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: '600', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {done ? (
+                  <>
+                    <svg
+                      width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.success}
+                      strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="10" strokeWidth="2" />
+                      <path d="M8 12.5l2.5 2.5L16 9.5" />
+                    </svg>
+                    Swap complete
+                  </>
+                ) : (
+                  'Confirm Swap Details'
+                )}
+              </h2>
               <button
                 onClick={onClose}
                 style={{ background: 'none', border: 'none', color: '#6b7280', fontSize: '20px', cursor: 'pointer' }}
@@ -122,6 +167,7 @@ export function ConfirmSwapModal({
               </button>
             </div>
 
+            <div style={{ display: done ? 'none' : 'block' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px', marginTop: '4px' }}>
               <span style={{ color: '#6b7280', fontSize: '13px' }}>
                 Route via <strong style={{ color: '#111' }}>{quote.aggregator}</strong>
@@ -290,7 +336,25 @@ export function ConfirmSwapModal({
               onClose={onClose}
               onSwapStart={onSwapStart}
               isEmbedded={true}
+              onStepChange={(step, hash) => { setExecStep(step); if (hash) setExecHash(hash); }}
             />
+            </div>
+
+            {done && (
+              <div style={{ marginTop: '16px' }}>
+                <TxOutcomePanel outcome={outcome} tokens={outcomeTokens} />
+                {execHash && (
+                  <div style={{ marginTop: '16px' }}>
+                    <ExplorerLink hash={execHash as `0x${string}`} chainId={chainId} />
+                  </div>
+                )}
+                <div className="modal-footer">
+                  <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+                    Done
+                  </button>
+                </div>
+              </div>
+            )}
       </div>
     </div>
   );

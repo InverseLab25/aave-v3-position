@@ -30,11 +30,12 @@ interface SwapExecutorProps {
   /** Fired the moment the user commits (Approve/Execute) so the parent can freeze quote refresh. */
   onSwapStart?: () => void;
   isEmbedded?: boolean;
+  onStepChange?: (step: string, hash?: string) => void;
 }
 
 type ExecutionStep = 'check_allowance' | 'needs_approval' | 'approving' | 'approved' | 'executing' | 'success' | 'error';
 
-export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapStart, isEmbedded }: SwapExecutorProps) {
+export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapStart, isEmbedded, onStepChange }: SwapExecutorProps) {
   const { address, chainId } = useConnection();
   const config = useConfig();
   const chainConfig = getChainConfig(chainId);
@@ -114,6 +115,10 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
     ? 'approved'
     : 'needs_approval';
 
+  useEffect(() => {
+    onStepChange?.(step, swapHash || undefined);
+  }, [step, swapHash, onStepChange]);
+
   const errorMsg = execError
     ? execError
     : swapError
@@ -192,83 +197,62 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
   const s = stepStyles[step];
 
   if (isEmbedded) {
+    if (step === 'success') return null;
+
+    const isBusy = step === 'check_allowance' || step === 'approving' || isApprovePending || step === 'executing' || isSwapPending;
+    
+    const buttonLabel = 
+      step === 'error' ? 'Retry' :
+      step === 'check_allowance' ? 'Checking...' :
+      (step === 'approving' || isApprovePending) ? 'Processing...' :
+      (step === 'executing' || isSwapPending) ? 'Processing...' :
+      step === 'needs_approval' ? `Approve ${fromAsset.symbol}` :
+      'Confirm';
+
+    const onClick = step === 'error' ? handleRetry : step === 'needs_approval' ? handleApprove : handleExecute;
+
+    // `success` is unreachable here — the early return above took it — so testing for it is dead.
+    //
+    // An `error` term is dead too, for a subtler reason: `handleRetry` resets the step to
+    // `needs_approval`, so a failed send does not remember that the approval had already been
+    // granted. Showing the tick through an error would need that memory kept somewhere it is not.
+    const hasApproved = step === 'approved' || step === 'executing' || isSwapPending;
+    const isSending = step === 'executing' || isSwapPending;
+
+
     return (
       <div style={{ marginTop: '20px' }}>
-        {step === 'check_allowance' && (
-          <button style={{
-            width: '100%', padding: '16px', backgroundColor: '#e5e7eb', color: '#6b7280',
-            border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-            cursor: 'not-allowed'
-          }} disabled>
-            Checking Allowance...
-          </button>
-        )}
-        {step === 'needs_approval' && (
-          <button onClick={handleApprove} style={{
-            width: '100%', padding: '16px', backgroundColor: '#3b82f6', color: '#fff',
-            border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-            cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(59, 130, 246, 0.2)'
-          }}>
-            Approve {fromAsset.symbol}
-          </button>
-        )}
-        {(step === 'approving' || isApprovePending) && (
-          <button style={{
-            width: '100%', padding: '16px', backgroundColor: '#93c5fd', color: '#fff',
-            border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-            cursor: 'wait'
-          }} disabled>
-            Approving...
-          </button>
-        )}
-        {step === 'approved' && (
-          <button onClick={handleExecute} style={{
-            width: '100%', padding: '16px', backgroundColor: '#10b981', color: '#fff',
-            border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-            cursor: 'pointer', boxShadow: '0 4px 6px -1px rgba(16, 185, 129, 0.2)'
-          }}>
-            Execute Swap
-          </button>
-        )}
-        {(step === 'executing' || isSwapPending) && (
-          <button style={{
-            width: '100%', padding: '16px', backgroundColor: '#6ee7b7', color: '#fff',
-            border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-            cursor: 'wait'
-          }} disabled>
-            Executing Swap...
-          </button>
-        )}
-        {step === 'success' && (
-          <div style={{ textAlign: 'center' }}>
-            <button onClick={onClose} style={{
-              width: '100%', padding: '16px', backgroundColor: '#10b981', color: '#fff',
-              border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-              cursor: 'pointer', marginBottom: '8px'
-            }}>
-              Swap Complete! Close
-            </button>
-            {swapHash && (
-              <a href={`${explorerUrl}/tx/${swapHash}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: '13px', color: '#3b82f6', textDecoration: 'underline' }}>
-                View on Explorer →
-              </a>
-            )}
+        {!isFromNative && (
+          <div style={{ marginTop: '16px', fontSize: '14px', color: '#6b7280', marginBottom: '16px' }}>
+            <span style={{ color: hasApproved ? '#111' : '#6b7280', fontWeight: hasApproved ? 700 : 400 }}>
+              {hasApproved ? '✓ approved' : 'approve'}
+            </span>
+            {' · '}
+            <span style={{ color: isSending ? '#111' : '#6b7280', fontWeight: isSending ? 700 : 400 }}>
+              send
+            </span>
           </div>
         )}
+
         {step === 'error' && (
-          <div style={{ textAlign: 'center' }}>
-            <div style={{ color: '#ef4444', fontSize: '13px', marginBottom: '12px', padding: '8px', backgroundColor: '#fee2e2', borderRadius: '8px' }}>
-              {errorMsg}
-            </div>
-            <button onClick={handleRetry} style={{
-              width: '100%', padding: '16px', backgroundColor: '#ef4444', color: '#fff',
-              border: 'none', borderRadius: '12px', fontWeight: '600', fontSize: '16px',
-              cursor: 'pointer'
-            }}>
-              Retry
-            </button>
+          <div style={{ marginTop: '12px', marginBottom: '16px', fontSize: '14px', color: '#ef4444' }}>
+            {errorMsg}
           </div>
         )}
+
+        <div className="modal-footer">
+          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }} disabled={isBusy}>
+            Cancel
+          </button>
+          <button
+            onClick={onClick}
+            disabled={isBusy}
+            className="btn-primary"
+            style={{ flex: 1, padding: '10px' }}
+          >
+            {buttonLabel}
+          </button>
+        </div>
       </div>
     );
   }
