@@ -126,8 +126,31 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
   const btnLabel = isInsufficient ? 'Insufficient supplied' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Withdraw'
 
   return (
-    <Modal title={`Withdraw ${asset.symbol}`} onClose={onClose} maxWidth="440px" dismissable={!isProcessing}>
-        <div style={{ padding: T.space[5] }}>
+    <Modal
+      title={`Withdraw ${asset.symbol}`}
+      onClose={onClose}
+      maxWidth="440px"
+      dismissable={!isProcessing}
+      // In the shell's footer, not trailing the body. Inline it scrolled away with the form and
+      // sat at a different inset from every other modal's actions.
+      footer={
+        <>
+          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+            Cancel
+          </button>
+          <button
+            style={{ ...primaryBtnStyle(isProcessing || !canExecute || isInsufficient || hfGuardBlocked), flex: 1, width: 'auto' }}
+            onClick={executeAction}
+            disabled={isProcessing || !canExecute || isInsufficient || hfGuardBlocked}
+          >
+            {btnLabel}
+          </button>
+        </>
+      }
+    >
+        {/* No padding of its own: the shell's `.modal-body` already supplies it, and both together
+                        inset the content twice as far as the header above it. */}
+        <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[3] }}>
             <span>Available to withdraw</span>
             <span style={{ color: T.text, fontFamily: T.font.mono, fontWeight: 600 }}>{asset.amount?.toFixed(4) ?? '0.00'} {asset.symbol}</span>
@@ -146,7 +169,7 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
             />
             <button
               onClick={() => { setAmountStr(maxWithdrawableStr); setIsMax(true) }}
-              style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
+              style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: 'transparent', border: `1px solid ${T.border}`, borderRadius: T.radius.sm, cursor: 'pointer' }}
             >MAX</button>
           </div>
 
@@ -163,11 +186,6 @@ export function WithdrawModal({ asset, ethPriceUsd = 0, collateralUsd = 0, debtU
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
           {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
-          <button
-            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || hfGuardBlocked)}
-            onClick={executeAction}
-            disabled={isProcessing || !canExecute || isInsufficient || hfGuardBlocked}
-          >{btnLabel}</button>
         </div>
     </Modal>
   )

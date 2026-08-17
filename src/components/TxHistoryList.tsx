@@ -74,49 +74,56 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   return (
     <div
       style={{
-        display: 'flex', flexDirection: 'column', gap: T.space[1],
-        padding: `${T.space[2]} 0`, borderTop: `1px solid ${T.border}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: T.space[4],
+        padding: `${T.space[3]} 0`, borderTop: `1px solid ${T.border}`,
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: T.space[3] }}>
-        <span style={{ fontWeight: 600 }}>{entry.kind === 'open' ? 'Open' : 'Close'}</span>
+      {/* Left side: Kind and Date */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: T.space[3], minWidth: 'max-content' }}>
+        <span style={{ fontWeight: 600, width: '45px' }}>{entry.kind === 'open' ? 'Open' : 'Close'}</span>
         <span style={{ color: T.textMuted, fontSize: T.fontSize.xs }}>
-          {new Date(entry.at).toLocaleString()}
+          {new Date(entry.at).toLocaleString(undefined, { month: 'numeric', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
         </span>
       </div>
 
-      {swap && priced && swap.srcSymbol && swap.dstSymbol ? (
-        <RateLine
-          srcSymbol={swap.srcSymbol}
-          srcDecimals={swap.srcDecimals!}
-          dstSymbol={swap.dstSymbol}
-          dstDecimals={swap.dstDecimals!}
-          spentAmount={swap.spentAmount}
-          returnAmount={swap.returnAmount}
-        />
-      ) : swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
-        // A row recorded before both sides' decimals were kept. The amounts are two unscaled
-        // integers, so only the direction it was written in can be stated, and not inverted.
-        <span>{`1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`}</span>
-      ) : (
-        <span style={{ color: T.textMuted }}>No swap recorded on this transaction</span>
-      )}
+      {/* Middle: Swap Details */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: T.space[4], flex: 1, minWidth: 'max-content' }}>
+        {swap && priced && swap.srcSymbol && swap.dstSymbol ? (
+          <div style={{ minWidth: '200px' }}>
+            <RateLine
+              srcSymbol={swap.srcSymbol}
+              srcDecimals={swap.srcDecimals!}
+              dstSymbol={swap.dstSymbol}
+              dstDecimals={swap.dstDecimals!}
+              spentAmount={swap.spentAmount}
+              returnAmount={swap.returnAmount}
+            />
+          </div>
+        ) : swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
+          <span style={{ minWidth: '200px' }}>{`1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`}</span>
+        ) : (
+          <span style={{ color: T.textMuted, minWidth: '200px' }}>No swap recorded</span>
+        )}
 
-      {swap && (
-        <span style={{ color: T.textMuted, fontSize: T.fontSize.xs }}>
-          {`${amount(swap.spentAmount, swap.srcDecimals)} ${swap.srcSymbol ?? shortAddress(swap.srcToken)}`}
-          {' → '}
-          {`${amount(swap.returnAmount, swap.dstDecimals)} ${swap.dstSymbol ?? shortAddress(swap.dstToken)}`}
-        </span>
-      )}
+        {swap && (
+          <span style={{ color: T.textMuted, fontSize: T.fontSize.xs, flex: 1 }}>
+            {`${amount(swap.spentAmount, swap.srcDecimals)} ${swap.srcSymbol ?? shortAddress(swap.srcToken)}`}
+            {' → '}
+            {`${amount(swap.returnAmount, swap.dstDecimals)} ${swap.dstSymbol ?? shortAddress(swap.dstToken)}`}
+          </span>
+        )}
 
-      {entry.fill?.percent !== null && entry.fill !== null && (
-        <span style={{ fontSize: T.fontSize.xs, color: entry.fill.delta < 0n ? T.warning : T.success }}>
-          {`${Math.abs(entry.fill.percent!).toFixed(4)}% ${entry.fill.delta < 0n ? 'below' : 'above'} the quote`}
-        </span>
-      )}
+        {entry.fill?.percent !== null && entry.fill !== null && (
+          <span style={{ fontSize: T.fontSize.xs, color: entry.fill.delta < 0n ? T.warning : T.success, minWidth: '150px', textAlign: 'right' }}>
+            {`${Math.abs(entry.fill.percent!).toFixed(4)}% ${entry.fill.delta < 0n ? 'below' : 'above'} the quote`}
+          </span>
+        )}
+      </div>
 
-      <ExplorerLink hash={entry.hash as `0x${string}`} chainId={chainId} label="View" />
+      {/* Right side: View Link */}
+      <div style={{ minWidth: 'max-content' }}>
+        <ExplorerLink hash={entry.hash as `0x${string}`} chainId={chainId} label="View" />
+      </div>
     </div>
   )
 }

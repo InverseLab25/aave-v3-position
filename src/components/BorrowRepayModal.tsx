@@ -216,7 +216,27 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
   const btnLabel = isInsufficientRepay ? 'Insufficient balance' : isOverRepay ? 'Exceeds debt' : hfGuardBlocked ? 'Health factor too low' : isProcessing ? 'Processing…' : TAB_LABELS[activeTab]
 
   return (
-    <Modal title={asset.symbol} onClose={onClose} maxWidth="440px">
+    <Modal
+      title={asset.symbol}
+      onClose={onClose}
+      maxWidth="440px"
+      dismissable={!isProcessing}
+      // In the shell's footer, not trailing the body — see WithdrawModal.
+      footer={
+        <>
+          <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+            Cancel
+          </button>
+          <button
+            style={{ ...primaryBtnStyle(isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked), flex: 1, width: 'auto' }}
+            onClick={executeAction}
+            disabled={isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked}
+          >
+            {btnLabel}
+          </button>
+        </>
+      }
+    >
 
         {/* Underline tabs */}
         <div style={{ display: 'flex', gap: T.space[1], padding: `${T.space[3]} ${T.space[5]} 0`, borderBottom: `1px solid ${T.border}` }}>
@@ -236,7 +256,9 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
         </div>
 
         {/* Body */}
-        <div style={{ padding: T.space[5] }}>
+        {/* No padding of its own: the shell's `.modal-body` already supplies it, and both together
+                        inset the content twice as far as the header above it. */}
+        <div>
           {activeTab === 'repay' && (
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[3] }}>
               <span>Outstanding debt</span>
@@ -265,7 +287,7 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
             {activeTab === 'repay' && (
               <button
                 onClick={() => { setAmountStr(maxRepayableStr); setIsMax(true) }}
-                style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
+                style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: 'transparent', border: `1px solid ${T.border}`, borderRadius: T.radius.sm, cursor: 'pointer' }}
               >MAX</button>
             )}
           </div>
@@ -284,11 +306,6 @@ export function BorrowRepayModal({ asset, initialTab = 'borrow', ethPriceUsd = 0
           {lastLog && <div style={alertStyle(isError ? 'danger' : 'success')}>{lastLog}</div>}
           {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
-          <button
-            style={primaryBtnStyle(isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked)}
-            onClick={executeAction}
-            disabled={isProcessing || !canExecute || isInsufficient || isOverRepay || hfGuardBlocked}
-          >{btnLabel}</button>
         </div>
     </Modal>
   )

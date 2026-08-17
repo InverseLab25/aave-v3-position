@@ -175,7 +175,30 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
   )
 
   return (
-    <Modal title={selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'} onClose={onClose} maxWidth="600px">
+    <Modal
+      title={selectedAsset ? `Supply ${selectedAsset.symbol}` : 'Assets to Supply'}
+      onClose={onClose}
+      maxWidth="600px"
+      dismissable={!isProcessing}
+      // Only once an asset is chosen: the picker view is a list with nothing to confirm, and a
+      // footer over it would offer an action for something not yet selected.
+      footer={
+        selectedAsset ? (
+          <>
+            <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
+              Cancel
+            </button>
+            <button
+              style={{ ...primaryBtnStyle(!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block'), flex: 1, width: 'auto' }}
+              onClick={executeSupply}
+              disabled={!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block'}
+            >
+              {isInsufficient ? 'Insufficient balance' : hfGuard.level === 'block' ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Supply'}
+            </button>
+          </>
+        ) : undefined
+      }
+    >
 
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {!selectedAsset ? (
@@ -218,7 +241,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
             </table>
           ) : (
             /* ── Supply form ─────────────────────────────────────────────── */
-            <div style={{ padding: T.space[5] }}>
+            <div>
               <button
                 className="btn-ghost"
                 style={{ marginBottom: T.space[5], fontSize: T.fontSize.sm }}
@@ -242,7 +265,7 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
                 />
                 <button
                   onClick={() => setAmountStr(formatUnits(maxSuppliableRaw, selectedDecimals))}
-                  style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: T.radius.sm, cursor: 'pointer' }}
+                  style={{ position: 'absolute', right: '10px', bottom: '10px', padding: '2px 8px', fontSize: T.fontSize.xs, fontWeight: 700, color: T.primary, background: 'transparent', border: `1px solid ${T.border}`, borderRadius: T.radius.sm, cursor: 'pointer' }}
                 >MAX</button>
               </div>
 
@@ -259,11 +282,6 @@ export function AssetsToSupplyModal({ chainId, availableReserves, ethPriceUsd = 
               {statusMsg && <div style={alertStyle(isError ? 'danger' : step === 4 ? 'success' : 'info')}>{statusMsg}</div>}
               {txHash && <ExplorerLink hash={txHash} chainId={chainId} />}
 
-              <button
-                style={primaryBtnStyle(!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block')}
-                onClick={executeSupply}
-                disabled={!amountStr || isProcessing || isInsufficient || hfGuard.level === 'block'}
-              >{isInsufficient ? 'Insufficient balance' : hfGuard.level === 'block' ? 'Health factor too low' : isProcessing ? 'Processing…' : 'Supply'}</button>
             </div>
           )}
         </div>

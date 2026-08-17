@@ -398,11 +398,53 @@ export function ClosePositionModal({
       // A close in flight owns the screen until its receipt lands. Dismissing it with a stray
       // click outside is how a user loses the only report that their debt was repaid.
       dismissable={!isProcessing}
+      // Passed to the shell rather than rendered as a child. As a child it landed INSIDE
+      // `.modal-body`, so the buttons carried the body's padding on top of the footer's own and
+      // sat inset from every line above them.
+      footer={
+        <>
+            <button
+              onClick={() => {
+                clearSignatures()
+                onClose()
+              }}
+              className="btn-secondary"
+              style={{ flex: 1, padding: '10px' }}
+            >
+              {isComplete ? 'Done' : 'Cancel'}
+            </button>
+            {/* Gone once it has landed, as the open's is. It used to stay live and offer to close
+                again: a second attempt spends the same permit nonce and reverts, but not before
+                asking the user for another signature to find that out. */}
+            {!isComplete && (
+              <button
+                onClick={executeClose}
+                disabled={isProcessing || !canExecute}
+                className="btn-primary"
+                style={{ flex: 1, padding: '10px' }}
+              >
+                {isProcessing
+                  ? 'Processing…'
+                  : isQuoting
+                    ? 'Pricing…'
+                    : isSameAsset || signedUntil !== null
+                      ? // The word the open uses for the press that sends.
+                        'Confirm'
+                      : // Two, not one: a withdrawal permit and the revoke that follows it at the
+                        // next nonce. "Sign Approval" understated what the wallet was about to ask.
+                        'Sign 2 approvals'}
+              </button>
+            )}
+        </>
+      }
     >
         <div>
           <div className="info-row" style={{ marginBottom: borrowedAsset.priceInUsd != null ? T.space[2] : T.space[4] }}>
             <span className="info-row-label">Debt to Close</span>
-            <span className="info-row-value" style={{ fontSize: T.fontSize.lg, color: T.danger }}>
+            {/* No size override. `.info-row` already sets the scale every other row on both
+                screens uses, and lifting one value to `lg` made this line shout over the numbers
+                a user is actually comparing against it. The colour is enough emphasis. */}
+            <span className="info-row-value" style={{ color: T.danger }}>
               {borrowedAsset.amount.toFixed(4)} {borrowedAsset.symbol}
             </span>
           </div>
@@ -797,40 +839,6 @@ export function ClosePositionModal({
           />
         </div>
 
-        <div className="modal-footer">
-          <button
-            onClick={() => {
-              clearSignatures()
-              onClose()
-            }}
-            className="btn-secondary"
-            style={{ flex: 1, padding: '10px' }}
-          >
-            {isComplete ? 'Done' : 'Cancel'}
-          </button>
-          {/* Gone once it has landed, as the open's is. It used to stay live and offer to close
-              again: a second attempt spends the same permit nonce and reverts, but not before
-              asking the user for another signature to find that out. */}
-          {!isComplete && (
-            <button
-              onClick={executeClose}
-              disabled={isProcessing || !canExecute}
-              className="btn-primary"
-              style={{ flex: 1, padding: '10px' }}
-            >
-              {isProcessing
-                ? 'Processing…'
-                : isQuoting
-                  ? 'Pricing…'
-                  : isSameAsset || signedUntil !== null
-                    ? // The word the open uses for the press that sends.
-                      'Confirm'
-                    : // Two, not one: a withdrawal permit and the revoke that follows it at the
-                      // next nonce. "Sign Approval" understated what the wallet was about to ask.
-                      'Sign 2 approvals'}
-            </button>
-          )}
-        </div>
     </Modal>
   )
 }
