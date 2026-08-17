@@ -23,6 +23,20 @@ const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
  */
 export const MAX_HISTORY_PAGES = 20
 
+/**
+ * The four movements a leveraged position can show up as, and no others.
+ *
+ * An open borrows and supplies; a close withdraws and repays. It is tempting to keep only the
+ * first pair, since an open is the interesting case — but a close appears ONLY as a withdraw and
+ * a repay, so dropping them loses every close, and with it the reset that stops a position
+ * exited months ago from pricing one opened yesterday.
+ *
+ * The two left out cannot cost anything. A standalone collateral toggle emits no swap and no
+ * position event, so its receipt could only ever be rejected; when it accompanies a real open it
+ * shares that open's hash and arrives anyway. A liquidation is somebody else's transaction
+ * against this wallet, so it is never one of ours either. Both were pure fetches with a
+ * guaranteed negative verdict.
+ */
 const QUERY = `
   query UserTxHashes($user: EvmAddress!, $chainId: ChainId!, $market: EvmAddress!, $cursor: Cursor) {
     userTransactionHistory(request: { user: $user, chainId: $chainId, market: $market, cursor: $cursor }) {
@@ -30,11 +44,9 @@ const QUERY = `
       items {
         __typename
         ... on UserSupplyTransaction { txHash }
-        ... on UserWithdrawTransaction { txHash }
         ... on UserBorrowTransaction { txHash }
+        ... on UserWithdrawTransaction { txHash }
         ... on UserRepayTransaction { txHash }
-        ... on UserUsageAsCollateralTransaction { txHash }
-        ... on UserLiquidationCallTransaction { txHash }
       }
     }
   }

@@ -67,6 +67,35 @@ describe('fetchUserTxHashes', () => {
     await expect(fetchUserTxHashes(req)).rejects.toThrow('unknown market')
   })
 
+  it('asks for the movements a close appears as, not just an open', async () => {
+    // Verified against a real Base account: its close showed up as a Repay and NOTHING else, so a
+    // query narrowed to supply and borrow found two of its three positions and silently lost the
+    // one that would have reset the cost basis.
+    const fetchMock = vi.fn().mockResolvedValue(page([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchUserTxHashes(req)
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body).query
+    expect(sent).toContain('UserSupplyTransaction')
+    expect(sent).toContain('UserBorrowTransaction')
+    expect(sent).toContain('UserWithdrawTransaction')
+    expect(sent).toContain('UserRepayTransaction')
+  })
+
+  it('does not ask for movements that can never be ours', async () => {
+    // A standalone collateral toggle and somebody else's liquidation both screen out, so fetching
+    // their receipts was a request with a guaranteed negative verdict.
+    const fetchMock = vi.fn().mockResolvedValue(page([]))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchUserTxHashes(req)
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body).query
+    expect(sent).not.toContain('UsageAsCollateral')
+    expect(sent).not.toContain('LiquidationCall')
+  })
+
   it('has nothing to say about a wallet with no Aave history', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(page([])))
 
