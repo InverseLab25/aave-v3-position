@@ -34,6 +34,7 @@ import { computeLiquidationView, hasLiquidationRowsToShow, isVolatilePrice, toCo
 import { browserStorage } from '../lib/delegationCache'
 import { historyVersion, loadHistory, subscribeHistory } from '../lib/txHistory'
 import { avgEntryFromHistory } from '../lib/historyBasis'
+import { portfolioPnl, resolveEntryPrice, rowPnl, type RowPnl } from '../lib/positionPnl'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
 const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
@@ -219,68 +220,73 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
   const cancelDraft = () => setEditingKey(null)
 
   /**
-   * Recompute the row's P&L breakdown, applying an avg-entry override if the user
-   * has provided one. `side` is 'supply' for lenders and 'borrow' for borrowers —
-   * price gain is signed opposite for the two sides.
+   * The current price this row is marked against.
+   *
+   * The native wrapper gets an API price when one is available, because Aave's oracle for it can
+   * lag the market by more than the position's whole P&L.
    */
-  const applyOverride = (
-    a: { positionPnl?: { avgEntryPriceUsd: number; realizedPnlUsd: number; interestUsd: number }; amount: number; interestEarnedTokens?: number; interestPaidTokens?: number; priceInUsd: string; underlyingAsset: string; symbol: string },
-    side: 'supply' | 'borrow'
-  ) => {
-    const pnl = a.positionPnl
-    if (!pnl) return null
-    // Overrides are keyed by side:address so a WETH supply override doesn't leak into a WETH borrow.
-    const overrideKey = `${side}:${a.underlyingAsset.toLowerCase()}`
-    const override = overrides[overrideKey]
-    // Hand-typed beats derived beats indexed. The override is last-written-by-a-person and must
-    // never be quietly replaced; the derived figure is what the wallet actually traded at, so it
-    // beats the indexer's oracle-priced guess at a leveraged open.
-    //
-    // `usd` rather than `perUnit`: this column is in dollars, and a basis quoted in a volatile
-    // token has no honest dollar value — those fall through to the indexer.
-    const derived = derivedBasis[overrideKey]?.usd ?? 0
-    const effectiveAvgEntry =
-      override && override > 0 ? override : derived > 0 ? derived : pnl.avgEntryPriceUsd
-    if (!(effectiveAvgEntry > 0)) return { effectiveAvgEntry: 0, priceGainUsd: 0, totalPnlUsd: 0, isOverride: false }
-
+  const priceOf = (a: { symbol: string; priceInUsd: string }) => {
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
     const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
-    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
-
-    // For lenders: netPrincipal = balance - interestEarned; supply P&L uses netPrincipal for price and interestTokens at current price.
-    // For borrowers: same shape but sign flipped and interest treated as cost.
-    const interestTokens = side === 'supply' ? (a.interestEarnedTokens ?? 0) : (a.interestPaidTokens ?? 0)
-    const netPrincipal = Math.max(0, a.amount - interestTokens)
-    const priceDelta = side === 'supply' ? currentPrice - effectiveAvgEntry : effectiveAvgEntry - currentPrice
-    const priceGainUsd = priceDelta * netPrincipal
-    const interestUsd = pnl.interestUsd // signed: positive for supply, negative for borrow
-    const totalPnlUsd = pnl.realizedPnlUsd + priceGainUsd + interestUsd
-
-    return {
-      effectiveAvgEntry,
-      priceGainUsd,
-      interestUsd,
-      realizedPnlUsd: pnl.realizedPnlUsd,
-      totalPnlUsd,
-      isOverride: !!override,
-    }
+    return isNativeToken && apiNativePrice ? apiNativePrice : Number(a.priceInUsd)
   }
 
-  // Sum P&L using effective (possibly-overridden) entries so the top KPI matches the rows.
-  const effectiveTotalPnlUsd = [
-    ...suppliedAssets.map(a => ({ a, side: 'supply' as const })),
-    ...borrowedAssets.map(a => ({ a, side: 'borrow' as const })),
-  ].reduce((sum, { a, side }) => {
-    const r = applyOverride(a, side)
-    return sum + (r?.totalPnlUsd ?? 0)
-  }, 0)
+  /**
+   * One row's P&L, with the entry price resolved from the three sources that can supply one.
+   *
+   * The arithmetic and the precedence both live in `lib/positionPnl` now — this only gathers the
+   * arguments. Rows are keyed `side:address` so a WETH supply override cannot leak into a WETH
+   * borrow, which are opposite positions in the same asset.
+   */
+  const pnlFor = (
+    a: {
+      positionPnl?: { avgEntryPriceUsd: number; realizedPnlUsd: number; interestUsd: number }
+      amount: number
+      interestEarnedTokens?: number
+      interestPaidTokens?: number
+      priceInUsd: string
+      underlyingAsset: string
+      symbol: string
+    },
+    side: 'supply' | 'borrow',
+  ): RowPnl | null => {
+    const pnl = a.positionPnl
+    if (!pnl) return null
+    const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
+
+    return rowPnl({
+      side,
+      // `usd` rather than `perUnit`: this column is in dollars, and a basis quoted in a volatile
+      // token has no honest dollar value — those fall through to the indexer.
+      entry: resolveEntryPrice({
+        override: overrides[rowKey],
+        fills: derivedBasis[rowKey]?.usd,
+        indexer: pnl.avgEntryPriceUsd,
+      }),
+      currentPriceUsd: priceOf(a),
+      amount: a.amount,
+      interestTokens: (side === 'supply' ? a.interestEarnedTokens : a.interestPaidTokens) ?? 0,
+      interestUsd: pnl.interestUsd,
+      realizedPnlUsd: pnl.realizedPnlUsd,
+    })
+  }
+
+  // Summed from the same rows the table renders, so the headline cannot disagree with the lines.
+  const effectiveTotalPnlUsd = portfolioPnl(
+    [
+      ...suppliedAssets.map((a) => pnlFor(a, 'supply')),
+      ...borrowedAssets.map((a) => pnlFor(a, 'borrow')),
+    ].filter((r): r is RowPnl => r !== null),
+  )
 
   /** Value(USD) cell — shows just the value + a clickable Avg row that opens the editor modal. */
-  const ValueCell = ({ a, side, r }: { a: SuppliedAsset | BorrowedAsset; side: 'supply' | 'borrow'; r: ReturnType<typeof applyOverride> }) => {
+  const ValueCell = ({ a, side, r }: { a: SuppliedAsset | BorrowedAsset; side: 'supply' | 'borrow'; r: RowPnl | null }) => {
     const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
     const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
-    const isOverride = !!r?.isOverride
+    // Reported by the resolver rather than re-derived from the override map, so the highlight and
+    // the number can never disagree about where the figure came from.
+    const isOverride = r?.source === 'override'
     const chainConfig = getChainConfig(chainId)
     const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
     const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
@@ -352,7 +358,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
   }
 
   /** P&L cell with breakdown on separate lines. Shared by both tables. */
-  const PnlCell = ({ r, side }: { r: ReturnType<typeof applyOverride>; side: 'supply' | 'borrow' }) => {
+  const PnlCell = ({ r, side }: { r: RowPnl | null; side: 'supply' | 'borrow' }) => {
     if (!r || r.effectiveAvgEntry <= 0) {
       return <td className="number" data-label="Position P&L"><span style={{ color: T.textMuted }}>—</span></td>
     }
@@ -609,7 +615,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                 </thead>
                 <tbody>
                   {suppliedAssets.map((a: SuppliedAsset, i: number) => {
-                    const r = applyOverride(a, 'supply');
+                    const r = pnlFor(a, 'supply');
 
                     return (
                       <tr key={i}>
@@ -679,7 +685,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
                 </thead>
                 <tbody>
                   {borrowedAssets.map((a: BorrowedAsset, i: number) => {
-                    const r = applyOverride(a, 'borrow');
+                    const r = pnlFor(a, 'borrow');
                     return (
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
