@@ -110,7 +110,7 @@ describe('syncChain', () => {
     const [row] = loadHistory(storage, { wallet: WALLET, chainId: 8453 })
     expect(row.hash).toBe(hash(1))
     expect(row.source).toBe('chain')
-    expect(row.rate).toBe('0.000293')
+    expect(row.rate).toBe('0.000293677131361780858')
   })
 
   it('stops the cursor short of the head, so a reorg near the tip is re-read', async () => {

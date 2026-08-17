@@ -7,6 +7,7 @@
 import { useMemo, useState, useSyncExternalStore } from 'react'
 import { formatUnits, type Address } from 'viem'
 import { browserStorage } from '../lib/delegationCache'
+import { quoteRate } from '../lib/deleverage'
 import { historyVersion, loadHistory, subscribeHistory, type TxHistoryEntry } from '../lib/txHistory'
 import { ExplorerLink } from './ExplorerLink'
 import { T } from '../styles/theme'
@@ -20,6 +21,29 @@ interface TxHistoryListProps {
    * correct without it — this only reports what the sync is doing and offers to run it again.
    */
   sync?: HistorySync
+}
+
+/**
+ * The rate this row shows, in the direction asked for.
+ *
+ * Computed from the AMOUNTS rather than read from `entry.rate`, and inverted from them too. The
+ * recorded string is one direction carried at a working scale, and rows written before that scale
+ * followed the pair's magnitude kept as few as three significant digits — enough to read the price
+ * in the direction it was recorded, not enough to invert. `1 / 0.000532` is 1,879.70; the amounts
+ * behind it say 1,876.21. Both sides are stored whole, so both directions are exact from them.
+ *
+ * Falls back to the recorded string for a row that never learned both sides' decimals, which is
+ * the only case where the amounts are two unscaled integers with no ratio between them.
+ */
+function shownRate(entry: TxHistoryEntry, inverted: boolean): string | null {
+  const { swap } = entry
+  if (swap && swap.srcDecimals !== null && swap.dstDecimals !== null) {
+    return inverted
+      ? quoteRate(swap.spentAmount, swap.returnAmount, swap.dstDecimals, swap.srcDecimals)
+      : quoteRate(swap.returnAmount, swap.spentAmount, swap.srcDecimals, swap.dstDecimals)
+  }
+  if (entry.rate === null) return null
+  return inverted ? (1 / Number(entry.rate)).toString() : entry.rate
 }
 
 /** Rates carry their own precision from `quoteRate`; this only groups the thousands. */
@@ -71,6 +95,7 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
   const isBase = (sym?: string | null) => ['WETH', 'WBTC', 'WSTETH', 'CBETH', 'RETH'].includes(sym?.toUpperCase() ?? '')
   const defaultInvert = isStable(swap?.srcSymbol) || isBase(swap?.dstSymbol)
   const [invertRate, setInvertRate] = useState(defaultInvert)
+  const shown = shownRate(entry, invertRate)
 
   return (
     <div
@@ -86,11 +111,11 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
         </span>
       </div>
 
-      {swap && entry.rate && swap.srcSymbol && swap.dstSymbol ? (
+      {swap && shown && swap.srcSymbol && swap.dstSymbol ? (
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {invertRate 
-            ? `1 ${swap.dstSymbol} = ${rate((1 / Number(entry.rate)).toString())} ${swap.srcSymbol}`
-            : `1 ${swap.srcSymbol} = ${rate(entry.rate)} ${swap.dstSymbol}`
+          {invertRate
+            ? `1 ${swap.dstSymbol} = ${rate(shown)} ${swap.srcSymbol}`
+            : `1 ${swap.srcSymbol} = ${rate(shown)} ${swap.dstSymbol}`
           }
           <button
             type="button"

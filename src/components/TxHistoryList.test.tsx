@@ -83,12 +83,50 @@ describe('TxHistoryList', () => {
   })
 
   it('shows the rate each transaction filled at, once opened', () => {
-    appendHistory(localStorage, entry({ rate: '3405.1' }))
+    appendHistory(localStorage, entry())
     show()
 
     fireEvent.click(screen.getByRole('button', { name: /recent activity/i }))
 
-    expect(screen.getByText(/1 USDC = 3,405.1 WETH/)).toBeTruthy()
+    // Stable in, volatile out, so the volatile side is quoted by default.
+    expect(screen.getByText(/1 WETH = 3,405.1 USDC/)).toBeTruthy()
+  })
+
+  it('inverts the rate from the amounts, not from the recorded string', () => {
+    // Arbitrum 0x4ed0dd94…: 67,754.40695 USDT for 36.112335215858211266 WETH. `rate` was recorded
+    // at a six-decimal scale, which left 0.000532 — and inverting THAT prices the fill at
+    // 1,879.6992 rather than the 1,876.2123 the amounts themselves say.
+    appendHistory(
+      localStorage,
+      entry({
+        swap: {
+          srcToken: USDC,
+          dstToken: WETH,
+          srcSymbol: 'USDT',
+          srcDecimals: 6,
+          dstSymbol: 'WETH',
+          dstDecimals: 18,
+          spentAmount: 67_754_406_950n,
+          returnAmount: 36_112_335_215_858_211_266n,
+        },
+        rate: '0.000532',
+      }),
+    )
+    show()
+
+    fireEvent.click(screen.getByRole('button', { name: /recent activity/i }))
+
+    expect(screen.getByText(/1 WETH = 1,876.2123 USDT/)).toBeTruthy()
+  })
+
+  it('quotes the other direction when the rate is flipped', () => {
+    appendHistory(localStorage, entry())
+    show()
+
+    fireEvent.click(screen.getByRole('button', { name: /recent activity/i }))
+    fireEvent.click(screen.getByRole('button', { name: /swap rate direction/i }))
+
+    expect(screen.getByText(/1 USDC = 0.000293677 WETH/)).toBeTruthy()
   })
 
   it('says which flow each row came from', () => {

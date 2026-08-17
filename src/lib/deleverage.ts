@@ -41,18 +41,40 @@ export function toCloseError(e: unknown): { kind: CloseErrorKind; message: strin
 }
 
 /**
- * Decimal places the quoted rate is carried at before formatting. Display-only precision —
- * a rate smaller than 1e-6 rounds to zero here, which only bites on pairs where one
- * collateral token is worth less than a millionth of a debt token.
+ * Significant digits every rate is carried at, whatever its magnitude.
+ *
+ * A FIXED number of decimal places cannot do this job, because a rate's magnitude is a property
+ * of the pair rather than of the code: 67,754 USDT for 36.1 WETH is 0.000532986… one way round
+ * and 1,876.21 the other, and six decimal places keep sixteen significant digits of the second
+ * and three of the first. Three is enough to read the price and not enough to invert it — 0.000532
+ * inverts to 1,879.70, which is a wrong number rather than a rounded one.
  */
-const RATE_DECIMALS = 6n
+const RATE_SIGNIFICANT_DIGITS = 18
+
+/** Floor on the working scale, so a rate in the millions still carries its cents. */
+const MIN_RATE_DECIMALS = 6
+
+/** Ceiling on it, so a rate approaching zero cannot ask for an unbounded string. */
+const MAX_RATE_DECIMALS = 48
+
+/**
+ * Decimal places to carry a quotient at so it keeps {@link RATE_SIGNIFICANT_DIGITS} of them.
+ *
+ * The digit counts differ by at most one from log10 of the quotient, which is as much precision
+ * as choosing a scale needs — being one place out costs a spare digit, never a significant one.
+ */
+function rateScale(numerator: bigint, denominator: bigint): number {
+  const magnitude = numerator.toString().length - denominator.toString().length
+  const wanted = RATE_SIGNIFICANT_DIGITS - magnitude
+  return Math.min(MAX_RATE_DECIMALS, Math.max(MIN_RATE_DECIMALS, wanted))
+}
 
 /**
  * Debt token per 1 collateral token on a quote, as a decimal string.
  *
  * The two sides have different decimals, so the ratio has to be rescaled:
  *   rate = (expectedOut / 10^debtDec) / (requiredIn / 10^collDec)
- * Evaluated in bigint by folding both scales and RATE_DECIMALS into the numerator before
+ * Evaluated in bigint by folding both scales and the working scale into the numerator before
  * the single division, so the only rounding is one truncation at the end — converting each
  * side to a double first would round twice before the divide even happens.
  *
@@ -65,9 +87,10 @@ export function quoteRate(
   debtDecimals: number,
 ): string | null {
   if (requiredIn <= 0n) return null
-  const numerator = expectedOut * 10n ** BigInt(collateralDecimals) * 10n ** RATE_DECIMALS
+  const numerator = expectedOut * 10n ** BigInt(collateralDecimals)
   const denominator = requiredIn * 10n ** BigInt(debtDecimals)
-  return formatUnits(numerator / denominator, Number(RATE_DECIMALS))
+  const scale = rateScale(numerator, denominator)
+  return formatUnits((numerator * 10n ** BigInt(scale)) / denominator, scale)
 }
 
 /**

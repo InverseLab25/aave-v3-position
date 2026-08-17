@@ -82,7 +82,9 @@ describe('entriesFromEvents', () => {
     // thing a user cannot read off an explorer in a form that means anything.
     const [entry] = await entriesFromEvents(client(), [openEvent()], CONTEXT)
 
-    expect(entry.rate).toBe('0.000293')
+    // Carried at full precision rather than at a fixed six places: this side of the pair is the
+    // small one, and six places would leave three significant digits that cannot be inverted.
+    expect(entry.rate).toBe('0.000293677131361780858')
     expect(entry.swap).toMatchObject({
       srcToken: USDC, dstToken: WETH, srcSymbol: 'USDC', dstSymbol: 'WETH',
       spentAmount: 3405_100000n, returnAmount: 10n ** 18n,
