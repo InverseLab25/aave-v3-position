@@ -17,6 +17,7 @@
  * retried, never thrown: nothing about reading history back is worth failing a screen for.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { useChainId, useConfig, useConnection, useReadContracts } from 'wagmi'
 import { getBlock, getTransactionReceipt } from 'viem/actions'
 import {
@@ -27,7 +28,8 @@ import { getChainConfig, syncableChains } from '../config/chains'
 import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { browserStorage } from '../lib/delegationCache'
 import { syncChainFromHashes, type HashSyncClient } from '../lib/hashSync'
-import { fetchUserTxHashes } from '../lib/aaveTxHashes'
+import { positionHashes } from '../lib/aaveTxHashes'
+import { userHistoryQuery } from '../lib/aaveUserHistory'
 import { clearScreened } from '../lib/screenCache'
 import { buildTokenMap, positionTokens, type TokenMeta } from '../lib/tokenMeta'
 
@@ -88,6 +90,7 @@ function syncClient(client: Client): HashSyncClient {
 export function useHistorySync(): HistorySync {
   const { address: wallet } = useConnection()
   const config = useConfig()
+  const queryClient = useQueryClient()
 
   // Static config, so the list is fixed for the life of the app — but a fresh array every call
   // would restart every effect below on each render.
@@ -176,13 +179,23 @@ export function useHistorySync(): HistorySync {
         const market = getChainConfig(chainId)?.aave.poolAddress
         if (!market) return
 
+        // Through the query cache, NOT a fetch of its own. `useAaveHistoricalInterest` is asking
+        // the indexer for this exact wallet, chain and market at this exact moment, to replay the
+        // same rows for cost basis. Two hand-rolled fetchers could not see each other, so that was
+        // two ~1s round trips and two shares of a rate limit for one answer; sharing the key means
+        // whichever arrives second joins the request already in flight.
+        const storage = browserStorage()
+        const history = await queryClient.fetchQuery(
+          userHistoryQuery(storage, wallet, chainId, market),
+        )
+
         await syncChainFromHashes({
           client: syncClient(client),
-          storage: browserStorage(),
+          storage,
           strategies: chain.address,
           wallet,
           chainId,
-          hashes: await fetchUserTxHashes({ user: wallet, chainId, market }),
+          hashes: positionHashes(history),
           tokens: chainMeta.tokens,
           hidden: chainMeta.hidden,
         })
@@ -196,7 +209,7 @@ export function useHistorySync(): HistorySync {
         if (running.current.size === 0) setStatus((s) => ({ ...s, scanning: false }))
       }
     },
-    [chains, config, meta, wallet],
+    [chains, config, meta, queryClient, wallet],
   )
 
   // The catch-up. Runs per wallet, once the reserves needed to name what it finds have loaded.

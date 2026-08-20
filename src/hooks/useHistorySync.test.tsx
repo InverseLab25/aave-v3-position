@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderHook, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
 import type { Address } from 'viem'
 
 const WALLET = '0x1111111111111111111111111111111111111111' as Address
@@ -14,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   useConfig: vi.fn(),
   useReadContracts: vi.fn(),
   syncChainFromHashes: vi.fn(),
-  fetchUserTxHashes: vi.fn(),
+  historyQueryFn: vi.fn(),
   syncableChains: vi.fn(),
   clearScreened: vi.fn(),
 }))
@@ -33,9 +35,12 @@ vi.mock('../lib/hashSync', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   syncChainFromHashes: mocks.syncChainFromHashes,
 }))
-vi.mock('../lib/aaveTxHashes', async (orig) => ({
+// Only the fetch is stubbed. `positionHashes` runs for real on whatever rows it yields, which is
+// what keeps the merge honest: discovery now filters rows instead of narrowing the query, so the
+// filter is the thing worth exercising here.
+vi.mock('../lib/aaveUserHistory', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  fetchUserTxHashes: mocks.fetchUserTxHashes,
+  userHistoryQuery: () => ({ queryKey: ['test-history'], queryFn: mocks.historyQueryFn, staleTime: 0 }),
 }))
 vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -47,6 +52,14 @@ vi.mock('../lib/screenCache', async (orig) => ({
 }))
 
 import { useHistorySync } from './useHistorySync'
+
+const mount = () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  )
+  return renderHook(() => useHistorySync(), { wrapper })
+}
 
 /** One reserve, in the shape `getReservesData` answers with. */
 const reserve = {
@@ -72,7 +85,7 @@ beforeEach(() => {
   mocks.useChainId.mockReturnValue(8453)
   mocks.useConfig.mockReturnValue({ chains: [], getClient: () => ({}) })
   mocks.syncChainFromHashes.mockResolvedValue({ examined: 0, found: 0 })
-  mocks.fetchUserTxHashes.mockResolvedValue([])
+  mocks.historyQueryFn.mockResolvedValue([])
   mocks.syncableChains.mockReturnValue([
     { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
   ])
@@ -90,7 +103,7 @@ describe('useHistorySync', () => {
     ])
     reservesLoaded(2)
 
-    renderHook(() => useHistorySync())
+    mount()
 
     await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
     expect(mocks.syncChainFromHashes.mock.calls[0][0].chainId).toBe(8453)
@@ -104,7 +117,7 @@ describe('useHistorySync', () => {
     mocks.useChainId.mockReturnValue(42161)
     reservesLoaded(2)
 
-    renderHook(() => useHistorySync())
+    mount()
 
     await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
     expect(mocks.syncChainFromHashes.mock.calls[0][0].chainId).toBe(42161)
@@ -113,7 +126,7 @@ describe('useHistorySync', () => {
   it('does nothing at all without a connected wallet', async () => {
     mocks.useConnection.mockReturnValue({ address: undefined })
 
-    renderHook(() => useHistorySync())
+    mount()
 
     await waitFor(() => expect(mocks.syncChainFromHashes).not.toHaveBeenCalled())
   })
@@ -123,13 +136,13 @@ describe('useHistorySync', () => {
     // against a bare address, and there is no second pass that comes back to name it.
     mocks.useReadContracts.mockReturnValue({ data: undefined })
 
-    renderHook(() => useHistorySync())
+    mount()
 
     await waitFor(() => expect(mocks.syncChainFromHashes).not.toHaveBeenCalled())
   })
 
   it('hands over the token names and the position tokens to hide', async () => {
-    renderHook(() => useHistorySync())
+    mount()
 
     await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalled())
     const input = mocks.syncChainFromHashes.mock.calls[0][0]
@@ -141,14 +154,14 @@ describe('useHistorySync', () => {
     // A rate-limited RPC must not take a position panel down with it.
     mocks.syncChainFromHashes.mockRejectedValue(new Error('rate limited'))
 
-    const { result } = renderHook(() => useHistorySync())
+    const { result } = mount()
 
     await waitFor(() => expect(result.current.status.error).toBe('rate limited'))
     expect(result.current.status.scanning).toBe(false)
   })
 
   it('clears the error and stops scanning once a chain succeeds', async () => {
-    const { result } = renderHook(() => useHistorySync())
+    const { result } = mount()
 
     await waitFor(() => expect(result.current.status.syncedAt).not.toBeNull())
     expect(result.current.status.error).toBeNull()
@@ -156,7 +169,7 @@ describe('useHistorySync', () => {
   })
 
   it('forgets every verdict when asked to resync, and reads again', async () => {
-    const { result } = renderHook(() => useHistorySync())
+    const { result } = mount()
     await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalledTimes(1))
 
     result.current.resync()
@@ -167,6 +180,33 @@ describe('useHistorySync', () => {
     expect(mocks.clearScreened).toHaveBeenCalled()
   })
 
+  it('screens out rows that could only ever be somebody else transaction', async () => {
+    // The shared query has to ask for liquidations, because the cost-basis replay realizes P&L
+    // against them. Discovery must not then read their receipts: a liquidation is somebody else's
+    // transaction against this wallet, so the verdict is negative before the request is made.
+    mocks.historyQueryFn.mockResolvedValue([
+      { __typename: 'UserSupplyTransaction', txHash: '0xaa' },
+      { __typename: 'UserBorrowTransaction', txHash: '0xaa' },
+      { __typename: 'UserLiquidationCallTransaction' },
+    ])
+
+    mount()
+
+    await waitFor(() => expect(mocks.syncChainFromHashes).toHaveBeenCalled())
+    expect(mocks.syncChainFromHashes.mock.calls[0][0].hashes).toEqual(['0xaa'])
+  })
+
+  it('reports an indexer failure rather than scanning without it', async () => {
+    // Discovery starts from the indexer's hash list. A partial one would have `hashSync` record
+    // verdicts for a round that never finished, and never look at those transactions again.
+    mocks.historyQueryFn.mockRejectedValue(new Error('Aave GraphQL 429'))
+
+    const { result } = mount()
+
+    await waitFor(() => expect(result.current.status.error).toBe('Aave GraphQL 429'))
+    expect(mocks.syncChainFromHashes).not.toHaveBeenCalled()
+  })
+
   it('survives a chain it cannot get a client for', async () => {
     mocks.useConfig.mockReturnValue({
       chains: [],
@@ -175,7 +215,7 @@ describe('useHistorySync', () => {
       },
     })
 
-    const { result } = renderHook(() => useHistorySync())
+    const { result } = mount()
 
     await waitFor(() => expect(result.current.status.error).toBe('chain not configured'))
   })

@@ -2,107 +2,12 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useConnection, useChainId } from 'wagmi'
 import { getChainConfig } from '../config/chains'
-
-const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
-
-const GET_USER_TRANSACTIONS = `
-  query GetUserTransactions($user: EvmAddress!, $chainId: ChainId!, $market: EvmAddress!, $cursor: Cursor) {
-    userTransactionHistory(request: { user: $user, chainId: $chainId, market: $market, cursor: $cursor }) {
-      pageInfo { next }
-      items {
-        __typename
-        ... on UserSupplyTransaction {
-          timestamp
-          amount { amount { value } usd usdPerToken }
-          reserve { underlyingToken { address } }
-        }
-        ... on UserWithdrawTransaction {
-          timestamp
-          amount { amount { value } usd usdPerToken }
-          reserve { underlyingToken { address } }
-        }
-        ... on UserBorrowTransaction {
-          timestamp
-          amount { amount { value } usd usdPerToken }
-          reserve { underlyingToken { address } }
-        }
-        ... on UserRepayTransaction {
-          timestamp
-          amount { amount { value } usd usdPerToken }
-          reserve { underlyingToken { address } }
-        }
-        ... on UserLiquidationCallTransaction {
-          timestamp
-          collateral {
-            amount { amount { value } usd usdPerToken }
-            reserve { underlyingToken { address } }
-          }
-          debtRepaid {
-            amount { amount { value } usd usdPerToken }
-            reserve { underlyingToken { address } }
-          }
-        }
-      }
-    }
-  }
-`
-
-interface TxAmount {
-  amount: { value: string }
-  usd?: number
-  usdPerToken?: number
-}
-interface TxReserve {
-  underlyingToken: { address: string }
-}
-interface TxItem {
-  __typename: string
-  amount?: TxAmount
-  reserve?: TxReserve
-  collateral?: { amount: TxAmount; reserve: TxReserve }
-  debtRepaid?: { amount: TxAmount; reserve: TxReserve }
-}
-interface TxResponse {
-  userTransactionHistory?: { items?: TxItem[]; pageInfo?: { next?: string | null } }
-}
-
-/**
- * Pages to follow before giving up.
- *
- * `userTransactionHistory` is a paginated endpoint, so a single request returns only the newest
- * page — and a partial replay produces a plausible-looking average entry price computed from an
- * incomplete ledger, with nothing to indicate anything is missing. Following the cursor fixes
- * that; the cap is here because an unbounded loop against a remote API is a worse failure than
- * a truncated basis, and a history longer than this is pathological.
- */
-const MAX_HISTORY_PAGES = 20
-
-async function fetchUserTransactions(variables: {
-  user: string
-  chainId: number
-  market: string
-}): Promise<TxItem[]> {
-  const items: TxItem[] = []
-  let cursor: string | null = null
-
-  for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
-    const res = await fetch(AAVE_GRAPHQL_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: GET_USER_TRANSACTIONS, variables: { ...variables, cursor } }),
-    })
-    if (!res.ok) throw new Error(`Aave GraphQL ${res.status}`)
-    const json = await res.json()
-    if (json.errors?.length) throw new Error(json.errors[0]?.message ?? 'Aave GraphQL error')
-
-    const history = (json.data as TxResponse)?.userTransactionHistory
-    items.push(...(history?.items ?? []))
-    cursor = history?.pageInfo?.next ?? null
-    if (!cursor) break
-  }
-
-  return items
-}
+import { browserStorage } from '../lib/delegationCache'
+import {
+  readHistorySnapshot,
+  userHistoryQuery,
+  type HistoryItem,
+} from '../lib/aaveUserHistory'
 
 export type CostBasis = {
   /** Weighted-average USD entry price of the tokens still held/owed. */
@@ -193,13 +98,32 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   const targetAddress = userAddress || connectedAddress
   const market = chainConfig?.aave.poolAddress
 
+  const storage = useMemo(() => browserStorage(), [])
+
+  /** Last load's rows, so the profit column has something to show on the first frame. */
+  const snapshot = useMemo(
+    () => readHistorySnapshot(storage, targetAddress, chainId, market),
+    [storage, targetAddress, chainId, market],
+  )
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['aaveUserTx', targetAddress, chainId, market],
-    queryFn: () =>
-      fetchUserTransactions({ user: targetAddress as string, chainId, market: market as string }),
+    ...userHistoryQuery(storage, targetAddress, chainId, market),
     enabled: !!targetAddress && hasAaveConfig,
-    // History changes slowly; cache for 5 min (Apollo used cache-first).
-    staleTime: 5 * 60 * 1000,
+    initialData: snapshot?.items,
+    /**
+     * Stamped at the epoch, NOT at when the snapshot was written.
+     *
+     * A seed is a first frame, never an answer, so it has to be stale on arrival or react-query
+     * has no reason to go and ask. Handing over the real write time looks more honest and is the
+     * bug: `staleTime` is five minutes, so anyone who reloaded within five minutes of their last
+     * load would be shown a basis off the disk and no request would be made to check it — and a
+     * basis that stale prices a position that may have been closed since.
+     *
+     * Costing nothing extra is what makes this safe: with no snapshot the query fetches on mount
+     * anyway. The only difference is what is on screen while it does. Once the real rows land they
+     * carry a real timestamp, and the five minutes applies normally from there.
+     */
+    initialDataUpdatedAt: 0,
   })
 
   // Replaying the whole transaction history on every render is pure waste: the result is a
@@ -210,7 +134,7 @@ export function useAaveHistoricalInterest(userAddress?: string, chainIdOverride?
   const supplyAcc: Record<string, Accumulator> = {}
   const borrowAcc: Record<string, Accumulator> = {}
 
-  const items = data
+  const items: HistoryItem[] | undefined = data
   if (items) {
     for (const tx of items) {
       switch (tx.__typename) {

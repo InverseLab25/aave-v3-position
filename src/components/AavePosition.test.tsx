@@ -1,5 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import type { AvailableReserve } from '../hooks/useAavePositions'
 import { appendHistory } from '../lib/txHistory'
 
@@ -49,6 +51,18 @@ import { AavePosition } from './AavePosition'
 
 // Auto-cleanup between renders comes from vitest.config.ts's `setupFiles` (src/test-setup.ts)
 // repo-wide; no local afterEach(cleanup) needed here.
+
+/**
+ * The panel inside the providers `main.tsx` gives it.
+ *
+ * `useHistorySync` reads this wallet's Aave history out of the query cache rather than fetching
+ * it for itself, so a client is app context the panel needs, the same way it needs a wagmi config
+ * — not another mock. A fresh one per render keeps one test's cached rows out of the next.
+ */
+const renderPanel = (ui: ReactElement) => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+}
 
 const WETH: AvailableReserve = {
   symbol: 'WETH',
@@ -164,7 +178,7 @@ async function fillAmounts() {
 it('reaches the actions panel from an empty portfolio — opening a leveraged position needs no pre-existing collateral', async () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   // Confirm we are actually on the empty-portfolio branch, not some other render path.
   expect(screen.getByText('Start your Aave position')).toBeTruthy()
@@ -178,7 +192,7 @@ it('hands the account totals to the actions panel as raw 8dp bigints', async () 
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
   mocks.useAavePositions.mockReturnValue({ ...EMPTY_PORTFOLIO, ...ODD_TOTALS })
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   await fillAmounts()
 
@@ -209,7 +223,7 @@ it('hands the account totals to the actions panel on the populated dashboard too
     chainName: 'Ethereum',
   })
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   await fillAmounts()
 
@@ -226,7 +240,7 @@ it('hands the account totals to the actions panel on the populated dashboard too
 it('says why Open is dead when the contract is not deployed on this chain', async () => {
   mocks.getStrategiesAddress.mockReturnValue(null)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(await screen.findByText(/not deployed on this network/i)).toBeTruthy()
   expect(screen.getByRole('button', { name: /Open long/i }).hasAttribute('disabled')).toBe(true)
@@ -237,7 +251,7 @@ it('says why Open is dead when the contract is not deployed on this chain', asyn
 it('shows no undeployed notice once the contract address resolves', async () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(await screen.findByText('Long')).toBeTruthy()
   expect(screen.queryByText(/not deployed on this network/i)).toBeNull()
@@ -251,7 +265,7 @@ it('shows a read failure as a failure, not as an empty portfolio', async () => {
   mocks.getStrategiesAddress.mockReturnValue('0x000000000000000000000000000000000000BEEF')
   mocks.useAavePositions.mockReturnValue({ ...EMPTY_PORTFOLIO, hasReadError: true })
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(screen.getByText('Could not read your Aave position')).toBeTruthy()
   expect(screen.queryByText('Start your Aave position')).toBeNull()
@@ -291,7 +305,7 @@ it('lists recent activity under the borrowed assets', () => {
     blockNumber: null,
   })
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   // Where it sits is the requirement: under the position, not inside the form that wrote it.
   const borrowed = screen.getByText('Borrowed Assets')
@@ -375,7 +389,7 @@ it('prices a supply from its own fills when the indexer could not', () => {
   mocks.useAavePositions.mockReturnValue(withSupply())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
 })
@@ -391,7 +405,7 @@ it('shows the fill itself, not the fill re-priced at today\'s peg', () => {
   })
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
 })
@@ -403,7 +417,7 @@ it('keeps a hand-typed avg ahead of the one derived from history', () => {
   mocks.useAavePositions.mockReturnValue(withSupply())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(screen.getByText('Avg: $2500.00')).toBeTruthy()
 })
@@ -427,7 +441,7 @@ it('resets a hand-typed avg back to what the swaps paid, not to the indexer', ()
   mocks.useAavePositions.mockReturnValue(withIndexerPrice())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
   fireEvent.click(screen.getByText('Avg: $2500.00'))
   fireEvent.click(screen.getByText(/^Reset to/))
 
@@ -442,7 +456,7 @@ it('hints the fill-derived price in the editor input, not the indexer one', () =
   mocks.useAavePositions.mockReturnValue(withIndexerPrice())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
   fireEvent.click(screen.getByText('Avg: $1876.21'))
 
   const input = screen.getByPlaceholderText('1876.2123')
@@ -458,7 +472,7 @@ it("never prices someone else's position from this browser's fills", () => {
   mocks.useAavePositions.mockReturnValue(withSupply())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition viewAddress="0x0000000000000000000000000000000000009999" />)
+  renderPanel(<AavePosition viewAddress="0x0000000000000000000000000000000000009999" />)
 
   expect(screen.queryByText('Avg: $1876.21')).toBeNull()
 })
@@ -471,7 +485,7 @@ it('shows the fill-derived price beside the indexer one in the editor', () => {
   mocks.useAavePositions.mockReturnValue(withSupply())
   appendHistory(localStorage, LEVERAGED_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
   fireEvent.click(screen.getByText('Avg: $1876.21'))
 
   expect(screen.getByText('Paid on your swaps')).toBeTruthy()
@@ -525,7 +539,7 @@ it('prices a short from the debt it sold, not the collateral it bought', () => {
   })
   appendHistory(localStorage, SHORT_OPEN)
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
   fireEvent.click(screen.getByText('Avg: $1900.00'))
 
   expect(screen.getByText('Sold on your swaps')).toBeTruthy()
@@ -560,7 +574,7 @@ it('still lists recent activity for an account that has closed everything', () =
     blockNumber: null,
   })
 
-  render(<AavePosition />)
+  renderPanel(<AavePosition />)
 
   expect(screen.getByText(/Recent activity \(1\)/)).toBeTruthy()
 })

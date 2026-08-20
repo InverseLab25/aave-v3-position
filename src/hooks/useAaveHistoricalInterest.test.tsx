@@ -25,6 +25,27 @@ vi.mock('../config/chains', async (orig) => ({
 }))
 
 import { useAaveHistoricalInterest } from './useAaveHistoricalInterest'
+import { readHistorySnapshot, writeHistorySnapshot } from '../lib/aaveUserHistory'
+import type { DelegationStorage } from '../lib/delegationCache'
+
+/**
+ * A `localStorage` for the duration of one test.
+ *
+ * This jsdom setup exposes none at all, and `browserStorage()` correctly reads that as "nothing
+ * held" — so without a stub the snapshot path silently does nothing and its tests pass for the
+ * wrong reason.
+ */
+function memoryStorage(): DelegationStorage & { clear: () => void } {
+  const map = new Map<string, string>()
+  return {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => void map.set(k, v),
+    removeItem: (k) => void map.delete(k),
+    clear: () => map.clear(),
+  }
+}
+
+let storage: ReturnType<typeof memoryStorage>
 
 const USER = '0x1111111111111111111111111111111111111111'
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
@@ -66,6 +87,8 @@ beforeEach(() => {
   })
   fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
+  storage = memoryStorage()
+  vi.stubGlobal('localStorage', storage)
 })
 
 afterEach(() => vi.unstubAllGlobals())
@@ -179,5 +202,57 @@ describe('useAaveHistoricalInterest — unpriced entries', () => {
     expect(result.current.costBasis.supply[asset].avgEntryPriceUsd).toBeCloseTo(10, 6)
     // Sold 50 at 30 against a 10 basis — 1,000 realised.
     expect(result.current.costBasis.supply[asset].realizedPnlUsd).toBeCloseTo(1000, 6)
+  })
+})
+
+describe('useAaveHistoricalInterest — the snapshot', () => {
+  const MARKET = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'
+
+  it('prices a position from the last load before the indexer answers', async () => {
+    // Everything else on the panel comes off the chain and paints at once — collateral, debt,
+    // health factor. Cost basis is the one figure that waits on a third party, which is roughly a
+    // second measured against the live endpoint, so the profit column sat blank on every load.
+    writeHistorySnapshot(storage, USER, 1, MARKET, [supply('100', 10)], Date.now())
+    // Never resolves, so nothing but the snapshot can be answering.
+    fetchMock.mockReturnValue(new Promise(() => {}))
+
+    const { result } = mount()
+
+    await waitFor(() =>
+      expect(result.current.costBasis.supply[WETH.toLowerCase()].avgEntryPriceUsd).toBe(10),
+    )
+  })
+
+  it('revalidates anyway, and takes the fresh answer', async () => {
+    // The seed is a first frame, not an answer. It is handed to react-query stamped with when it
+    // was written, which is always older than the stale window, so the refetch is not optional.
+    writeHistorySnapshot(storage, USER, 1, MARKET, [supply('100', 10)], Date.now())
+    fetchMock.mockResolvedValue({ ok: true, json: async () => page([supply('100', 40)], null) })
+
+    const { result } = mount()
+
+    await waitFor(() =>
+      expect(result.current.costBasis.supply[WETH.toLowerCase()].avgEntryPriceUsd).toBe(40),
+    )
+    expect(fetchMock).toHaveBeenCalled()
+  })
+
+  it('keeps the snapshot up to date for the next load', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => page([supply('100', 40)], null) })
+
+    const { result } = mount()
+    await waitFor(() => expect(result.current.costBasis.supply[WETH.toLowerCase()]).toBeDefined())
+
+    expect(readHistorySnapshot(storage, USER, 1, MARKET)?.items).toEqual([supply('100', 40)])
+  })
+
+  it('ignores a snapshot from a wallet that is not the one being viewed', async () => {
+    writeHistorySnapshot(storage, '0x9999999999999999999999999999999999999999', 1, MARKET, [supply('100', 10)], Date.now())
+    fetchMock.mockReturnValue(new Promise(() => {}))
+
+    const { result } = mount()
+
+    await waitFor(() => expect(result.current.isLoadingHistory).toBe(true))
+    expect(result.current.costBasis.supply[WETH.toLowerCase()]).toBeUndefined()
   })
 })
