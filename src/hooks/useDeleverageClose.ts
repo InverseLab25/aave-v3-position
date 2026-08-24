@@ -23,6 +23,7 @@ import {
 import {
   assertExecutable,
   computeMinOut,
+  deriveDebtRepay,
   MIN_SIGNATURE_REMAINING_S,
   reuseBlocker,
   isSlippageShapedFailure,
@@ -36,7 +37,7 @@ import {
   type RevokeArgs,
   type Withdrawal,
 } from '../lib/closePlan'
-import { aaveV3StrategiesAbi, planClose } from '../lib/strategies-sdk'
+import { aaveV3StrategiesAbi, FULL_CLOSE, planClose } from '../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../lib/sizing'
 import type { TxOutcome } from '../lib/txOutcome'
 import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
@@ -128,6 +129,16 @@ export interface CloseInput {
    * debt token to the user, converting collateral to the debt asset in the same transaction.
    */
   collateralIn?: bigint | 'all'
+  /**
+   * How much debt to repay. Omit — or pass `'all'` — for a full close; anything smaller is a
+   * PARTIAL close, which repays that much and leaves the position open at lower leverage.
+   *
+   * The contract has always taken this as its own argument; a partial flash-loans exactly this
+   * amount rather than the balance it reads, so nothing can grow underneath it. Aave still
+   * enforces the resulting health factor inside the aToken's `finalizeTransfer`, which is why
+   * the caller has to project it before asking for a signature.
+   */
+  debtIn?: bigint | 'all'
   /** Aborts the quotes behind this plan once its result stops mattering. */
   signal?: AbortSignal
 }
@@ -143,7 +154,24 @@ interface ClosePlan {
   aTokenName: string
   /** Permit nonce for the owner, read alongside the balances. */
   nonce: bigint
+  /** What this close repays — the whole live debt, or the partial the caller asked for. */
   debt: bigint
+  /**
+   * The `debtRepay` argument itself. {@link FULL_CLOSE} on a full close so the contract repays
+   * whatever is live when the block lands, rather than the balance read while planning — which
+   * would leave the interest accrued in between still owing on a position reported as closed.
+   */
+  debtRepay: bigint
+  /** Debt still owed once this lands. Zero on a full close. */
+  debtRemaining: bigint
+  /** The whole variable debt as read on chain — what `debt` is a repay out of. */
+  liveDebt: bigint
+  /**
+   * The repay follows the route rather than the other way round, so it has to be re-derived
+   * in `close()` from the calldata actually being submitted. That is a different quote from
+   * the one planning saw, and the flash loan is the repay amount.
+   */
+  deriveRepay: boolean
   collAmount: bigint
   /** Collateral fed to the swap. Always equal to `best.amountIn`. */
   requiredIn: bigint
@@ -176,6 +204,11 @@ export interface ClosePreview {
   collateralSymbol: string
   debtSymbol: string
   debtRepaid: string
+  /**
+   * Debt still owed once this lands — "0" on a full close. What tells the caller this is a
+   * partial, and therefore that it has a health factor left to project.
+   */
+  debtRemaining: string
   collateralSwapped: string
   collateralKeptSupplied: string
   minDebtOut: string
@@ -379,7 +412,7 @@ export function useDeleverageClose() {
    */
   const buildPlan = useCallback(
     async (
-      { collateral, debtAsset, slippagePercent, collateralIn, signal }: CloseInput,
+      { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal }: CloseInput,
       logFn: (m: string) => void = () => {},
     ): Promise<ClosePlan> => {
       if (!address || !publicClient) throw new CloseError('wallet', 'Wallet not connected')
@@ -454,6 +487,29 @@ export function useDeleverageClose() {
         )
       }
 
+      // A repay above the live debt is a typo, not a MAX — `'all'` is how you ask for the lot.
+      // Left unchecked the contract silently caps it, so the user is shown a swap sized for
+      // more debt than exists and the surplus quietly lands in their wallet instead.
+      if (typeof debtIn === 'bigint') {
+        if (debtIn <= 0n) throw new CloseError('pair', 'Enter how much debt to repay')
+        if (debtIn > debt) {
+          throw new CloseError(
+            'pair',
+            `You owe ${formatUnits(debt, debtAsset.decimals)} ${debtAsset.symbol}`,
+          )
+        }
+      }
+      const explicitRepay = typeof debtIn === 'bigint' ? debtIn : null
+      /**
+       * The collateral amount decides the repay, and the aggregator's answer is what decides
+       * it. Nothing to aim sizing at yet — the quote produces the target rather than consuming
+       * one — so it aims at the whole debt and the answer is read back off the result.
+       */
+      const deriveRepay = collateralIn !== undefined && explicitRepay === null
+      const targetRepay = explicitRepay ?? debt
+      const targetNeeded =
+        targetRepay < debt ? targetRepay : (targetRepay * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
+
       // 3. Quote and size.
       logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
       const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
@@ -487,11 +543,10 @@ export function useDeleverageClose() {
         return ranked
       }
 
-      const needed = (debt * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
       const sized = await sizeSwap({
         collAmount,
-        debt,
-        needed,
+        debt: targetRepay,
+        needed: targetNeeded,
         slipNum,
         rounds: SIZING_ROUNDS,
         quoteAt,
@@ -499,7 +554,7 @@ export function useDeleverageClose() {
         // Aave's own oracle prices ride along on both assets, so the first guess is free.
         // Without it every refresh pays for a full-collateral probe just to learn the rate.
         seedIn: oracleSeed({
-          needed,
+          needed: targetNeeded,
           slipNum,
           collateralDecimals: collateral.decimals,
           debtDecimals: debtAsset.decimals,
@@ -508,6 +563,33 @@ export function useDeleverageClose() {
         }),
       })
 
+      // In derived mode the repay comes off the quote that was just taken; otherwise it is
+      // whatever the caller asked for, already checked against the live debt above.
+      const debtRepaid = deriveRepay
+        ? deriveDebtRepay({ guaranteedOut: sized.minDebtOut, debt })
+        : targetRepay
+      if (debtRepaid <= 0n) {
+        throw new CloseError(
+          'pair',
+          `That much ${collateral.symbol} does not buy enough ${debtAsset.symbol} to repay anything — swap more`,
+        )
+      }
+      const partial = debtRepaid < debt
+      // The buffer covers interest accruing between this read and the block that lands, which
+      // only matters when the flash is sized on chain from a balance that has grown. A partial
+      // flashes the fixed `debtRepaid`, so there is nothing to buffer against.
+      const needed = partial ? debtRepaid : (debtRepaid * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
+      /**
+       * A derived partial funds itself BY CONSTRUCTION: the repay is the router's own
+       * guarantee, so the swap cannot come up short of it, and there is no whole debt left to
+       * be short of either. `sizeSwap` judged this quote against the full debt and said no,
+       * which is the right answer to a different question.
+       *
+       * Not once the cap bites and this is a full close again — the flash is then read on
+       * chain and can have grown, which is exactly what the ordinary checks are for.
+       */
+      const selfFunding = deriveRepay && partial
+
       return {
         strategies,
         collateralAddr,
@@ -515,14 +597,21 @@ export function useDeleverageClose() {
         aToken,
         aTokenName,
         nonce,
-        debt,
         collAmount,
-        needed,
         slipNum,
         adapters,
         allowedRouters,
         quoteAt,
         ...sized,
+        // After the spread: these are the plan's answers, not the sizing pass's.
+        debt: debtRepaid,
+        liveDebt: debt,
+        deriveRepay,
+        debtRepay: partial ? debtRepaid : FULL_CLOSE,
+        debtRemaining: debt - debtRepaid,
+        needed,
+        covered: selfFunding || sized.covered,
+        guaranteed: selfFunding || sized.guaranteed,
       }
     },
     [address, chainId, publicClient],
@@ -550,6 +639,7 @@ export function useDeleverageClose() {
             collateralSymbol: input.collateral.symbol,
             debtSymbol: input.debtAsset.symbol,
             debtRepaid: formatUnits(p.debt, dDec),
+            debtRemaining: formatUnits(p.debtRemaining, dDec),
             debtRequired: formatUnits(p.needed, dDec),
             debtReturned: formatUnits(p.expectedOut > p.debt ? p.expectedOut - p.debt : 0n, dDec),
             collateralSwapped: formatUnits(p.requiredIn, cDec),
@@ -686,7 +776,8 @@ export function useDeleverageClose() {
           allowedRouters: p.allowedRouters,
           slippagePercent: input.slippagePercent,
           chainId,
-          debt: p.debt,
+          // No floor in derived mode: a route that returns less does not fail, it repays less.
+          debt: p.deriveRepay ? 0n : p.debt,
           slipNum: p.slipNum,
         })
 
@@ -705,7 +796,10 @@ export function useDeleverageClose() {
         // floor or a comparison is being made.
         const builtOut = tx.amountOut ? BigInt(tx.amountOut) : BigInt(chosen.amountOut)
 
-        if ((builtOut * p.slipNum) / 10000n < p.needed) {
+        // Skipped in derived mode, which has no fixed target to fall short of — a lighter
+        // route simply repays less. The degradation check below is what stops one that moved
+        // far enough to matter against the numbers the user actually reviewed.
+        if (!p.deriveRepay && (builtOut * p.slipNum) / 10000n < p.needed) {
           throw new CloseError(
             'pair',
             `The price moved and the route no longer guarantees repaying the debt at ${input.slippagePercent}% slippage. Nothing was submitted — try again, or raise the slippage.`,
@@ -772,7 +866,8 @@ export function useDeleverageClose() {
           allowedRouters: p.allowedRouters,
           slippagePercent: input.slippagePercent,
           chainId,
-          debt: p.debt,
+          // No floor in derived mode: a route that returns less does not fail, it repays less.
+          debt: p.deriveRepay ? 0n : p.debt,
           slipNum: p.slipNum,
         })
         if (!preflight.router) {
@@ -798,7 +893,24 @@ export function useDeleverageClose() {
         // Derived from the route that is actually about to execute, so the contract enforces
         // the user's slippage on the whole output rather than only on the part repaying the
         // flash loan. See computeMinOut.
-        const minOut = computeMinOut({ debt: p.debt, quotedOut: builtOut, slipNum: p.slipNum })
+        // Re-derived from the calldata about to be submitted, not from the planning quote:
+        // those are two different quotes and the flash loan is exactly this number.
+        const repay = p.deriveRepay
+          ? deriveDebtRepay({ guaranteedOut: (builtOut * p.slipNum) / 10000n, debt: p.liveDebt })
+          : p.debt
+        if (repay <= 0n) {
+          throw new CloseError('pair', 'The route no longer buys enough to repay anything')
+        }
+        // Max sentinel on a full close so no dust debt survives; see ClosePlan.debtRepay.
+        const debtRepay = repay < p.liveDebt ? repay : FULL_CLOSE
+        // Floored at what the flash will actually take. On a full close that is `needed`, since
+        // the contract reads the balance at execution and it will have grown; on a partial it is
+        // the fixed repay itself.
+        const minOut = computeMinOut({
+          debt: repay < p.liveDebt ? repay : p.needed,
+          quotedOut: builtOut,
+          slipNum: p.slipNum,
+        })
         // Built by the SDK rather than by hand: AaveV3Strategies orders these differently from
         // the AaveV3Deleverager this replaced (swapData moved last, `debtRepay` is new), and the
         // permit structs differ in both field names and field order — `value`/`{v,r,s}` there
@@ -808,9 +920,7 @@ export function useDeleverageClose() {
           collateral: p.collateralAddr,
           debtAsset: p.debtAddr,
           collateralToWithdraw: withdrawal.collateralToWithdraw,
-          // What this close repays. `p.debt` is already capped to the live debt for a partial
-          // close, and the contract caps it again against the balance it reads.
-          debtRepay: p.debt,
+          debtRepay,
           minOut,
           router,
           permit: {

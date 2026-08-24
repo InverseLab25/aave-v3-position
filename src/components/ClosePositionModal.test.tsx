@@ -287,7 +287,7 @@ describe('ClosePositionModal — collateralIn is what reaches the hook', () => {
     mount()
     await waitFor(() => expect(previewFn).toHaveBeenCalled())
 
-    fireEvent.change(screen.getByPlaceholderText(/Auto|only what the debt needs/), { target: { value: '2.5' } })
+    fireEvent.change(screen.getByPlaceholderText(/Auto|only what the repay needs/), { target: { value: '2.5' } })
 
     await waitFor(() => expect(lastPreviewArg()?.collateralIn).toBe(parseUnits('2.5', 18)))
   })
@@ -297,7 +297,7 @@ describe('ClosePositionModal — collateralIn is what reaches the hook', () => {
   // re-run — and a test asserting on that transition would pass without proving anything.
   it('falls back to undefined when a valid amount is replaced by an unparseable one', async () => {
     mount()
-    const field = screen.getByPlaceholderText(/Auto|only what the debt needs/)
+    const field = screen.getByPlaceholderText(/Auto|only what the repay needs/)
 
     fireEvent.change(field, { target: { value: '2.5' } })
     await waitFor(() => expect(lastPreviewArg()?.collateralIn).toBe(parseUnits('2.5', 18)))
@@ -309,7 +309,7 @@ describe('ClosePositionModal — collateralIn is what reaches the hook', () => {
   it('falls back to undefined when a valid amount is replaced by zero', async () => {
     // Zero is not "swap nothing" — it means fall back to letting the debt size the swap.
     mount()
-    const field = screen.getByPlaceholderText(/Auto|only what the debt needs/)
+    const field = screen.getByPlaceholderText(/Auto|only what the repay needs/)
 
     fireEvent.change(field, { target: { value: '2.5' } })
     await waitFor(() => expect(lastPreviewArg()?.collateralIn).toBe(parseUnits('2.5', 18)))
@@ -450,4 +450,89 @@ describe('the close footer says what the next press does', () => {
     expect(await screen.findByRole('button', { name: 'Sign 2 approvals' })).toBeTruthy()
   })
 
+})
+
+describe('ClosePositionModal — debtIn is what reaches the hook', () => {
+  const lastPreviewArg = () => previewFn.mock.calls.at(-1)?.[0]
+  const debtField = () => screen.getByPlaceholderText(/whole debt/i)
+
+  it('sends undefined when the field is empty — the whole debt is repaid', async () => {
+    mount()
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+    expect(lastPreviewArg()?.debtIn).toBeUndefined()
+  })
+
+  it('parses a typed repay amount at the debt decimals', async () => {
+    mount()
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+
+    fireEvent.change(debtField(), { target: { value: '5000' } })
+
+    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBe(parseUnits('5000', 6)))
+  })
+
+  it("sends 'all' for MAX, so a full repay is exact rather than a rounded display number", async () => {
+    mount()
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Repay MAX' }))
+
+    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBe('all'))
+  })
+
+  it('falls back to undefined when a valid amount is replaced by zero', async () => {
+    mount()
+    fireEvent.change(debtField(), { target: { value: '5000' } })
+    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBe(parseUnits('5000', 6)))
+
+    fireEvent.change(debtField(), { target: { value: '0' } })
+    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBeUndefined())
+  })
+})
+
+describe('ClosePositionModal — the health-factor gate on a partial close', () => {
+  /**
+   * A partial close removes collateral and debt in different proportions, so it can leave the
+   * position closer to liquidation than it started. Aave enforces this inside the aToken's
+   * `finalizeTransfer`, which means an unguarded plan reverts in the wallet after two
+   * signatures — the guard has to be here, before the button invites the press.
+   */
+  const mountWithAccount = (preview: Record<string, unknown>) => {
+    previewFn.mockResolvedValue({ preview: okPreview(preview), error: null })
+    return render(
+      <ClosePositionModal
+        borrowedAsset={USDC_BORROWED}
+        suppliedAssets={[WETH_SUPPLIED]}
+        collateralUsd={30000}
+        debtUsd={20000}
+        liquidationThreshold={0.83}
+        onClose={vi.fn()}
+      />,
+    )
+  }
+
+  it('blocks the press when the partial would leave the position near liquidation', async () => {
+    // Sell 7 WETH ($21k) to repay only $2k of a $20k debt: collateral falls to $9k against
+    // $18k of debt, which is an HF of 0.41.
+    mountWithAccount({ debtRepaid: '2000', debtRemaining: '18000', collateralSwapped: '7' })
+
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+    await waitFor(() => expect(isEnabled()).toBe(false))
+    // getByText throws when absent, so this asserts the reason is on screen, not just the gate.
+    expect(screen.getByText(/health factor/i).textContent).toContain('0.41')
+  })
+
+  it('allows a partial that leaves the position comfortably collateralised', async () => {
+    // Sell 1 WETH ($3k) to repay $2k: $27k of collateral against $18k of debt, HF 1.24… still
+    // under the warn line but well clear of the block line.
+    mountWithAccount({ debtRepaid: '2000', debtRemaining: '18000', collateralSwapped: '1' })
+
+    await waitFor(() => expect(isEnabled()).toBe(true))
+  })
+
+  it('does not gate a full close, which leaves no debt to be liquidated against', async () => {
+    mountWithAccount({ debtRepaid: '20000', debtRemaining: '0', collateralSwapped: '7' })
+
+    await waitFor(() => expect(isEnabled()).toBe(true))
+  })
 })

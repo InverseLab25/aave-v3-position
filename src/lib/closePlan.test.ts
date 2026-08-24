@@ -3,6 +3,7 @@ import { maxUint256, parseUnits, type Address } from 'viem'
 import {
   planWithdrawal,
   computeMinOut,
+  deriveDebtRepay,
   canReuseSignature,
   reuseBlocker,
   routeCostPercent,
@@ -343,5 +344,22 @@ describe('MAX_OUTPUT_DEGRADATION_PERCENT — the baseline is what the user revie
   it('does not divide by zero on a degenerate baseline', () => {
     expect(degradation(1000n, 0n)).toBe(0)
     expect(blocks(1000n, 0n)).toBe(false)
+  })
+})
+
+describe('deriveDebtRepay', () => {
+  it('derives the repay from the guaranteed output, never the quoted one', () => {
+    // The flash loan IS the repay amount, and the contract reverts unless the swap delivers at
+    // least that much. Sizing off the quote makes every close a bet on the fill; the guaranteed
+    // floor is the largest number that cannot revert.
+    expect(deriveDebtRepay({ guaranteedOut: 5970n, debt: 20000n })).toBe(5970n)
+  })
+
+  it('caps at the debt — there is nothing above it left to repay', () => {
+    expect(deriveDebtRepay({ guaranteedOut: 25000n, debt: 20000n })).toBe(20000n)
+  })
+
+  it('reports a swap that buys nothing as zero rather than as a tiny repay', () => {
+    expect(deriveDebtRepay({ guaranteedOut: 0n, debt: 20000n })).toBe(0n)
   })
 })

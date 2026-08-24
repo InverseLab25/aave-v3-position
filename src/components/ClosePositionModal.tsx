@@ -5,6 +5,7 @@ import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { aavePoolAbi } from '../config/aavev3Abi'
 import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
+import { healthFactor, evaluateHf } from '../utils/health'
 
 import { clearQuoteCache } from '../adapters/http'
 import type { CloseErrorKind } from '../lib/deleverage'
@@ -78,12 +79,25 @@ const formatAmount = (s: string): string => {
 interface ClosePositionModalProps {
   borrowedAsset: BorrowedAsset
   suppliedAssets: SuppliedAsset[]
+  /**
+   * The whole account, not just this pair — Aave's health factor is account-wide, and a partial
+   * close is the only path here that can leave one behind. Default 0 so a caller that has not
+   * threaded them through gets no projection rather than a wrong one; `evaluateHf` reads the
+   * resulting non-finite figure as "unknown" and falls back to the on-chain revert.
+   */
+  collateralUsd?: number
+  debtUsd?: number
+  /** Account-wide liquidation threshold as a fraction, e.g. 0.83. */
+  liquidationThreshold?: number
   onClose: () => void
 }
 
 export function ClosePositionModal({
   borrowedAsset,
   suppliedAssets,
+  collateralUsd = 0,
+  debtUsd = 0,
+  liquidationThreshold = 0,
   onClose,
 }: ClosePositionModalProps) {
   const { address } = useConnection()
@@ -109,6 +123,12 @@ export function ClosePositionModal({
    */
   const [collateralInStr, setCollateralInStr] = useState<string>('')
   const [isCollateralMax, setIsCollateralMax] = useState<boolean>(false)
+  /**
+   * How much debt to repay. Empty means the whole thing. Anything smaller is a partial close:
+   * the position stays open with less debt and less collateral behind it.
+   */
+  const [debtInStr, setDebtInStr] = useState<string>('')
+  const [isDebtMax, setIsDebtMax] = useState<boolean>(false)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   /**
@@ -145,6 +165,21 @@ export function ClosePositionModal({
       ? (() => {
           try {
             const parsed = parseUnits(collateralInStr, selectedCollateral.decimals)
+            return parsed > 0n ? parsed : undefined
+          } catch {
+            return undefined
+          }
+        })()
+      : undefined
+
+  // Same reasoning as MAX above: `'all'` resolves to the live variable-debt balance on chain,
+  // so a full repay is never left a wei short by a rounded display number.
+  const debtIn: bigint | 'all' | undefined = isDebtMax
+    ? 'all'
+    : debtInStr
+      ? (() => {
+          try {
+            const parsed = parseUnits(debtInStr, borrowedAsset.decimals)
             return parsed > 0n ? parsed : undefined
           } catch {
             return undefined
@@ -204,6 +239,7 @@ export function ClosePositionModal({
           debtAsset: borrowedAsset,
           slippagePercent: slippage,
           collateralIn,
+          debtIn,
           signal: controller.signal,
         })
         if (isMounted) { setPreview(p.preview); setPreviewError(p.error) }
@@ -219,7 +255,7 @@ export function ClosePositionModal({
       clearTimeout(timeout)
       controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, isSameAsset, closeAvailable, quotePreview, refreshTick])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, isSameAsset, closeAvailable, quotePreview, refreshTick])
 
   // Ticks only while an approval is held. Everything it writes happens inside the interval
   // callback, so the countdown never sets state as a render side effect.
@@ -267,6 +303,8 @@ export function ClosePositionModal({
     setIsMax(false)
     setCollateralInStr('')
     setIsCollateralMax(false)
+    setDebtInStr('')
+    setIsDebtMax(false)
     setSignedUntil(null)
     setPreview(null)
     setPreviewError(null)
@@ -315,6 +353,7 @@ export function ClosePositionModal({
       debtAsset: borrowedAsset,
       slippagePercent: slippage,
       collateralIn,
+      debtIn,
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
     if (result.status === 'signed') {
@@ -385,11 +424,39 @@ export function ClosePositionModal({
     }, QUOTE_REFRESH_MS)
     return () => clearTimeout(id)
   }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
+  /**
+   * Where a partial close leaves the account's health factor.
+   *
+   * A full close ends with no debt, so there is nothing to be liquidated against and the
+   * projection is trivially infinite. A partial is the case that matters: it sells collateral
+   * and repays debt in whatever proportion the user picked, and those two do not have to move
+   * together. Aave checks the result inside the aToken's `finalizeTransfer`, which means an
+   * unguarded plan reverts in the wallet AFTER two signatures — so it has to be caught here.
+   *
+   * Only the chosen collateral leaves the position, so it is that asset's threshold that comes
+   * out of the weighted numerator, not the account-wide average. Same shape as WithdrawModal.
+   */
+  const projectedHf = useMemo(() => {
+    if (isSameAsset || !preview || !selectedCollateral) return '∞'
+    const soldUsd = Number(preview.collateralSwapped) * Number(selectedCollateral.priceInUsd ?? 0)
+    const repaidUsd = Number(preview.debtRepaid) * Number(borrowedAsset.priceInUsd ?? 0)
+    const assetLt = selectedCollateral.liquidationThreshold || 0
+    return healthFactor(
+      collateralUsd * liquidationThreshold - soldUsd * assetLt,
+      debtUsd - repaidUsd,
+    )
+  }, [
+    isSameAsset, preview, selectedCollateral, borrowedAsset,
+    collateralUsd, debtUsd, liquidationThreshold,
+  ])
+  const hfGuard = evaluateHf(projectedHf)
+
   const canExecute = isSameAsset
     ? !!amountStr && parseFloat(amountStr) > 0
     // `guaranteed` gates execution too: close() refuses a route whose guaranteed
     // output falls below the debt, so the button must not invite the click.
     : closeAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
+      && hfGuard.level !== 'block'
 
   return (
     <Modal
@@ -515,6 +582,56 @@ export function ClosePositionModal({
             <>
             <div style={{ marginBottom: T.space[5] }}>
               <label style={{ display: 'block', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[2], fontWeight: 500 }}>
+                Debt to Repay ({borrowedAsset.symbol})
+              </label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  type="number"
+                  step="any"
+                  className="input"
+                  value={debtInStr}
+                  onChange={(e) => {
+                    setDebtInStr(e.target.value)
+                    setIsDebtMax(false)
+                  }}
+                  placeholder={`${formatAmount(String(borrowedAsset.amount))} (whole debt)`}
+                  style={{ paddingRight: debtInStr ? '124px' : '62px' }}
+                />
+                <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', display: 'flex', gap: '6px' }}>
+                  {debtInStr && (
+                    <button
+                      aria-label="Repay RESET"
+                      onClick={() => {
+                        setDebtInStr('')
+                        setIsDebtMax(false)
+                      }}
+                      style={pillButtonStyle(false)}
+                    >
+                      RESET
+                    </button>
+                  )}
+                  <button
+                    aria-label="Repay MAX"
+                    onClick={() => {
+                      setIsDebtMax(true)
+                      setDebtInStr(String(borrowedAsset.amount))
+                    }}
+                    style={pillButtonStyle(isDebtMax)}
+                  >
+                    MAX
+                  </button>
+                </div>
+              </div>
+              <p style={{ fontSize: T.fontSize.xs, marginTop: '6px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
+                Repay less than the whole debt to keep the position open at lower leverage. Only
+                the collateral that repay needs is sold. Leave this empty and set the collateral
+                amount below instead, and whatever that collateral sells for becomes the
+                repayment.
+              </p>
+            </div>
+
+            <div style={{ marginBottom: T.space[5] }}>
+              <label style={{ display: 'block', fontSize: T.fontSize.sm, color: T.textMuted, marginBottom: T.space[2], fontWeight: 500 }}>
                 Collateral to Swap ({selectedCollateral?.symbol})
               </label>
               <div style={{ position: 'relative' }}>
@@ -528,7 +645,9 @@ export function ClosePositionModal({
                     setIsCollateralMax(false)
                   }}
                   placeholder={
-                    preview ? `${formatAmount(preview.collateralSwapped)} (only what the debt needs)` : 'Auto'
+                    preview
+                      ? `${formatAmount(preview.collateralSwapped)} (only what the repay needs)`
+                      : 'Auto'
                   }
                   // Room for the pills sitting inside the field; Reset only takes space when shown.
                   style={{ paddingRight: collateralInStr ? '124px' : '62px' }}
@@ -587,7 +706,9 @@ export function ClosePositionModal({
                 <span style={{ fontSize: T.fontSize.sm }}>
                   {isSameAsset
                     ? `Repayment submitted. Your ${borrowedAsset.symbol} position will update once it confirms.`
-                    : `Position closed. Your ${borrowedAsset.symbol} debt is repaid and the unswapped ${selectedCollateral?.symbol} stays supplied in Aave.`}
+                    : debtIn !== undefined && debtIn !== 'all'
+                      ? `Repayment submitted. The rest of your ${borrowedAsset.symbol} debt stays open, backed by the ${selectedCollateral?.symbol} you did not swap.`
+                      : `Position closed. Your ${borrowedAsset.symbol} debt is repaid and the unswapped ${selectedCollateral?.symbol} stays supplied in Aave.`}
                 </span>
               </div>
             </div>
@@ -637,6 +758,18 @@ export function ClosePositionModal({
             </div>
           )}
 
+          {!isSameAsset && hfGuard.message && !isComplete && (
+            <div
+              className={hfGuard.level === 'block' ? 'alert alert-warning' : 'alert'}
+              style={{ marginBottom: T.space[5] }}
+            >
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                <span>{hfGuard.level === 'block' ? '⛔' : '⚠️'}</span>
+                <span style={{ fontSize: T.fontSize.sm }}>{hfGuard.message}</span>
+              </div>
+            </div>
+          )}
+
           {!isSameAsset && closeAvailable && !isComplete && (
             <div style={{ marginBottom: T.space[5] }}>
               <div style={{
@@ -675,6 +808,14 @@ export function ClosePositionModal({
                     <span className="info-row-label">Debt to repay</span>
                     <span className="info-row-value">{formatAmount(preview.debtRepaid)} {preview.debtSymbol}</span>
                   </div>
+                  {Number(preview.debtRemaining) > 0 && (
+                    <div className="info-row">
+                      <span className="info-row-label" style={{ fontWeight: 600 }}>Still owed after this</span>
+                      <span className="info-row-value" style={{ color: T.danger, fontWeight: 600 }}>
+                        {formatAmount(preview.debtRemaining)} {preview.debtSymbol}
+                      </span>
+                    </div>
+                  )}
                   <div className="info-row">
                     <span className="info-row-label">Min debt out (router)</span>
                     <span className="info-row-value" style={{ color: preview.guaranteed ? T.success : T.danger }}>
@@ -745,7 +886,9 @@ export function ClosePositionModal({
                       case is described by the numbers above it and needs no prose. */}
                   {collateralIn !== undefined && (
                     <p style={{ fontSize: T.fontSize.xs, marginTop: '10px', marginBottom: 0, opacity: 0.7, lineHeight: 1.4 }}>
-                      {`You chose how much ${preview.collateralSymbol} to swap. The debt is repaid first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
+                      {debtIn === undefined
+                        ? `You chose how much ${preview.collateralSymbol} to swap, and the repay above is what the router guarantees it sells for — anything it fills above that comes back to your wallet as ${preview.debtSymbol}. The ${preview.collateralSymbol} you did not swap stays supplied in Aave.`
+                        : `You chose how much ${preview.collateralSymbol} to swap. The repay is taken first and the surplus is sent to your wallet as ${preview.debtSymbol}; any ${preview.collateralSymbol} you did not swap stays supplied in Aave.`}{' '}
                       Estimated from your live balances.
                     </p>
                   )}
@@ -757,7 +900,7 @@ export function ClosePositionModal({
                     <span style={{ fontSize: T.fontSize.sm }}>
                       {collateralIn === undefined
                         ? 'Collateral won’t cover the debt — the position is underwater. Try a different collateral.'
-                        : 'That much collateral won’t cover the debt. Increase the amount, or clear it to let the swap size itself.'}
+                        : 'That much collateral won’t cover the repay amount you asked for. Sell more of it, ask to repay less, or clear the repay amount and let the swap decide it.'}
                     </span>
                   </div>
                 </div>

@@ -696,4 +696,204 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     expect(out.status).toBe('success')
     expect(writeContract).toHaveBeenCalledTimes(1)
   })
+
+  /**
+   * Args order on `closePositionWithPermit` is
+   * [collateral, debtAsset, collateralToWithdraw, debtRepay, minOut, ...] — index 3.
+   */
+  const debtRepayArg = () =>
+    (simulateContract.mock.calls.at(-1)?.[1] as { args: readonly unknown[] }).args[3]
+
+  it('repays with the max sentinel on a full close, so no dust debt is left behind', async () => {
+    // Passing the plan-time balance instead would leave whatever interest accrued between the
+    // read and the block that lands still owing — a "closed" position with debt on it.
+    const r = mount()
+    await r.current.close(baseInput)
+    await r.current.close(baseInput)
+
+    expect(debtRepayArg()).toBe(2n ** 256n - 1n)
+  })
+
+  it('flashes what the BUILT route guarantees, not what the plan quoted', async () => {
+    // The route is re-quoted between the signature and the send, so a repay derived from the
+    // planning quote could exceed what the swap actually delivers — and the flash loan is the
+    // repay amount, so that reverts. It has to be re-derived from the calldata being submitted.
+    const OUT = parseUnits('6000', 6)
+    mocks.sizeSwap.mockResolvedValue({
+      ...SIZED,
+      expectedOut: OUT,
+      minDebtOut: parseUnits('5970', 6),
+    })
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(OUT)) },
+    ])
+    selectRoute.mockResolvedValue(route(OUT))
+
+    const withCollateral = { ...baseInput, collateralIn: SIZED.requiredIn }
+    const r = mount()
+    await r.current.close(withCollateral)
+    await r.current.close(withCollateral)
+
+    // 6,000 at 0.5% slippage guarantees 5,970.
+    expect(debtRepayArg()).toBe(parseUnits('5970', 6))
+  })
+
+  it('repays exactly what was asked for on a partial close', async () => {
+    const HALF = parseUnits('10000', 6)
+    const r = mount()
+    await r.current.close({ ...baseInput, debtIn: HALF })
+    await r.current.close({ ...baseInput, debtIn: HALF })
+
+    expect(debtRepayArg()).toBe(HALF)
+  })
+})
+
+/**
+ * A partial close repays only part of the debt and leaves the position open at lower leverage.
+ * The contract has always taken `debtRepay` as its own argument — the hook simply never passed
+ * anything but the whole debt, so every close was a full one.
+ */
+describe('buildPlan — partial close', () => {
+  const sizeArgs = () => mocks.sizeSwap.mock.calls.at(-1)?.[0]
+
+  it('sizes the swap against the requested repay rather than the whole debt', async () => {
+    await previewWith({ debtIn: parseUnits('5000', 6) })
+
+    expect(sizeArgs()?.debt).toBe(parseUnits('5000', 6))
+  })
+
+  it('drops the accrual buffer on a partial, whose flash is a fixed amount', async () => {
+    // The buffer exists because a FULL close flash-loans the balance read at execution time,
+    // which has grown. A partial flashes exactly `debtRepay`, so nothing can grow underneath it.
+    await previewWith({ debtIn: parseUnits('5000', 6) })
+
+    expect(sizeArgs()?.needed).toBe(parseUnits('5000', 6))
+  })
+
+  it('keeps the accrual buffer on a full close', async () => {
+    await previewWith()
+
+    expect(sizeArgs()?.debt).toBe(DEBT)
+    expect(sizeArgs()?.needed).toBe((DEBT * 10050n) / 10000n)
+  })
+
+  it("treats 'all' as the whole live debt", async () => {
+    await previewWith({ debtIn: 'all' })
+
+    expect(sizeArgs()?.debt).toBe(DEBT)
+    expect(sizeArgs()?.needed).toBe((DEBT * 10050n) / 10000n)
+  })
+
+  it('refuses to repay more than is owed, and says what is owed', async () => {
+    const { preview, error } = await previewWith({ debtIn: parseUnits('30000', 6) })
+
+    expect(preview).toBeNull()
+    expect(error?.kind).toBe('pair')
+    expect(error?.message).toContain('20000')
+  })
+
+  it('refuses a zero repay rather than sizing a swap for nothing', async () => {
+    const { preview, error } = await previewWith({ debtIn: 0n })
+
+    expect(preview).toBeNull()
+    expect(error?.kind).toBe('pair')
+  })
+
+  it('reports what is still owed after the partial', async () => {
+    const { preview } = await previewWith({ debtIn: parseUnits('5000', 6) })
+
+    expect(preview?.debtRepaid).toBe('5000')
+    expect(preview?.debtRemaining).toBe('15000')
+  })
+
+  it('reports nothing still owed after a full close', async () => {
+    const { preview } = await previewWith()
+
+    expect(preview?.debtRemaining).toBe('0')
+  })
+})
+
+/**
+ * Enter a collateral amount and let the swap decide the repayment: the aggregator says what
+ * that much collateral buys, and that — floored at the router's guarantee — becomes both the
+ * flash loan and the debt repaid. The user picks how much of the position to unwind rather
+ * than having to work out which repay figure their collateral can afford.
+ */
+describe('buildPlan — repay derived from the collateral amount', () => {
+  /** 2 WETH buys ~6,000 USDC, well under the 20,000 debt. */
+  const SMALL = {
+    ...SIZED,
+    requiredIn: parseUnits('2', 18),
+    expectedOut: parseUnits('6000', 6),
+    minDebtOut: parseUnits('5970', 6),
+  }
+
+  it('repays what the guaranteed output buys, not the whole debt', async () => {
+    mocks.sizeSwap.mockResolvedValue(SMALL)
+
+    const { preview } = await previewWith({ collateralIn: parseUnits('2', 18) })
+
+    expect(preview?.debtRepaid).toBe('5970')
+    expect(preview?.debtRemaining).toBe('14030')
+  })
+
+  it('leaves the position open rather than calling it underwater', async () => {
+    // The old sizing judged a small amount against the WHOLE debt, so this reported
+    // "that much collateral won't cover the debt" — for a partial that is not a failure.
+    mocks.sizeSwap.mockResolvedValue(SMALL)
+
+    const { preview, error } = await previewWith({ collateralIn: parseUnits('2', 18) })
+
+    expect(error).toBeNull()
+    expect(preview?.covered).toBe(true)
+    expect(preview?.guaranteed).toBe(true)
+  })
+
+  it('falls back to a full close when the collateral buys more than the debt', async () => {
+    // 7 WETH guarantees 20,900 against a 20,000 debt, so there is nothing left to derive —
+    // the surplus goes to the wallet exactly as it does today.
+    const { preview } = await previewWith({ collateralIn: parseUnits('7', 18) })
+
+    expect(preview?.debtRepaid).toBe('20000')
+    expect(preview?.debtRemaining).toBe('0')
+    expect(preview?.debtReturned).toBe('1000')
+  })
+
+  it('still blocks a full close whose route cannot cover the accrual buffer', async () => {
+    // The cap bit — 20,050 guaranteed against a 20,000 debt — so this is a full close again,
+    // and a full close flashes the balance read on chain, which will have grown past 20,050.
+    // The self-funding shortcut must NOT reach this case.
+    mocks.sizeSwap.mockResolvedValue({
+      ...SIZED,
+      expectedOut: parseUnits('20150', 6),
+      minDebtOut: parseUnits('20050', 6),
+      covered: true,
+      guaranteed: false,
+    })
+
+    const { preview } = await previewWith({ collateralIn: parseUnits('7', 18) })
+
+    expect(preview?.debtRepaid).toBe('20000')
+    expect(preview?.guaranteed).toBe(false)
+  })
+
+  it('lets an explicit repay amount override the derived one', async () => {
+    mocks.sizeSwap.mockResolvedValue(SMALL)
+
+    const { preview } = await previewWith({
+      collateralIn: parseUnits('2', 18),
+      debtIn: parseUnits('3000', 6),
+    })
+
+    expect(preview?.debtRepaid).toBe('3000')
+  })
+
+  it('refuses collateral that buys too little to repay anything', async () => {
+    mocks.sizeSwap.mockResolvedValue({ ...SMALL, expectedOut: 0n, minDebtOut: 0n })
+
+    const { preview, error } = await previewWith({ collateralIn: 1n })
+
+    expect(preview).toBeNull()
+    expect(error?.kind).toBe('pair')
+  })
 })

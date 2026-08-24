@@ -884,6 +884,9 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
         <ClosePositionModal
           borrowedAsset={closeTarget}
           suppliedAssets={suppliedAssets}
+          collateralUsd={collateralUsd}
+          debtUsd={debtUsd}
+          liquidationThreshold={liquidationThreshold}
           onClose={() => setCloseTarget(null)}
         />
       )}

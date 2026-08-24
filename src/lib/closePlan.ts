@@ -118,6 +118,34 @@ export function computeMinOut({
   return routerFloor > debt ? routerFloor : debt
 }
 
+/**
+ * The repay a given swap can fund.
+ *
+ * This is the inverted close: instead of "repay this much debt, work out what collateral that
+ * needs", the user picks how much collateral to sell and the aggregator's answer decides how
+ * much debt comes off. It is the natural way round for unwinding part of a position, where the
+ * question is "sell 2 of my 10 WETH" rather than "repay 5,970 of my 20,000 USDC".
+ *
+ * Derived from the GUARANTEED output, never the quoted one. The flash loan is exactly the repay
+ * amount and the contract reverts unless the swap delivers at least that much, so sizing off the
+ * quote makes every close a bet on the fill. The router's floor is the largest amount that
+ * cannot revert; anything the swap delivers above it is surplus and goes to the user's wallet.
+ *
+ * Capped at the debt, above which there is nothing left to repay — that cap is what makes a
+ * large enough collateral amount collapse back into an ordinary full close.
+ */
+export function deriveDebtRepay({
+  guaranteedOut,
+  debt,
+}: {
+  /** The route's floor: quoted output × (1 − slippage). */
+  guaranteedOut: bigint
+  /** Live variable debt. */
+  debt: bigint
+}): bigint {
+  return guaranteedOut < debt ? guaranteedOut : debt
+}
+
 /** The signed halves handed to the contract. */
 export interface PermitArgs {
   value: bigint
