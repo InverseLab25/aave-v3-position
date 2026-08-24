@@ -32,7 +32,7 @@ import { TxHistoryList } from './TxHistoryList'
 import { useHistorySync } from '../hooks/useHistorySync'
 import { computeLiquidationView, hasLiquidationRowsToShow, isVolatilePrice, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import { browserStorage } from '../lib/delegationCache'
-import { historyVersion, loadHistory, subscribeHistory } from '../lib/txHistory'
+import { historyVersion, isScopeTruncated, loadHistory, subscribeHistory } from '../lib/txHistory'
 import { avgEntryFromHistory } from '../lib/historyBasis'
 import { portfolioPnl, resolveEntryPrice, rowPnl, type RowPnl } from '../lib/positionPnl'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
@@ -163,6 +163,9 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     if (viewAddress || !connectedAddress) return empty
     const entries = loadHistory(browserStorage(), { wallet: connectedAddress, chainId })
     if (entries.length === 0) return empty
+    // Once the cap has evicted anything, these rows may be a fraction of the fills that built a
+    // position — and a fraction averages to a plausible wrong number rather than to nothing.
+    const truncated = isScopeTruncated(browserStorage(), { wallet: connectedAddress, chainId })
 
     // Every reserve the market lists, so the quote leg can be named and priced even when the wallet
     // holds none of it. Held rows are folded in for anything the reserve list misses.
@@ -177,7 +180,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
     const derived: Record<string, Derived> = {}
     for (const [side, list] of [['supply', suppliedAssets], ['borrow', borrowedAssets]] as const) {
       for (const asset of list) {
-        const basis = avgEntryFromHistory(entries, asset.underlyingAsset, side)
+        const basis = avgEntryFromHistory(entries, asset.underlyingAsset, side, { truncated })
         if (!basis || !(basis.perUnit > 0)) continue
         const quote = meta.get(basis.quoteToken.toLowerCase())
         const canValue = quote !== undefined && quote.priceUsd > 0 && !isVolatilePrice(quote.priceUsd)

@@ -83,11 +83,24 @@ export function avgEntryFromHistory(
   entries: readonly TxHistoryEntry[],
   asset: Address,
   side: PositionSide,
+  opts: {
+    /**
+     * This wallet-and-chain has lost rows to the FIFO cap, so `entries` may be a fraction of the
+     * fills that built the position. See the note above the return.
+     */
+    truncated?: boolean
+  } = {},
 ): HistoryBasis | null {
   const wanted = asset.toLowerCase()
   let totalUnits = 0
   let totalCostIn = 0
   let quoteToken: Address | null = null
+  /**
+   * The replay saw this position go to zero and start again, so whatever came before is
+   * irrelevant to the tally that is left. This is what makes a truncated store still usable:
+   * every full exit is a point the history heals at.
+   */
+  let resetObserved = false
 
   for (const entry of chronological(entries)) {
     const { swap } = entry
@@ -116,6 +129,7 @@ export function avgEntryFromHistory(
       // Scaling both by the same share is exactly what leaves the average untouched.
       totalCostIn *= remaining / totalUnits
       totalUnits = remaining
+      if (remaining === 0) resetObserved = true
       continue
     }
 
@@ -144,5 +158,19 @@ export function avgEntryFromHistory(
   }
 
   if (!(totalUnits > 0) || quoteToken === null) return null
+  /**
+   * A tally built on rows that may be missing their earliest fills is the one answer worse than
+   * no answer: it is a plausible number, it BEATS the indexer in `resolveEntryPrice`, and the
+   * caller multiplies it by the full held balance rather than by the units these rows account
+   * for. So it refuses, and the row falls through to the indexer's oracle-priced figure.
+   *
+   * Unless a full exit was replayed, which proves the position was zero at a point inside the
+   * surviving rows — everything after that is complete whatever the cap threw away.
+   *
+   * Deliberately conservative: the evicted rows might have been for a different asset entirely,
+   * and this refuses anyway. Being absent where it could have been right costs a labelled
+   * fallback; being wrong where it looks right costs nothing that shows.
+   */
+  if (opts.truncated && !resetObserved) return null
   return { perUnit: totalCostIn / totalUnits, quoteToken }
 }

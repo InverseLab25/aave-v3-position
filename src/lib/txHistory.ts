@@ -213,18 +213,104 @@ function byTimeDescending(a: TxHistoryEntry, b: TxHistoryEntry): number {
 }
 
 /**
- * Newest first, and nothing dropped.
+ * How many transactions are kept per wallet, per chain.
  *
- * There were two caps here once — fifty per wallet-and-chain, five hundred overall — both there to
- * bound `localStorage`. Neither survives, because `historyBasis` REPLAYS these rows to price a
- * position: evicting the oldest open does not hide an old line, it silently changes an average
- * entry price, and the number that replaces it looks every bit as plausible.
+ * Per scope rather than overall, because one flat array backs every wallet and chain: a single
+ * global cap would mean connecting a second wallet evicts the first one's history on sight.
  *
- * What makes that affordable is that a row is a distilled `Swapped` event — two tokens, their
- * decimals and two amounts — rather than the receipt it came from.
+ * KNOWN COST. `historyBasis` REPLAYS these rows to price a position, so evicting an open whose
+ * position is still held does not merely hide an old line — it drops units and cost out of the
+ * weighted average and leaves a number that looks every bit as plausible as the right one. A
+ * position opened more than 50 transactions ago will show a wrong average entry price. That is
+ * why there was no cap here; it is back because an unbounded store shares one origin quota with
+ * everything else and fails silently when it runs out.
  */
-function sortAll(entries: readonly TxHistoryEntry[]): TxHistoryEntry[] {
-  return [...entries].sort(byTimeDescending)
+export const MAX_HISTORY_PER_SCOPE = 50
+
+/**
+ * Scopes that have had a row evicted, so the basis can refuse rather than average a fraction.
+ *
+ * A SECOND key rather than a field on the store, because the store's root is a bare array and
+ * `readAll` drops anything that is not one. Wrapping it in an object to make room here would
+ * read every existing history as empty and throw it away on the next write.
+ */
+export const HISTORY_TRUNCATED_KEY = 'defi-route.txhistory.truncated.v1'
+
+/** One wallet on one chain — the unit the cap is counted in, and the unit `loadHistory` reads. */
+const scopeKey = (e: TxHistoryEntry) => `${e.chainId}:${e.wallet.toLowerCase()}`
+
+const scopeOf = (wallet: Address, chainId: number) => `${chainId}:${wallet.toLowerCase()}`
+
+function readTruncated(storage: DelegationStorage | null): Record<string, true> {
+  if (!storage) return {}
+  try {
+    const raw = storage.getItem(HISTORY_TRUNCATED_KEY)
+    if (!raw) return {}
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed as Record<string, true>
+  } catch {
+    // Unreadable reads as "nothing known to be truncated", which is the same answer a store
+    // that has never evicted anything gives.
+    return {}
+  }
+}
+
+/**
+ * Whether this wallet-and-chain has lost rows to the cap.
+ *
+ * Sticky once set: the rows are gone, and a later scope dropping back under the cap does not
+ * bring them back. Only {@link clearHistory} forgets it.
+ */
+export function isScopeTruncated(
+  storage: DelegationStorage | null,
+  filter: { wallet: Address; chainId: number },
+): boolean {
+  return readTruncated(storage)[scopeOf(filter.wallet, filter.chainId)] === true
+}
+
+/** Records every scope `sortAndCap` had to evict from. No-op when it evicted nothing. */
+function markTruncated(storage: DelegationStorage, evicted: readonly TxHistoryEntry[]): void {
+  if (evicted.length === 0) return
+  try {
+    const marks = readTruncated(storage)
+    let changed = false
+    for (const row of evicted) {
+      if (marks[scopeKey(row)] !== true) {
+        marks[scopeKey(row)] = true
+        changed = true
+      }
+    }
+    if (changed) storage.setItem(HISTORY_TRUNCATED_KEY, JSON.stringify(marks))
+  } catch {
+    // Same posture as everything else here. Losing the mark costs an over-confident basis on
+    // one load, which is the pre-cap behaviour rather than a new failure.
+  }
+}
+
+/**
+ * Newest first, with each wallet-and-chain trimmed to its newest {@link MAX_HISTORY_PER_SCOPE}.
+ *
+ * Both write paths go through this, so `appendHistory` and `mergeHistory` cannot disagree about
+ * what is on disk — `mergeHistory` decides whether to write at all by comparing against this
+ * output, and a cap applied on only one side would make every sync look like news.
+ */
+function sortAndCap(entries: readonly TxHistoryEntry[]): {
+  kept: TxHistoryEntry[]
+  evicted: TxHistoryEntry[]
+} {
+  const sorted = [...entries].sort(byTimeDescending)
+  const seen = new Map<string, number>()
+  const kept: TxHistoryEntry[] = []
+  const evicted: TxHistoryEntry[] = []
+  // Sorted newest-first, so counting down the list keeps the newest and drops the oldest.
+  for (const e of sorted) {
+    const key = scopeKey(e)
+    const n = (seen.get(key) ?? 0) + 1
+    seen.set(key, n)
+    ;(n <= MAX_HISTORY_PER_SCOPE ? kept : evicted).push(e)
+  }
+  return { kept, evicted }
 }
 
 function readAll(storage: DelegationStorage | null): TxHistoryEntry[] {
@@ -308,7 +394,9 @@ function mergeSwap(authoritative: HistorySwap | null, other: HistorySwap | null)
 }
 
 function write(storage: DelegationStorage, entries: readonly TxHistoryEntry[]): void {
-  storage.setItem(HISTORY_KEY, JSON.stringify(sortAll(entries).map(encode)))
+  const { kept, evicted } = sortAndCap(entries)
+  storage.setItem(HISTORY_KEY, JSON.stringify(kept.map(encode)))
+  markTruncated(storage, evicted)
 }
 
 /**
@@ -390,10 +478,12 @@ export function mergeHistory(storage: DelegationStorage | null, input: MergeHist
 
     // Compared rather than assumed: a sync that finds no news runs on every connect, and the
     // panel re-renders on every announcement.
-    const after = JSON.stringify(sortAll(next).map(encode))
+    const { kept, evicted } = sortAndCap(next)
+    const after = JSON.stringify(kept.map(encode))
     if (after === before) return
 
     storage.setItem(HISTORY_KEY, after)
+    markTruncated(storage, evicted)
     announce()
   } catch {
     // Same as `appendHistory`: history is a convenience and never worth failing a flow for.
@@ -418,6 +508,9 @@ export function clearHistory(storage: DelegationStorage | null): void {
   if (!storage) return
   try {
     storage.removeItem(HISTORY_KEY)
+    // The mark describes rows that no longer exist either way — leaving it behind would make an
+    // empty store refuse to price anything.
+    storage.removeItem(HISTORY_TRUNCATED_KEY)
     announce()
   } catch {
     // Same as above: unable to forget it is not a reason to fail anything.

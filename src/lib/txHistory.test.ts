@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Address } from 'viem'
 import {
   HISTORY_KEY,
+  MAX_HISTORY_PER_SCOPE,
+  isScopeTruncated,
   historyVersion,
   subscribeHistory,
   appendHistory,
@@ -102,16 +104,18 @@ describe('txHistory', () => {
     expect(loadHistory(storage)).toHaveLength(2)
   })
 
-  it('keeps the oldest row however many arrive after it', () => {
-    // Nothing is evicted. `historyBasis` replays these rows to price a position, so dropping the
-    // first open would not hide an old line — it would change an average entry price to one that
-    // looks just as plausible.
+  it('keeps the oldest row until the cap is reached', () => {
+    // Below the cap nothing is evicted at all, which is the case that matters most:
+    // `historyBasis` replays these rows to price a position, so dropping the first open would
+    // not hide an old line, it would change an average entry price to one just as plausible.
     const storage = memoryStorage()
-    for (let i = 0; i <= 200; i++) appendHistory(storage, entry({ hash: hash(i), at: i }))
+    for (let i = 0; i < MAX_HISTORY_PER_SCOPE; i++) {
+      appendHistory(storage, entry({ hash: hash(i), at: i }))
+    }
 
     const kept = loadHistory(storage)
 
-    expect(kept).toHaveLength(201)
+    expect(kept).toHaveLength(MAX_HISTORY_PER_SCOPE)
     expect(kept.map((e) => e.hash)).toContain(hash(0))
   })
 
@@ -260,13 +264,14 @@ describe('txHistory', () => {
   })
 
   it('never lets one chain evict another', () => {
+    // The busy chain hits its own cap; the quiet one keeps its single row regardless.
     const storage = memoryStorage()
     for (let i = 0; i < 60; i++) {
       appendHistory(storage, entry({ hash: hash(i), chainId: 8453, at: i }))
     }
     appendHistory(storage, entry({ hash: hash(999), chainId: 42161, at: 1 }))
 
-    expect(loadHistory(storage, { chainId: 8453 })).toHaveLength(60)
+    expect(loadHistory(storage, { chainId: 8453 })).toHaveLength(MAX_HISTORY_PER_SCOPE)
     expect(loadHistory(storage, { chainId: 42161 })).toHaveLength(1)
   })
 
@@ -480,5 +485,106 @@ describe('mergeHistory', () => {
 
     expect(() => mergeHistory(null, input)).not.toThrow()
     expect(() => mergeHistory(full, input)).not.toThrow()
+  })
+})
+
+describe('the FIFO cap', () => {
+  const hashN = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as `0x${string}`
+
+  /**
+   * `count` rows for one wallet on one chain, oldest first. `offset` shifts the hashes, because
+   * rows are keyed by (chain, hash) — two scopes reusing the same hashes would overwrite each
+   * other rather than sit side by side.
+   */
+  const fill = (
+    storage: DelegationStorage,
+    count: number,
+    over: Partial<TxHistoryEntry> = {},
+    offset = 0,
+  ) => {
+    for (let i = 0; i < count; i++) {
+      appendHistory(
+        storage,
+        entry({ hash: hashN(offset + i), at: 1_800_000_000_000 + i * 1000, ...over }),
+      )
+    }
+  }
+
+  it('keeps the newest 50 and drops the oldest', async () => {
+    const storage = memoryStorage()
+    fill(storage, 55)
+
+    const rows = loadHistory(storage, { wallet: WALLET, chainId: 8453 })
+
+    expect(rows).toHaveLength(MAX_HISTORY_PER_SCOPE)
+    // Newest first, so row 0 is the last one appended and the first five are gone.
+    expect(rows[0].hash).toBe(hashN(54))
+    expect(rows.at(-1)?.hash).toBe(hashN(5))
+  })
+
+  it('counts the cap per wallet and chain, so a second wallet evicts nothing', async () => {
+    // One flat array backs every wallet, so a global cap would mean connecting a second wallet
+    // wipes the first one's history on sight.
+    const storage = memoryStorage()
+    fill(storage, 50)
+    fill(storage, 50, { wallet: OTHER_WALLET }, 1000)
+
+    expect(loadHistory(storage, { wallet: WALLET, chainId: 8453 })).toHaveLength(50)
+    expect(loadHistory(storage, { wallet: OTHER_WALLET, chainId: 8453 })).toHaveLength(50)
+  })
+
+  it('counts it per chain too', async () => {
+    const storage = memoryStorage()
+    fill(storage, 50)
+    fill(storage, 50, { chainId: 1 }, 2000)
+
+    expect(loadHistory(storage, { wallet: WALLET, chainId: 8453 })).toHaveLength(50)
+    expect(loadHistory(storage, { wallet: WALLET, chainId: 1 })).toHaveLength(50)
+  })
+
+  it('caps what a chain scan folds in, not just what a flow appends', async () => {
+    const storage = memoryStorage()
+    const scanned = Array.from({ length: 55 }, (_, i) =>
+      entry({ hash: hashN(i), at: 1_800_000_000_000 + i * 1000, source: 'chain', blockNumber: BigInt(i) }),
+    )
+
+    mergeHistory(storage, { wallet: WALLET, chainId: 8453, entries: scanned, range: null })
+
+    expect(loadHistory(storage, { wallet: WALLET, chainId: 8453 })).toHaveLength(MAX_HISTORY_PER_SCOPE)
+  })
+})
+
+describe('the truncation mark', () => {
+  const hashN = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as `0x${string}`
+
+  it('is not set while a scope still has room', () => {
+    const storage = memoryStorage()
+    for (let i = 0; i < MAX_HISTORY_PER_SCOPE; i++) {
+      appendHistory(storage, entry({ hash: hashN(i), at: 1_800_000_000_000 + i }))
+    }
+
+    expect(isScopeTruncated(storage, { wallet: WALLET, chainId: 8453 })).toBe(false)
+  })
+
+  it('is set for the scope that started evicting, and only that one', () => {
+    const storage = memoryStorage()
+    for (let i = 0; i < MAX_HISTORY_PER_SCOPE + 1; i++) {
+      appendHistory(storage, entry({ hash: hashN(i), at: 1_800_000_000_000 + i }))
+    }
+    appendHistory(storage, entry({ hash: hashN(9999), chainId: 1 }))
+
+    expect(isScopeTruncated(storage, { wallet: WALLET, chainId: 8453 })).toBe(true)
+    expect(isScopeTruncated(storage, { wallet: WALLET, chainId: 1 })).toBe(false)
+  })
+
+  it('is forgotten along with the history it describes', () => {
+    const storage = memoryStorage()
+    for (let i = 0; i < MAX_HISTORY_PER_SCOPE + 1; i++) {
+      appendHistory(storage, entry({ hash: hashN(i), at: 1_800_000_000_000 + i }))
+    }
+
+    clearHistory(storage)
+
+    expect(isScopeTruncated(storage, { wallet: WALLET, chainId: 8453 })).toBe(false)
   })
 })

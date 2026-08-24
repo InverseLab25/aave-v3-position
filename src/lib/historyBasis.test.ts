@@ -293,3 +293,43 @@ describe('avgEntryFromHistory', () => {
     expect(basis?.perUnit).toBeCloseTo(1877.3061, 4)
   })
 })
+
+/**
+ * Once the FIFO cap starts evicting, the surviving rows are no longer the whole story — and a
+ * weighted average over a fraction of the fills is a plausible number rather than an absent one,
+ * which is the worst thing this can produce. It wins over the indexer at `resolveEntryPrice` and
+ * gets multiplied by the FULL held balance.
+ */
+describe('avgEntryFromHistory — a truncated store', () => {
+  it('refuses when rows were evicted and the position never went to zero', () => {
+    const entries = [entry({ hash: hash(1), at: 2_000 })]
+
+    expect(avgEntryFromHistory(entries, WETH, 'supply', { truncated: true })).toBeNull()
+  })
+
+  it('still answers when a full close inside the surviving rows reset the position', () => {
+    // The replay heals itself at every full exit: whatever was evicted, the position was
+    // demonstrably zero at the close, so everything after it is complete.
+    const entries = [
+      entry({ hash: hash(1), at: 1_000, spentAmount: usdt(36_000), returnAmount: weth('36') }),
+      entry({
+        hash: hash(2), at: 2_000, kind: 'close',
+        srcToken: WETH, srcDecimals: 18, dstToken: USDT, dstDecimals: 6,
+        spentAmount: weth('40'), returnAmount: usdt(80_000),
+      }),
+      entry({ hash: hash(3), at: 3_000, spentAmount: usdt(20_000), returnAmount: weth('10') }),
+    ]
+
+    const basis = avgEntryFromHistory(entries, WETH, 'supply', { truncated: true })
+
+    // Only the third row survives the reset: 20,000 USDT for 10 WETH.
+    expect(basis?.perUnit).toBeCloseTo(2000, 6)
+  })
+
+  it('answers normally when nothing was evicted', () => {
+    const entries = [entry({ hash: hash(1), at: 2_000 })]
+
+    expect(avgEntryFromHistory(entries, WETH, 'supply', { truncated: false })).not.toBeNull()
+    expect(avgEntryFromHistory(entries, WETH, 'supply')).not.toBeNull()
+  })
+})
