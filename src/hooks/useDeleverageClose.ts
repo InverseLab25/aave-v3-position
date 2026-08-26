@@ -82,7 +82,10 @@ export { RECEIPT_TIMEOUT_MS } from '../lib/settle'
  * instead of failing here. The deadline is therefore sized to make the nonce the decider in
  * practice, by outlasting the longest wait this flow can impose on itself.
  *
- * Three terms, and every one of them is load-bearing:
+ * 30 minutes, matching the leverage-open and flip signatures so a user who signs on one screen
+ * gets the same window everywhere.
+ *
+ * It also has to clear a floor, and every term of that floor is important:
  *   - 300 s   the review window between the two presses, which is the point of banking a
  *             signature at all;
  *   - the receipt timeout, so a close that is submitted and never mined still leaves a
@@ -93,11 +96,15 @@ export { RECEIPT_TIMEOUT_MS } from '../lib/settle'
  *             the simulation and block inclusion. A signature stops being reusable that far
  *             out, so the deadline is the margin PLUS the window we want, not the window.
  *
+ * Taking the larger of the two keeps 30 minutes from silently becoming too short if the receipt
+ * timeout is ever raised.
+ *
  * The cost of a longer deadline is a longer window in which a leaked signature is live. It is
  * bounded: the grant only ever sets an allowance for this contract, which acts solely on
  * `msg.sender`'s behalf, and spending the nonce early only invalidates our own transaction.
  */
-const PERMIT_TTL_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
+const PERMIT_TTL_FLOOR_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
+const PERMIT_TTL_S = Math.max(1800, PERMIT_TTL_FLOOR_S)
 
 /** Integer precision the oracle seed carries prices at. Only the ratio matters. */
 const PRICE_SCALE_DECIMALS = 8
