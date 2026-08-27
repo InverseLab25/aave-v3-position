@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { parseUnits } from 'viem'
-import { quoteRate } from './deleverage'
+import { quoteRate, validateSwapTx, selectBuildableRoute, TX_GAS_CAP_2_24 } from './deleverage'
 
 const WETH = 18
 const USDC = 6
@@ -56,5 +56,63 @@ describe('quoteRate', () => {
     const rate = quoteRate(36_112_335_215_858_211_266n, 67_754_406_950n, USDC, WETH)
 
     expect(1 / Number(rate)).toBeCloseTo(1876.2122843899, 6)
+  })
+})
+
+describe('validateSwapTx — per-transaction gas cap', () => {
+  const ok = {
+    to: '0xR', spender: '0xR', data: '0xdead', value: '0',
+  }
+
+  it('rejects a route whose gas cannot fit in one transaction', () => {
+    // Base and Ethereum both refuse a transaction above 2^24 at the node, before it is ever
+    // mined — "gas limit too high". Catching it here costs a route; catching it at send costs
+    // the user three signatures and a rejection they cannot act on.
+    const problem = validateSwapTx(
+      { ...ok, gasEstimate: (TX_GAS_CAP_2_24 + 1n).toString() },
+      true,
+      TX_GAS_CAP_2_24,
+    )
+    expect(problem).toMatch(/gas/i)
+  })
+
+  it('accepts a route sitting exactly on the cap', () => {
+    // The cap is inclusive: 16,777,216 passes validation, 16,777,217 does not.
+    expect(validateSwapTx({ ...ok, gasEstimate: TX_GAS_CAP_2_24.toString() }, true, TX_GAS_CAP_2_24))
+      .toBeNull()
+  })
+
+  it('skips the check on a chain with no cap', () => {
+    // Arbitrum accepts 40M in a single transaction. An undefined cap must not become zero.
+    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toBeNull()
+  })
+
+  it('skips the check when the aggregator returned no gas figure', () => {
+    // Absent is not zero and not infinite — we simply cannot judge, so we let the route through
+    // and leave it to the simulation that runs before sending.
+    expect(validateSwapTx(ok, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+
+  it('ignores an unparseable gas figure rather than failing the route', () => {
+    expect(validateSwapTx({ ...ok, gasEstimate: 'lots' }, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+})
+
+describe('selectBuildableRoute — gas cap fallthrough', () => {
+  it('falls through an over-cap route to the next candidate', async () => {
+    const built: Record<string, { to: string; spender: string; data: string; value: string; gasEstimate: string }> = {
+      big: { to: '0xR', spender: '0xR', data: '0xaa', value: '0', gasEstimate: '20000000' },
+      small: { to: '0xR', spender: '0xR', data: '0xbb', value: '0', gasEstimate: '9000000' },
+    }
+    const { selected, rejected } = await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+    })
+
+    expect(selected?.candidate).toBe('small')
+    expect(rejected[0]).toContain('big')
+    expect(rejected[0]).toMatch(/gas/i)
   })
 })

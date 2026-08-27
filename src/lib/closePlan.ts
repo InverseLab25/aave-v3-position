@@ -1,6 +1,7 @@
 import { maxUint256, type Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
 import { CloseError, selectBuildableRoute } from './deleverage'
+import { getTxGasCap } from '../config/chains'
 
 // Moved to swapRoute.ts so the open flow can share them. Re-exported here so every existing
 // consumer of closePlan keeps working against the same import path.
@@ -299,6 +300,7 @@ export async function selectRoute({
     reject: (c) =>
       (BigInt(c.amountOut) * slipNum) / 10000n < debt ? 'guaranteed output below the debt' : null,
     label: (c) => c.aggregator,
+    txGasCap: getTxGasCap(chainId),
   })
 
   if (selected) {

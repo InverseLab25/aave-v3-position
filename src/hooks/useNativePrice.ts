@@ -26,19 +26,15 @@ interface NativeQuote {
  * that can trade apart. Each entry below was confirmed against the live API to return a quote at a
  * sane price — a wrong address does not error, it returns a plausible number for the wrong token.
  *
- * BSC's USDT is EIGHTEEN decimals. Reading it as six would report BNB at ~1e12 dollars.
- *
  * A chain absent here cannot be priced, and the hook returns null so the caller falls back to the
  * Aave oracle. Testnets are deliberately absent: there is no real liquidity to quote.
  */
 const NATIVE_QUOTES: Record<number, NativeQuote> = {
   1: { slug: 'ethereum', stable: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
   10: { slug: 'optimism', stable: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', decimals: 6 },
-  56: { slug: 'bsc', stable: '0x55d398326f99059fF775485246999027B3197955', decimals: 18 },
   137: { slug: 'polygon', stable: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', decimals: 6 },
   8453: { slug: 'base', stable: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
   42161: { slug: 'arbitrum', stable: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', decimals: 6 },
-  43114: { slug: 'avalanche', stable: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', decimals: 6 },
 };
 
 const quoteUrl = (q: NativeQuote) =>

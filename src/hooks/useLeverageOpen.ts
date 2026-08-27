@@ -51,7 +51,8 @@ import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
 import { getAdaptersForChain } from '../adapters'
 import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
 import type { Adapter, QuoteResponse } from '../adapters/types'
-import { getChainConfig } from '../config/chains'
+import { getChainConfig, getTxGasCap } from '../config/chains'
+import { adjustedFees, pinnedGasLimit } from '../utils/gas'
 import { getPoolDataProvider, getReserveTokens } from '../lib/aaveStatics'
 import { COMPATIBLE_ADAPTERS, selectBuildableRoute } from '../lib/deleverage'
 import { decodeStrategiesError } from '../lib/strategiesErrors'
@@ -211,6 +212,11 @@ export interface OpenDeps {
     abi: readonly unknown[]
     functionName: string
     args: readonly unknown[]
+    /** Always ours, never the wallet's — see `pinnedGasLimit`. */
+    gas?: bigint
+    maxFeePerGas?: bigint
+    maxPriorityFeePerGas?: bigint
+    gasPrice?: bigint
   }) => Promise<Hex>
   signTypedData: (payload: unknown) => Promise<Hex>
 }
@@ -624,6 +630,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
           build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
           isAllowlisted: (router) => allowed.has(router.toLowerCase()),
           label: (c) => c.a.name,
+          txGasCap: getTxGasCap(chainId),
           cancelled: () => cancelled,
         })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
@@ -789,9 +796,18 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         args: [owner, input.contract],
       })) as bigint
       if (allowance < input.marginAmount) {
+        const approveGas = await pinnedGasLimit(
+          () =>
+            client.estimateContractGas({
+              address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
+              args: [input.contract, input.marginAmount], account: owner,
+            }),
+          { chainId, label: 'approve' },
+        )
         await deps().writeContract({
           address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
-          args: [input.contract, input.marginAmount],
+          args: [input.contract, input.marginAmount], gas: approveGas,
+          ...(await adjustedFees(client)),
         })
       }
 
@@ -920,9 +936,22 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
         router: effectivePreview.router, swapData: effectivePreview.swapData,
         delegation: authorisation.delegation,
       })
+      // Estimated here, never left to the wallet: an unpinned limit on a flash-loan open is an
+      // out-of-gas revert with the margin already approved and the delegation already spent.
+      // A failed estimate throws before the write, and `prepared.current` is only cleared after
+      // a successful send — so the signature survives and a retry costs no new prompt.
+      const openGas = await pinnedGasLimit(
+        () =>
+          client.estimateContractGas({
+            address: input.contract, abi: aaveV3StrategiesAbi,
+            functionName: plan.functionName, args: plan.args, account: owner,
+          } as Parameters<typeof client.estimateContractGas>[0]),
+        { chainId, label: 'open' },
+      )
       const hash = await deps().writeContract({
         address: input.contract, abi: aaveV3StrategiesAbi,
-        functionName: plan.functionName, args: plan.args,
+        functionName: plan.functionName, args: plan.args, gas: openGas,
+        ...(await adjustedFees(client)),
       })
       sent = hash
       currentSend.current = hash
@@ -990,7 +1019,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       case 'abandoned':
         return
     }
-  }, [input, effectivePreview, client, owner, deps, refresh, forget])
+  }, [input, effectivePreview, client, owner, chainId, deps, refresh, forget])
 
   /**
    * A held signature that authorises exactly the borrow now on screen — what the modal reports as

@@ -29,7 +29,7 @@ import { extractDetailedError } from './errors'
 type WriteContract = UseWriteContractReturnType['mutateAsync']
 import { simulateContract, estimateFeesPerGas, estimateGas, waitForTransactionReceipt } from 'wagmi/actions'
 import { encodeFunctionData, type Abi } from 'viem'
-import { calculateAdjustedFees, bufferedGasLimit } from './gas'
+import { calculateAdjustedFees, pinnedGasLimit } from './gas'
 
 /**
  * USDT-safe ERC20 `approve` ABI.
@@ -120,28 +120,26 @@ export async function simulateAndWrite(
 
     // 4. Pin an explicit gas limit. Without one viem forwards `gas: undefined` to
     //    `eth_sendTransaction` and the wallet's own estimate — made against current
-    //    state, with no buffer — becomes the limit. A failed estimate is not fatal:
-    //    fall back to the wallet's behaviour rather than blocking the write.
-    let gas: bigint | undefined
-    try {
-      const estimate = await estimateGas(config, {
-        to: params.address,
-        data: encodeFunctionData({
-          abi: params.abi as Abi,
-          functionName: params.functionName,
-          args: params.args,
+    //    state, with no buffer — becomes the limit. A failed estimate aborts the write
+    //    rather than degrading to that guess; see `pinnedGasLimit`.
+    const gas = await pinnedGasLimit(
+      () =>
+        estimateGas(config, {
+          to: params.address,
+          data: encodeFunctionData({
+            abi: params.abi as Abi,
+            functionName: params.functionName,
+            args: params.args,
+          }),
+          value: params.value,
+          chainId: params.chainId,
+          account: (request as { account?: { address: `0x${string}` } }).account?.address,
         }),
-        value: params.value,
-        chainId: params.chainId,
-        account: (request as { account?: { address: `0x${string}` } }).account?.address,
-      })
-      gas = bufferedGasLimit(estimate)
-    } catch {
-      gas = undefined
-    }
+      { chainId: params.chainId, label: String(params.functionName) },
+    )
 
     // 5. Execute with the simulated request, plus the buffered gas limit.
-    return await writeContractAsync(gas ? { ...request, gas } : request)
+    return await writeContractAsync({ ...request, gas })
   } catch (err) {
     console.error('Simulation/Execution failed:', err)
     

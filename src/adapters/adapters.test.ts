@@ -108,7 +108,11 @@ describe('KyberSwap — getQuote', () => {
       aggregator: 'KyberSwap',
       amountIn: '1000000000000000000',
       amountOut: '2990000000',
-      gasEstimate: '250000',
+      // 250000 with 20% headroom on top — the aggregator's own number runs short.
+      gasEstimate: '300000',
+      // gasUsd is NOT padded: it ranks routes against other aggregators, and inflating
+      // only KyberSwap's cost would push its routes down for a reason unrelated to price.
+      gasUsd: '12.50',
       // The aggregator's own figures, kept untouched for route-cost comparison.
       rawAmountInUsd: '3000',
       rawAmountOutUsd: '2990',
@@ -226,6 +230,7 @@ describe('KyberSwap — buildTransaction', () => {
         data: '0xdeadbeef',
         amountOut: '2985000000',
         outputChange: { percent: -0.17 },
+        gas: '250000',
         ...over,
       },
     }),
@@ -251,6 +256,22 @@ describe('KyberSwap — buildTransaction', () => {
 
     expect(tx.amountOut).toBe('2985000000')
     expect(tx.outputChangePercent).toBe(-0.17)
+  })
+
+  it('carries the build gas with the same 20% headroom the quote gets', async () => {
+    mocks.limitedFetch.mockResolvedValue(buildOk())
+
+    const tx = await kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)
+
+    expect(tx.gasEstimate).toBe('300000')
+  })
+
+  it('leaves gas undefined when the build omits it, rather than inventing a floor', async () => {
+    mocks.limitedFetch.mockResolvedValue(buildOk({ gas: undefined }))
+
+    const tx = await kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)
+
+    expect(tx.gasEstimate).toBeUndefined()
   })
 
   it('defaults the value to "0" when the build omits it', async () => {

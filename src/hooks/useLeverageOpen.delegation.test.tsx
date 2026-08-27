@@ -244,6 +244,9 @@ beforeEach(() => {
     // The only direct read `execute` makes: the margin allowance, already covering it.
     readContract: vi.fn(async () => 10n ** 30n),
     waitForTransactionReceipt,
+    // The open pins its own gas limit rather than letting the wallet guess.
+    estimateContractGas: vi.fn(async () => 1_200_000n),
+    estimateFeesPerGas: vi.fn(async () => ({ maxFeePerGas: 1_000_000n, maxPriorityFeePerGas: 100_000n })),
   })
   mocks.useChainId.mockReturnValue(CHAIN_ID)
   mocks.useConnection.mockReturnValue({ address: OWNER })
@@ -459,7 +462,11 @@ it('still says NO_ROUTE when the aggregator answers and simply has nothing', asy
 it('prepare takes the approve and the signature, and sends nothing', async () => {
   // The gate the split exists for: the wallet work is done, the position is not opened, and the
   // user still gets a look at what they are about to submit.
-  mocks.usePublicClient.mockReturnValue({ readContract: vi.fn(async () => 0n) })
+  mocks.usePublicClient.mockReturnValue({
+    readContract: vi.fn(async () => 0n),
+    estimateContractGas: vi.fn(async () => 1_200_000n),
+    estimateFeesPerGas: vi.fn(async () => ({ maxFeePerGas: 1_000_000n, maxPriorityFeePerGas: 100_000n })),
+  })
   await mount()
   const borrow = hook().preview!.borrowAmount
 

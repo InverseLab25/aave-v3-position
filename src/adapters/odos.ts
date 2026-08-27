@@ -21,11 +21,9 @@ const DEFILLAMA_API_KEY = import.meta.env.VITE_DEFILLAMA_API_KEY as string | und
 const DEFILLAMA_CHAIN: Record<number, string> = {
   1: 'ethereum',
   10: 'optimism',
-  56: 'bsc',
   137: 'polygon',
   8453: 'base',
   42161: 'arbitrum',
-  43114: 'avax',
 };
 
 interface DefiLlamaReq {

@@ -18,7 +18,7 @@ const ZEROX_BASE = 'https://api.0x.org/swap/allowance-holder';
 const ZEROX_API_KEY = import.meta.env.VITE_ZEROX_API_KEY as string | undefined;
 
 // Chains we configure that 0x supports.
-const ZEROX_CHAINS = new Set([1, 10, 56, 137, 8453, 42161, 43114]);
+const ZEROX_CHAINS = new Set([1, 10, 137, 8453, 42161]);
 
 function zeroxHeaders(): HeadersInit {
   const h: Record<string, string> = { '0x-version': 'v2' };

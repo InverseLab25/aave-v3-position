@@ -224,9 +224,21 @@ export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
  * those assumptions must be caught before the user signs a permit — a revert this
  * late costs gas and leaves the signature live for the rest of its deadline.
  */
+/**
+ * The per-transaction gas ceiling on chains that enforce EIP-7825: 2^24 = 16,777,216.
+ *
+ * Verified against live nodes rather than taken from the spec — Ethereum and Base both accept a
+ * transaction at exactly this figure and refuse one at 16,777,217 with "gas limit too high",
+ * before any funds or nonce check runs. Arbitrum accepts 40,000,000, so the cap is per chain and
+ * lives in the chain config; this constant is only the value those two share.
+ */
+export const TX_GAS_CAP_2_24 = 16_777_216n
+
 export function validateSwapTx(
-  tx: { to: string; data: string; value: string; spender: string },
+  tx: { to: string; data: string; value: string; spender: string; gasEstimate?: string },
   isRouterAllowlisted: boolean,
+  /** The chain's per-transaction gas ceiling. Undefined means the chain enforces none. */
+  txGasCap?: bigint,
 ): string | null {
   if (tx.to.toLowerCase() !== tx.spender.toLowerCase()) {
     return 'approval target and call target differ'
@@ -241,6 +253,21 @@ export function validateSwapTx(
   }
   if (value !== 0n) return `route requires ${value} wei of ETH; the deleverager sends none`
   if (!isRouterAllowlisted) return `router ${tx.to} is not allowlisted on the deleverager`
+  // A route that cannot fit in one transaction is rejected by the node, not by a revert, so
+  // there is no simulation to catch it and no error the user can act on. Aggregator gas is an
+  // estimate rather than a measurement, so this catches the clearly-impossible rather than the
+  // marginal — an absent or unparseable figure is not evidence and is left alone.
+  if (txGasCap !== undefined && tx.gasEstimate) {
+    let gas: bigint
+    try {
+      gas = BigInt(tx.gasEstimate)
+    } catch {
+      return null
+    }
+    if (gas > txGasCap) {
+      return `route needs ${gas} gas; this chain caps a transaction at ${txGasCap}`
+    }
+  }
   return null
 }
 
@@ -267,6 +294,8 @@ export async function selectBuildableRoute<C>(
     isAllowlisted: (router: string) => boolean
     reject?: (candidate: C) => string | null
     label?: (candidate: C) => string
+    /** The chain's per-transaction gas ceiling, forwarded to {@link validateSwapTx}. */
+    txGasCap?: bigint
     /** Aborts the walk between candidates when the caller's request is superseded. */
     cancelled?: () => boolean
   },
@@ -292,7 +321,7 @@ export async function selectBuildableRoute<C>(
     }
     if (opts.cancelled?.()) return { selected: null, rejected }
 
-    const problem = validateSwapTx(tx, opts.isAllowlisted(tx.to))
+    const problem = validateSwapTx(tx, opts.isAllowlisted(tx.to), opts.txGasCap)
     if (problem) {
       rejected.push(`${name(candidate)}: ${problem}`)
       continue

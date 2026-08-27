@@ -1,6 +1,6 @@
 import { http, createConfig } from 'wagmi'
 import { createClient } from 'viem'
-import { mainnet, sepolia, arbitrum, optimism, polygon, base, avalanche, bsc, baseSepolia } from 'wagmi/chains'
+import { mainnet, sepolia, arbitrum, optimism, polygon, base, baseSepolia } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors'
 
 /**
@@ -19,11 +19,9 @@ const RPC_URLS: Partial<Record<number, string>> = {
   // existing .env keeps working; `VITE_RPC_URL_1` wins where both are set.
   [mainnet.id]: import.meta.env.VITE_RPC_URL_1 ?? import.meta.env.VITE_RPC_URL,
   [optimism.id]: import.meta.env.VITE_RPC_URL_10,
-  [bsc.id]: import.meta.env.VITE_RPC_URL_56,
   [polygon.id]: import.meta.env.VITE_RPC_URL_137,
   [base.id]: import.meta.env.VITE_RPC_URL_8453,
   [arbitrum.id]: import.meta.env.VITE_RPC_URL_42161,
-  [avalanche.id]: import.meta.env.VITE_RPC_URL_43114,
   [sepolia.id]: import.meta.env.VITE_RPC_URL_11155111,
   [baseSepolia.id]: import.meta.env.VITE_RPC_URL_84532,
 }
@@ -43,7 +41,7 @@ const RPC_URLS: Partial<Record<number, string>> = {
 const RPC_BATCH_SIZE = 10
 
 export const config = createConfig({
-  chains: [mainnet, arbitrum, optimism, polygon, base, avalanche, bsc, sepolia, baseSepolia],
+  chains: [mainnet, arbitrum, optimism, polygon, base, sepolia, baseSepolia],
   connectors: [injected()],
   // A client factory rather than a `transports` map, because `batch.multicall` is a viem
   // client option and is not reachable through `transports`.

@@ -5,7 +5,7 @@ import {
   erc20Abi, formatUnits, parseSignature, parseUnits,
   type Address,
 } from 'viem'
-import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas'
+import { calculateAdjustedFees, pinnedGasLimit } from '../utils/gas'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
 import { getAdaptersForChain } from '../adapters'
 import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
@@ -1064,25 +1064,23 @@ export function useDeleverageClose() {
         }
 
         // Pin a buffered gas limit: a flash-loan close touches far more state than a plain
-        // Aave action, and an unpinned limit leaves it to the wallet's estimate.
-        let gas: bigint | undefined
-        try {
-          gas = bufferedGasLimit(
-            await publicClient.estimateContractGas({
+        // Aave action, and an unpinned limit leaves it to the wallet's estimate. A failed
+        // estimate stops the send — the held permit survives, so a retry costs no new prompt.
+        const gas = await pinnedGasLimit(
+          () =>
+            publicClient.estimateContractGas({
               address: p.strategies,
               abi: aaveV3StrategiesAbi,
               functionName: 'closePositionWithPermit',
               args,
               account: address,
             }),
-          )
-        } catch {
-          gas = undefined
-        }
+          { chainId, label: 'close' },
+        )
 
         log('Submitting close transaction…')
         setStep('sending')
-        const hash = await walletClient.writeContract(gas ? { ...request, gas } : request)
+        const hash = await walletClient.writeContract({ ...request, gas })
         log(`Tx submitted: ${hash}`)
 
         // The four things an awaited receipt can turn out to be are classified in `lib/settle`,

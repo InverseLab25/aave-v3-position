@@ -168,20 +168,20 @@ describe('rate limiting', () => {
     vi.restoreAllMocks()
   })
 
-  it('allows at most 3 requests per second to one origin', async () => {
+  it('allows at most 6 requests per second to one origin', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
     vi.stubGlobal('fetch', fetchMock)
 
     // Distinct URLs so the quote cache can't collapse them.
     const inFlight = Promise.all(
-      [1, 2, 3, 4, 5].map((i) => limitedFetch(`${KYBER}?amountIn=${i}`)),
+      [1, 2, 3, 4, 5, 6, 7, 8].map((i) => limitedFetch(`${KYBER}?amountIn=${i}`)),
     )
 
     await vi.advanceTimersByTimeAsync(0)
-    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenCalledTimes(6)
 
     await vi.advanceTimersByTimeAsync(1000)
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenCalledTimes(8)
 
     await inFlight
   })
@@ -191,16 +191,15 @@ describe('rate limiting', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const inFlight = Promise.all([
-      limitedFetch(`${KYBER}?amountIn=1`),
-      limitedFetch(`${KYBER}?amountIn=2`),
-      limitedFetch(`${KYBER}?amountIn=3`),
+      ...[1, 2, 3, 4, 5, 6].map((i) => limitedFetch(`${KYBER}?amountIn=${i}`)),
       limitedFetch('https://open-api.openocean.finance/v3/1/quote?a=1'),
       limitedFetch('https://open-api.openocean.finance/v3/1/quote?a=2'),
     ])
 
-    // Three on KyberSwap plus two on a different origin — no cross-throttling.
+    // KyberSwap's whole allowance plus two on a different origin — no cross-throttling.
+    // A shared bucket would hold the last two back.
     await vi.advanceTimersByTimeAsync(0)
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenCalledTimes(8)
 
     await inFlight
   })

@@ -4,7 +4,7 @@ import { extractRevertMessage } from '../utils/errors'
 import { useConnection, useReadContract, useWriteContract, useSendTransaction, useWaitForTransactionReceipt, useConfig } from 'wagmi';
 import { estimateFeesPerGas, estimateGas } from 'wagmi/actions';
 import { parseUnits } from 'viem';
-import { calculateAdjustedFees, bufferedGasLimit } from '../utils/gas';
+import { calculateAdjustedFees, pinnedGasLimit, GasEstimateError } from '../utils/gas';
 import { approveErc20 } from '../utils/contract';
 import type { TransactionPayload, Asset } from '../adapters/types';
 import { isNativeAddress } from '../adapters/native';
@@ -158,18 +158,29 @@ export function SwapExecutor({ txPayload, fromAsset, amountIn, onClose, onSwapSt
     // reverts HERE for free instead of on-chain, where it would burn the user's gas.
     let gas: bigint;
     try {
-      const estimate = await estimateGas(config, {
-        to: txPayload.to as `0x${string}`,
-        data: txPayload.data as `0x${string}`,
-        value,
-        account: address,
-      });
       // Keep the estimate rather than discarding it — aggregator routes can take a
       // costlier path than the one quoted, and an unpinned gas limit leaves that to
-      // the wallet's own unbuffered guess.
-      gas = bufferedGasLimit(estimate);
+      // the wallet's own unbuffered guess. `pinnedGasLimit` also refuses a route that
+      // would not fit in one transaction on this chain.
+      gas = await pinnedGasLimit(
+        () =>
+          estimateGas(config, {
+            to: txPayload.to as `0x${string}`,
+            data: txPayload.data as `0x${string}`,
+            value,
+            account: address,
+          }),
+        { chainId, label: 'swap' },
+      );
     } catch (e) {
-      setExecError(`Swap would revert — refresh the quote and try again: ${extractRevertMessage(e, 'unknown error').slice(0, 120)}`);
+      // Two different failures wear the same catch. A route too big for one transaction has not
+      // reverted and refreshing the quote will not shrink it — saying "would revert" there sends
+      // the user round a loop that cannot end.
+      setExecError(
+        e instanceof GasEstimateError && e.overCap
+          ? `This route needs more gas than one transaction allows on this chain. Try a smaller amount. (${e.message.slice(0, 120)})`
+          : `Swap would revert — refresh the quote and try again: ${extractRevertMessage(e, 'unknown error').slice(0, 120)}`,
+      );
       return;
     }
 

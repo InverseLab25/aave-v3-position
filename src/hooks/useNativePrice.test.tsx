@@ -49,14 +49,14 @@ describe('useNativePrice — quoting the selected chain', () => {
     expect(urlOf(0)).toContain('0xaf88d065e77c8cC2239327C5EDb3A432268e5831')
   })
 
-  it("reads BSC's stablecoin at EIGHTEEN decimals, not six", async () => {
-    // BSC's USDT is 18dp. Reading it as 6 would report BNB at roughly a trillion dollars, and
-    // the number would look like a real price rather than an obvious error.
-    mocks.fetchQuoteJson.mockResolvedValue(quote('612000000000000000000')) // 612 at 18dp
+  it('returns null for a chain the app no longer configures', async () => {
+    // BSC used to live here, and its 18dp USDT was what proved the hook reads each entry's own
+    // `decimals` instead of assuming six. Every remaining entry is 6dp, so that guard now has
+    // nothing to bite on — if an 18dp chain is ever added back, restore a case like it.
     const { result } = renderHook(() => useNativePrice(56))
 
-    await waitFor(() => expect(result.current).toBe(612))
-    expect(urlOf(0)).toContain('/bsc/')
+    await waitFor(() => expect(result.current).toBeNull())
+    expect(mocks.fetchQuoteJson).not.toHaveBeenCalled()
   })
 
   it('prices Polygon in POL, not in ether', async () => {

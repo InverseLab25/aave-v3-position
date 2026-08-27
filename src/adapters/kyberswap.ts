@@ -5,6 +5,32 @@ import { AggregatorHttpError, fetchQuoteJson, limitedFetch } from './http';
 // KyberSwap requires an x-client-id header on both /routes and /route/build.
 const KYBER_CLIENT_ID = 'defi-route';
 
+/**
+ * Headroom added to every gas figure KyberSwap reports, on the quote and on the build alike.
+ *
+ * Its number is a route-level estimate, not a simulation — `enableGasEstimation` is the flag
+ * that would make it one, and it cannot be used here: it estimates against `sender`, which
+ * on our path is a contract holding the input token only mid-flash-loan, so the estimate
+ * reverts with TRANSFER_FROM_FAILED and the build returns 4227 instead of calldata.
+ *
+ * Measured on a Base fork, the unpadded figure ran well under what the swap actually burned,
+ * so this is a floor on the correction rather than a generous margin. It is applied to the
+ * gas UNITS only — `gasUsd` stays as reported, because that one ranks KyberSwap against
+ * other aggregators and inflating one side would bias the choice for no reason of price.
+ */
+const GAS_HEADROOM_PERCENT = 120n;
+
+/** `gas` with {@link GAS_HEADROOM_PERCENT} applied. Undefined in, undefined out. */
+function withGasHeadroom(gas: string | undefined): string | undefined {
+  if (!gas) return undefined;
+  try {
+    return ((BigInt(gas) * GAS_HEADROOM_PERCENT) / 100n).toString();
+  } catch {
+    // A non-numeric gas field is the aggregator misbehaving, not a reason to fail the quote.
+    return undefined;
+  }
+}
+
 /** The subset of `/routes` this adapter reads. `routeSummary` is replayed verbatim into /route/build. */
 interface KyberRoutesResponse {
   code: number;
@@ -32,6 +58,8 @@ interface KyberBuildResponse {
     /** Re-simulated at build time; differs from the quote's and is what minReturnAmount uses. */
     amountOut?: string;
     outputChange?: { percent?: number };
+    /** Route-level gas estimate for the built calldata. Padded before it leaves the adapter. */
+    gas?: string;
   };
 }
 
@@ -46,12 +74,10 @@ const getKyberChain = (chainId: number): string | null => {
   switch (chainId) {
     case 1: return 'ethereum';
     case 10: return 'optimism';
-    case 56: return 'bsc';
     case 137: return 'polygon';
     case 250: return 'fantom';
     case 8453: return 'base';
     case 42161: return 'arbitrum';
-    case 43114: return 'avalanche';
     default: return null; // unsupported chain — don't silently quote on ethereum
   }
 };
@@ -84,7 +110,7 @@ export const kyberSwapAdapter: Adapter = {
         rawAmountInUsd: summary.amountInUsd,
         rawAmountOutUsd: summary.amountOutUsd,
         amountOutUsd: amountOutUsd.toFixed(2),
-        gasEstimate: summary.gas,
+        gasEstimate: withGasHeadroom(summary.gas),
         gasUsd: gasUsd.toFixed(2),
         netReturnUsd: amountOutUsd - gasUsd,
         rawQuote: summary,
@@ -149,6 +175,7 @@ export const kyberSwapAdapter: Adapter = {
       spender: json.data.routerAddress,
       amountOut: json.data.amountOut,
       outputChangePercent: json.data.outputChange?.percent,
+      gasEstimate: withGasHeadroom(json.data.gas),
     };
   }
 };

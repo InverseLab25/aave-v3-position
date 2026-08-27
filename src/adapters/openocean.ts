@@ -5,12 +5,10 @@ const getOpenOceanChain = (chainId: number): string | null => {
   switch (chainId) {
     case 1: return 'eth';
     case 10: return 'optimism';
-    case 56: return 'bsc';
     case 137: return 'polygon';
     case 250: return 'fantom';
     case 8453: return 'base';
     case 42161: return 'arbitrum';
-    case 43114: return 'avax';
     default: return null; // unsupported chain — don't silently quote on eth
   }
 };

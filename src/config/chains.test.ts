@@ -1,5 +1,12 @@
-import { afterEach, expect, it } from 'vitest';
-import { CHAIN_CONFIGS, getStrategiesAddress, getStrategiesFromBlock, syncableChains } from './chains';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  CHAIN_CONFIGS,
+  getFlipperAddress,
+  getStrategiesAddress,
+  getStrategiesFromBlock,
+  getTxGasCap,
+  syncableChains,
+} from './chains';
 
 const originalAave = { ...CHAIN_CONFIGS[1].aave };
 
@@ -63,4 +70,47 @@ it('offers only chains that have both an address and a start block', () => {
     expect(getStrategiesAddress(chain.chainId)).toBe(chain.address);
     expect(chain.fromBlock).toBeGreaterThan(0n);
   }
+});
+
+it('returns null when the flipper address is unset', () => {
+  // Undeployed everywhere this suite runs, so VITE_FLIPPER_ADDRESS_1 is empty.
+  expect(getFlipperAddress(1)).toBeNull();
+});
+
+it('reads the flipper field, not the strategies one', () => {
+  // Two separate deployments with separate owners and allowlists. Reading across them would
+  // send a flip at the Strategies contract, whose ABI has no such entry point.
+  CHAIN_CONFIGS[1].aave = {
+    ...originalAave,
+    strategies: '0x1111111111111111111111111111111111111111',
+    flipper: '0x2222222222222222222222222222222222222222',
+  };
+  expect(getFlipperAddress(1)).toBe('0x2222222222222222222222222222222222222222');
+  expect(getStrategiesAddress(1)).toBe('0x1111111111111111111111111111111111111111');
+});
+
+it('rejects a zero or malformed flipper address', () => {
+  CHAIN_CONFIGS[1].aave = { ...originalAave, flipper: '0x0000000000000000000000000000000000000000' };
+  expect(getFlipperAddress(1)).toBeNull();
+  CHAIN_CONFIGS[1].aave = { ...originalAave, flipper: '0xnope' as `0x${string}` };
+  expect(getFlipperAddress(1)).toBeNull();
+});
+
+describe('getTxGasCap', () => {
+  it('caps Base and Ethereum at 2^24, the figure their nodes actually enforce', () => {
+    // Probed against live RPCs: 16,777,216 clears validation, 16,777,217 comes back
+    // "gas limit too high" before the nonce or balance is even looked at.
+    expect(getTxGasCap(1)).toBe(16_777_216n);
+    expect(getTxGasCap(8453)).toBe(16_777_216n);
+  });
+
+  it('leaves Arbitrum uncapped, because it accepts far more in one transaction', () => {
+    expect(getTxGasCap(42161)).toBeUndefined();
+  });
+
+  it('returns undefined for an unknown chain rather than inventing a ceiling', () => {
+    // A guessed cap rejects routes that would have gone through, which is worse than no check.
+    expect(getTxGasCap(999999)).toBeUndefined();
+    expect(getTxGasCap(undefined)).toBeUndefined();
+  });
 });

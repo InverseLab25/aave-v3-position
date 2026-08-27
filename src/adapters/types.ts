@@ -71,6 +71,12 @@ export interface TransactionPayload {
    * between quote and build and the user is no longer getting what they reviewed.
    */
   outputChangePercent?: number;
+  /**
+   * Gas for the swap leg alone, in gas units, already carrying the adapter's headroom.
+   * Undefined when the aggregator did not return one — absent is not zero, and a caller
+   * that treats it as zero would pin a limit the swap cannot run in.
+   */
+  gasEstimate?: string;
 }
 
 export interface Adapter {

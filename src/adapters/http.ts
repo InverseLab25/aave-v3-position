@@ -1,14 +1,19 @@
 /**
  * Shared HTTP gate for aggregator APIs.
  *
- * Aggregators rate-limit per origin (KyberSwap allows 3 requests/second), and a single
+ * Aggregators rate-limit per origin (KyberSwap allows 6 requests/second), and a single
  * deleverage preview fans out several quotes at sizes that depend on each other. Putting
  * the cap and the de-duplication here makes them structural: every call site gets them,
  * rather than each one having to remember.
  */
 
-/** Requests allowed per origin per `WINDOW_MS`. KyberSwap's documented ceiling. */
-const RATE_LIMIT = 3
+/**
+ * Requests allowed per origin per `WINDOW_MS`. KyberSwap's ceiling for a whitelisted
+ * client id, which its responses report as `x-ratelimit-limit: 60, 10` — 60 per 10s.
+ * Held here as 6/s rather than 60/10s so a burst can't spend the whole ten-second budget
+ * in one instant and then stall every later quote in the same window.
+ */
+const RATE_LIMIT = 6
 const WINDOW_MS = 1000
 
 /**

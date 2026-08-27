@@ -11,6 +11,11 @@ export interface ChainConfig {
     wethGateway?: `0x${string}`;
     strategies?: `0x${string}`;
     /**
+     * AaveV3Flipper — position flips. A separate deployment from `strategies`, with its own
+     * owner and router allowlist, so the audited contract stays untouched.
+     */
+    flipper?: `0x${string}`;
+    /**
      * The block `strategies` was deployed in — where a history scan starts.
      *
      * Absent means the chain is not scannable. There is deliberately no fallback: scanning from
@@ -19,6 +24,15 @@ export interface ChainConfig {
      */
     strategiesFromBlock?: bigint;
   };
+  /**
+   * Largest gas limit this chain accepts on a single transaction (EIP-7825), or absent when it
+   * enforces none. A route above it is refused by the node before it is mined, so it can never
+   * be caught by a simulation — see `validateSwapTx`.
+   *
+   * Verified against live nodes, not read off a spec: only chains actually probed carry a value,
+   * because guessing one here would reject routes that would have gone through.
+   */
+  txGasCap?: bigint;
   adapters: string[];
   defaultTokens: Asset[];
 }
@@ -43,6 +57,8 @@ function blockFromEnv(raw: string | undefined, recorded?: bigint): bigint | unde
 export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   1: {
     chainId: 1,
+    // Probed: 16,777,216 accepted, 16,777,217 rejected with "gas limit too high".
+    txGasCap: 16_777_216n,
     name: 'Ethereum',
     explorerUrl: 'https://etherscan.io',
     aave: {
@@ -51,6 +67,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0x2f39d218133AFaB8F2B819B1066c7E434Ad94E9e',
       wethGateway: '0xd01607c3C5eCABa394D8be377a08590149325722',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_1 ?? '') as `0x${string}`,
+      flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_1 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
@@ -69,30 +86,13 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       wethGateway: '0x5f2508cAE9923b02316254026CD43d7902866725',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_10 ?? '') as `0x${string}`,
+      flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_10 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607', symbol: 'USDC', decimals: 6 },
       { underlyingAsset: '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58', symbol: 'USDT', decimals: 6 },
-    ],
-  },
-  56: {
-    chainId: 56,
-    name: 'BNB Chain',
-    explorerUrl: 'https://bscscan.com',
-    aave: {
-      poolAddress: '0x6807dc923806fE8Fd134338EABCA509979a7e0cB',
-      uiPoolDataProvider: '0x68100bD5345eA474D93577127C11F39FF8463e93',
-      poolAddressesProvider: '0xff75B6da14FfbbfD355Daf7a2731456b3562Ba6D',
-      wethGateway: '0x0c2C95b24529664fE55D4437D7A31175CFE6c4f7',
-      strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_56 ?? '') as `0x${string}`,
-    },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
-    defaultTokens: [
-      { underlyingAsset: '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c', symbol: 'WBNB', decimals: 18 },
-      { underlyingAsset: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', symbol: 'USDC', decimals: 18 },
-      { underlyingAsset: '0x55d398326f99059fF775485246999027B3197955', symbol: 'USDT', decimals: 18 },
     ],
   },
   137: {
@@ -105,6 +105,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       wethGateway: '0xBC302053db3aA514A3c86B9221082f162B91ad63',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_137 ?? '') as `0x${string}`,
+      flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_137 ?? '') as `0x${string}`,
     },
     adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
@@ -116,6 +117,8 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   },
   8453: {
     chainId: 8453,
+    // Probed: 16,777,216 accepted, 16,777,217 rejected with "gas limit too high".
+    txGasCap: 16_777_216n,
     name: 'Base',
     explorerUrl: 'https://basescan.org',
     aave: {
@@ -124,6 +127,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D',
       wethGateway: '0xa0d9C1E9E48Ca30c8d8C3B5D69FF5dc1f6DFfC24',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_8453 ?? '') as `0x${string}`,
+      flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_8453 ?? '') as `0x${string}`,
       // contract/broadcast/DeployStrategies.s.sol/8453/run-latest.json
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_8453, 49_831_780n),
     },
@@ -135,6 +139,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   },
   42161: {
     chainId: 42161,
+    // Probed: accepts 40,000,000 in one transaction, so no cap to enforce.
     name: 'Arbitrum',
     explorerUrl: 'https://arbiscan.io',
     aave: {
@@ -143,6 +148,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
       wethGateway: '0x5283BEcEd7ADF6D003225C13896E536f2D4264FF',
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_42161 ?? '') as `0x${string}`,
+      flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_42161 ?? '') as `0x${string}`,
       // contract/broadcast/DeployStrategies.s.sol/42161/run-latest.json — same address as Base,
       // because deployment goes through CREATE2.
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_42161, 493_443_506n),
@@ -154,24 +160,6 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       // Bridged USDT migrated to LayerZero's USDT0; the token reports `USD₮0` on-chain. Spelled
       // ASCII here so it matches on symbol lookups and renders in any font.
       { underlyingAsset: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9', symbol: 'USDT0', decimals: 6 },
-    ],
-  },
-  43114: {
-    chainId: 43114,
-    name: 'Avalanche',
-    explorerUrl: 'https://snowtrace.io',
-    aave: {
-      poolAddress: '0x794a61358D6845594F94dc1DB02A252b5b4814aD',
-      uiPoolDataProvider: '0xFBa4Df643205c5400BC3e05a1E67E0dFaEeeb41F',
-      poolAddressesProvider: '0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb',
-      wethGateway: '0x2825cE5921538d17cc15Ae00a8B24fF759C6CDaE',
-      strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_43114 ?? '') as `0x${string}`,
-    },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
-    defaultTokens: [
-      { underlyingAsset: '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7', symbol: 'WAVAX', decimals: 18 },
-      { underlyingAsset: '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E', symbol: 'USDC', decimals: 6 },
-      { underlyingAsset: '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7', symbol: 'USDT', decimals: 6 },
     ],
   },
   11155111: {
@@ -202,6 +190,14 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
   },
 };
 
+/**
+ * The chain's per-transaction gas ceiling, or undefined when it has none or is unknown.
+ * Undefined disables the check rather than defaulting it — a wrong cap rejects good routes.
+ */
+export function getTxGasCap(chainId: number | undefined): bigint | undefined {
+  return getChainConfig(chainId)?.txGasCap;
+}
+
 export function getChainConfig(chainId: number | undefined): ChainConfig | null {
   if (!chainId) return null;
   return CHAIN_CONFIGS[chainId] ?? null;
@@ -209,11 +205,24 @@ export function getChainConfig(chainId: number | undefined): ChainConfig | null 
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+function readAddress(addr: string | undefined): `0x${string}` | null {
+  if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
+  return addr as `0x${string}`;
+}
+
 /** The configured Strategies router for a chain, or null when unset/zero/malformed. */
 export function getStrategiesAddress(chainId: number | undefined): `0x${string}` | null {
-  const addr = getChainConfig(chainId)?.aave.strategies;
-  if (!addr || addr === ZERO_ADDRESS || !/^0x[0-9a-fA-F]{40}$/.test(addr)) return null;
-  return addr;
+  return readAddress(getChainConfig(chainId)?.aave.strategies);
+}
+
+/**
+ * The configured Flipper for a chain, or null when unset/zero/malformed.
+ *
+ * Deliberately not derived from `strategies`: the two are separate deployments at separate
+ * addresses, and a flip sent to the Strategies contract hits an entry point that is not there.
+ */
+export function getFlipperAddress(chainId: number | undefined): `0x${string}` | null {
+  return readAddress(getChainConfig(chainId)?.aave.flipper);
 }
 
 /** Where a history scan of this chain starts, or null when there is no deployment to scan for. */

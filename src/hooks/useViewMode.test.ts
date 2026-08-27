@@ -21,10 +21,17 @@ describe('useViewMode', () => {
 
   it('reads every chain the app is configured for, not a list of its own', () => {
     // The bug this replaces: a second hardcoded slug map that stopped at Ethereum while the app
-    // itself had grown to eight chains, so every other one silently fell through to "no view".
+    // itself had grown, so every other chain silently fell through to "no view".
     expect(at(`/optimism/address/${ADDRESS}`).viewChainId).toBe(10)
     expect(at(`/polygon/address/${ADDRESS}`).viewChainId).toBe(137)
-    expect(at(`/avalanche/address/${ADDRESS}`).viewChainId).toBe(43114)
+    expect(at(`/ethereum/address/${ADDRESS}`).viewChainId).toBe(1)
+  })
+
+  it('gives no view for a chain the app no longer configures', () => {
+    // Avalanche and BSC were dropped. Reading the config rather than a private list is what makes
+    // a removal take effect here for free — a second map would still be answering for them.
+    expect(at(`/avalanche/address/${ADDRESS}`).viewChainId).toBeUndefined()
+    expect(at(`/bsc/address/${ADDRESS}`).viewChainId).toBeUndefined()
   })
 
   it('matches a hyphenated chain slug', () => {

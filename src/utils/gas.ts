@@ -1,3 +1,5 @@
+import { getTxGasCap } from '../config/chains'
+
 /**
  * calculateAdjustedFees
  *
@@ -18,7 +20,7 @@
  */
 /**
  * Safety buffer applied to an `eth_estimateGas` result before it is pinned as the
- * transaction's gas limit (+25%).
+ * transaction's gas limit (+10%).
  *
  * We must pin one. For an injected wallet viem's `sendTransaction` takes the
  * `json-rpc` branch: it forwards `gas: undefined` straight to `eth_sendTransaction`
@@ -28,11 +30,117 @@
  * cold `setUsingAsCollateral` bitmap write it was never quoted for, and dies with
  * out-of-gas inside SupplyLogic. Unused gas is refunded, so the buffer is free.
  */
-export const GAS_LIMIT_BUFFER_PERCENT = 125n
+export const GAS_LIMIT_BUFFER_PERCENT = 110n
 
 /** Apply the safety buffer to a raw gas estimate. */
 export function bufferedGasLimit(estimate: bigint): bigint {
   return (estimate * GAS_LIMIT_BUFFER_PERCENT) / 100n
+}
+
+/** Priority-fee bump applied to every send. Matches what the close has always used. */
+export const FEE_PRIORITY_MULTIPLIER = 10n
+
+/**
+ * Current network fees, bumped, in the shape `writeContract` wants — spread it into the call.
+ *
+ * Fees are ours for the same reason the gas limit is: left out, viem forwards `undefined` and the
+ * wallet picks, which on a flash-loan transaction means a fee that may not get it mined before the
+ * permit deadline or the aggregator's signed maker quotes expire.
+ *
+ * The bump buys little on an L2 whose sequencer orders by arrival rather than by bid — Base's
+ * priority fee is a thousandth of a gwei — but it costs about as little, and it is what makes
+ * inclusion on a 1559 L1 predictable.
+ *
+ * Returns EITHER the 1559 pair or a legacy `gasPrice`, never both: viem's fee parameters are a
+ * union and passing all three falls outside every member of it.
+ */
+export async function adjustedFees(client: {
+  estimateFeesPerGas: () => Promise<{
+    maxFeePerGas?: bigint
+    maxPriorityFeePerGas?: bigint
+    gasPrice?: bigint
+  }>
+}): Promise<
+  { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | { gasPrice: bigint } | Record<string, never>
+> {
+  const fees = await client.estimateFeesPerGas()
+  const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
+    calculateAdjustedFees(
+      fees.maxFeePerGas,
+      fees.maxPriorityFeePerGas,
+      FEE_PRIORITY_MULTIPLIER,
+      fees.gasPrice,
+    )
+  if (adjustedMaxFeePerGas !== undefined && adjustedMaxPriorityFeePerGas !== undefined) {
+    return { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+  }
+  if (adjustedGasPrice !== undefined) return { gasPrice: adjustedGasPrice }
+  // Nothing usable came back. Sending no fee fields lets viem fill them, which is worse than ours
+  // but far better than a half-populated union that viem rejects outright.
+  return {}
+}
+
+/**
+ * A gas limit could not be established, so nothing was sent. Carries the original failure.
+ *
+ * `overCap` separates the two reasons, which need different words in front of a user: the call
+ * needs more gas than the chain allows in one transaction (nothing to retry — the route has to
+ * change), versus the estimate itself failed (usually a revert or a flaky RPC, worth a retry).
+ */
+export class GasEstimateError extends Error {
+  readonly overCap: boolean
+  constructor(message: string, options?: { cause?: unknown; overCap?: boolean }) {
+    super(message, options)
+    this.name = 'GasEstimateError'
+    this.overCap = options?.overCap ?? false
+  }
+}
+
+/**
+ * Estimate, buffer, and check a gas limit — or refuse to send.
+ *
+ * Every write goes through this. The limit is always ours, never the wallet's: viem forwards
+ * `gas: undefined` straight to `eth_sendTransaction` for an injected wallet, and the wallet's
+ * own guess is unbuffered and made against state that may have moved. On a flash-loan
+ * transaction that is an out-of-gas revert with the user's money already spent on gas.
+ *
+ * So a failed estimate throws rather than degrading. It costs a retry when an RPC hiccups,
+ * which is the price of never sending a transaction we could not size.
+ *
+ * `estimate` is a thunk rather than a call spec because the callers reach the node three
+ * different ways — wagmi's `estimateGas`, viem's `estimateContractGas`, and a raw client — and
+ * unifying those would move more code than it saves.
+ */
+export async function pinnedGasLimit(
+  estimate: () => Promise<bigint>,
+  opts: { chainId?: number; label?: string } = {},
+): Promise<bigint> {
+  const what = opts.label ? `${opts.label}: ` : ''
+  let raw: bigint
+  try {
+    raw = await estimate()
+  } catch (e) {
+    throw new GasEstimateError(
+      `${what}could not estimate gas, so nothing was submitted. ${(e as Error)?.message ?? ''}`.trim(),
+      { cause: e },
+    )
+  }
+  const gas = bufferedGasLimit(raw)
+  const cap = getTxGasCap(opts.chainId)
+  if (cap === undefined) return gas
+  // The estimate on its own is already more than the chain will take. Clamping here would pin a
+  // limit below what the call is measured to need, so it would run out of gas mid-execution and
+  // burn the fee for nothing. There is no limit worth sending, so send none.
+  if (raw > cap) {
+    throw new GasEstimateError(
+      `${what}needs ${raw} gas, above this chain's ${cap} per-transaction cap. ` +
+        'The node would reject it outright, so nothing was submitted.',
+      { overCap: true },
+    )
+  }
+  // Only the buffer pushed it over, so clamp rather than refuse: the cap still sits above the
+  // estimate, and a thinner margin beats not sending at all. Unused gas is refunded either way.
+  return gas > cap ? cap : gas
 }
 
 export function calculateAdjustedFees(
