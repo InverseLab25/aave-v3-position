@@ -1,6 +1,6 @@
 import { formatUnits, type Address, type PublicClient, type WalletClient } from 'viem'
 import type { Config } from 'wagmi'
-import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
+import { estimateFeesPerGas } from 'wagmi/actions'
 import { calculateAdjustedFees, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
 import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
@@ -170,18 +170,15 @@ export async function submitClose(
         const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
           calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
 
-        // Gas FIRST, then the call — and the call runs AT that limit.
+        // One execution, not two. `estimateContractGas` runs the transaction on the node, so a
+        // route that went stale reverts HERE — an eth_call on top of it would be asking the same
+        // question again. And there is no gap between the two to worry about: `pinnedGasLimit`
+        // buffers upward and clamps only down to the chain's cap, never below the estimate, so
+        // the limit sent is always one the transaction has already been shown to run in.
         //
-        // Simulating with no limit only proves the transaction succeeds with the whole block to
-        // spend, which is not what gets broadcast. Establishing the limit first and handing it to
-        // `eth_call` proves it succeeds in the gas it will actually be given, which is the only
-        // question that matters once the buffer can be clamped down to this chain's cap.
-        //
-        // `estimateContractGas` executes the transaction too, so it is now the first thing to
-        // meet a route that went stale. Both share one catch for that reason.
-        log('Sizing and simulating the close…')
+        // Matches the open, which has always worked this way.
+        log('Sizing the close…')
         let gas: bigint
-        let request
         try {
           gas = await pinnedGasLimit(
             () =>
@@ -194,19 +191,6 @@ export async function submitClose(
               }),
             { chainId, label: 'close' },
           )
-          ;({ request } = await simulateContract(config, {
-            address: p.strategies,
-            abi: aaveV3StrategiesAbi,
-            functionName: 'closePositionWithPermit',
-            args,
-            account: address,
-            gas,
-            // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
-            // three falls outside every member of it.
-            ...(adjustedMaxFeePerGas
-              ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
-              : { gasPrice: adjustedGasPrice }),
-          }))
         } catch (e) {
           // Over the chain's per-transaction cap is not a stale route and not retryable: the
           // route has to change. Refreshing the quote and inviting another press would send the
@@ -233,12 +217,25 @@ export async function submitClose(
           }
           throw new CloseError(
             'pair',
-            `Simulation failed, so nothing was submitted (${detail}). The quote has been refreshed — check the new numbers and press again.`,
+            `The close would have reverted, so nothing was submitted (${detail}). The quote has been refreshed — check the new numbers and press again.`,
           )
         }
 
         log('Submitting close transaction…')
         setStep('sending')
-        const hash = await walletClient.writeContract({ ...request, gas })
+        const hash = await walletClient.writeContract({
+          address: p.strategies,
+          abi: aaveV3StrategiesAbi,
+          functionName: 'closePositionWithPermit',
+          args,
+          account: address,
+          chain: null,
+          gas,
+          // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
+          // three falls outside every member of it.
+          ...(adjustedMaxFeePerGas
+            ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+            : { gasPrice: adjustedGasPrice }),
+        })
   return { hash, builtOut, minOut }
 }

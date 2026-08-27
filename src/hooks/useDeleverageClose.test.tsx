@@ -69,6 +69,7 @@ vi.mock('../lib/closePlan', async (orig) => ({
 
 import { AggregatorHttpError } from '../adapters/http'
 import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
+import { GAS_LIMIT_BUFFER_PERCENT } from '../utils/gas'
 
 const USER = '0x1111111111111111111111111111111111111111' as const
 const DELEVERAGER = '0x2222222222222222222222222222222222222222' as const
@@ -704,30 +705,18 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
    * [collateral, debtAsset, collateralToWithdraw, debtRepay, minOut, ...] — index 3.
    */
   const debtRepayArg = () =>
-    (simulateContract.mock.calls.at(-1)?.[1] as { args: readonly unknown[] }).args[3]
+    (writeContract.mock.calls.at(-1)?.[0] as { args: readonly unknown[] }).args[3]
 
-  it('simulates AT the gas limit it is about to broadcast, not with the block to spend', async () => {
-    // Simulating unbounded only proves the close succeeds with the whole block available, which
-    // is not what gets sent. The limit can also be clamped down to the chain's per-transaction
-    // cap, so "succeeds unbounded" and "succeeds in what we give it" are different questions.
+  it('broadcasts the gas limit it measured, never leaving it to the wallet', async () => {
+    // There is only one execution now: `estimateContractGas` runs the close on the node, and
+    // `pinnedGasLimit` buffers upward from it, so the limit sent is always one the transaction
+    // has already been shown to run in. What must not happen is `gas` going out undefined.
     const r = mount()
     await r.current.close(baseInput)
     await r.current.close(baseInput)
 
-    const simulated = (simulateContract.mock.calls.at(-1)?.[1] as { gas?: bigint }).gas
     const sent = (writeContract.mock.calls.at(-1)?.[0] as { gas?: bigint }).gas
-    expect(simulated).toBeDefined()
-    expect(simulated).toBe(sent)
-  })
-
-  it('estimates gas BEFORE simulating, since the estimate is what the simulation is given', async () => {
-    const r = mount()
-    await r.current.close(baseInput)
-    await r.current.close(baseInput)
-
-    const estimateOrder = estimateContractGas.mock.invocationCallOrder.at(-1)!
-    const simulateOrder = simulateContract.mock.invocationCallOrder.at(-1)!
-    expect(estimateOrder).toBeLessThan(simulateOrder)
+    expect(sent).toBe((900_000n * GAS_LIMIT_BUFFER_PERCENT) / 100n)
   })
 
   it('repays with the max sentinel on a full close, so no dust debt is left behind', async () => {
