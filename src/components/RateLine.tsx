@@ -10,7 +10,7 @@ import { useState } from 'react'
 import { quoteRate } from '../lib/deleverage'
 import { T } from '../styles/theme'
 
-export interface RateLineProps {
+interface RateLineProps {
   srcSymbol: string
   srcDecimals: number
   dstSymbol: string

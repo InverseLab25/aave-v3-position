@@ -49,7 +49,7 @@ async function mapWithLimit<T, R>(
   return results
 }
 
-export interface PositionReceipt {
+interface PositionReceipt {
   logs: readonly ReceiptLog[]
   status: 'success' | 'reverted'
 }
@@ -193,12 +193,3 @@ export async function entriesFromReceipts(
     .filter((entry): entry is TxHistoryEntry => entry !== null)
 }
 
-/** One event's row, for the live watcher — which learns about transactions one at a time. */
-export async function entryFromEvent(
-  client: ReceiptClient,
-  event: PositionEvent,
-  context: BackfillContext,
-): Promise<TxHistoryEntry | null> {
-  const [entry] = await entriesFromEvents(client, [event], context)
-  return entry ?? null
-}

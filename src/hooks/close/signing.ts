@@ -20,7 +20,7 @@ import type { ClosePlan, CloseStep } from './types'
  * `signatures` is the ref itself rather than its value: banking a signature is the whole point
  * of the first press, and a copy would be written to and thrown away.
  */
-export interface SigningContext {
+interface SigningContext {
   address: Address | undefined
   chainId: number
   walletClient: WalletClient | undefined
@@ -124,7 +124,7 @@ export async function obtainPermits(
        * build from submission — a wallet dialog, a plan carried over from the preview — ages
        * that floor until the price moves past it.
        */
-export interface FreshRouteContext {
+interface FreshRouteContext {
   chainId: number
   /** The tolerance the user is executing at — the same one the plan was sized against. */
   slippagePercent: number

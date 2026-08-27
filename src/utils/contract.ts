@@ -56,7 +56,7 @@ export const approveAbi = [
   },
 ] as const
 
-export interface ContractCallParams {
+interface ContractCallParams {
   address: `0x${string}`
   abi: Abi | readonly unknown[]
   functionName: string

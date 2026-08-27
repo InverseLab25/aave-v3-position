@@ -10,7 +10,7 @@ import { decodeErrorResult, parseAbi, type Hex } from 'viem'
 
 export type StrategiesRemedy = 'widen-slippage' | 'requote' | 'refresh' | 'none'
 
-export interface StrategiesFailure {
+interface StrategiesFailure {
   /** The Solidity error name, for logs. */
   error: string
   /** What to show the user. */

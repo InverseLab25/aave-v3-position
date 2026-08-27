@@ -1,6 +1,6 @@
 import { T } from '../../styles/theme'
 
-export interface AssetChoice {
+interface AssetChoice {
   value: string
   label: string
 }

@@ -15,7 +15,7 @@ import type { DelegationStorage } from './delegationCache'
 export const HISTORY_KEY = 'defi-route.txhistory.v1'
 
 /** The swap leg, with the metadata needed to format it long after the token list has moved on. */
-export interface HistorySwap {
+interface HistorySwap {
   srcToken: Address
   dstToken: Address
   /** Null when nothing on screen could name the token at the time it was recorded. */
@@ -234,7 +234,7 @@ export const MAX_HISTORY_PER_SCOPE = 50
  * `readAll` drops anything that is not one. Wrapping it in an object to make room here would
  * read every existing history as empty and throw it away on the next write.
  */
-export const HISTORY_TRUNCATED_KEY = 'defi-route.txhistory.truncated.v1'
+const HISTORY_TRUNCATED_KEY = 'defi-route.txhistory.truncated.v1'
 
 /** One wallet on one chain — the unit the cap is counted in, and the unit `loadHistory` reads. */
 const scopeKey = (e: TxHistoryEntry) => `${e.chainId}:${e.wallet.toLowerCase()}`
@@ -424,12 +424,12 @@ export function appendHistory(storage: DelegationStorage | null, entry: TxHistor
 }
 
 /** What a completed scan covered. Null means the scan did not finish — see {@link mergeHistory}. */
-export interface ScannedRange {
+interface ScannedRange {
   from: bigint
   to: bigint
 }
 
-export interface MergeHistoryInput {
+interface MergeHistoryInput {
   wallet: Address
   chainId: number
   /** Everything the chain reported for this wallet on this chain, within `range`. */

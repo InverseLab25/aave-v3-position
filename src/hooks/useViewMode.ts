@@ -24,7 +24,7 @@ function slugify(name: string): string {
   return name.toLowerCase().replace(/\s+/g, '-')
 }
 
-export interface ViewMode {
+interface ViewMode {
   viewAddress?: `0x${string}`
   viewChainId?: number
 }

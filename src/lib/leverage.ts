@@ -38,7 +38,7 @@ export type { MarginLocation };
  * a 3% adverse move liquidates. So MAX targets this instead, and the true ceiling is an explicit
  * opt-in rather than the default.
  */
-export const SAFE_TARGET_HF_BPS = 11_500n;
+const SAFE_TARGET_HF_BPS = 11_500n;
 
 function pow10(n: number | bigint): bigint {
   return 10n ** BigInt(n);
@@ -78,7 +78,7 @@ export function ltvWallBps(ltvBps: bigint): bigint {
   return (ltvBps * LTV_CEILING_FACTOR_BPS) / BPS;
 }
 
-export interface MaxSupplyInput {
+interface MaxSupplyInput {
   marginAsset: MarginLocation;
   marginAmount: bigint;
   /** Aave 8dp oracle prices and native decimals for both legs. */
@@ -183,14 +183,14 @@ function maxSupplyUsd(p: MaxSupplyInput): bigint {
   return hfMax < wallMax ? hfMax : wallMax;
 }
 
-export interface DeriveOpenInput {
+interface DeriveOpenInput {
   marginAsset: MarginLocation;
   marginAmount: bigint;
   /** What the user wants landing in the pool, in COLLATERAL wei. */
   supplyAmount: bigint;
 }
 
-export interface DerivedAmounts {
+interface DerivedAmounts {
   /**
    * Flash-borrowed from Morpho, always in the COLLATERAL asset.
    *
@@ -212,7 +212,7 @@ export function deriveOpen(p: DeriveOpenInput): DerivedAmounts {
     : { flashAmount: p.supplyAmount, debtMargin: p.marginAmount };
 }
 
-export interface LeverageReadoutInput {
+interface LeverageReadoutInput {
   marginAsset: MarginLocation;
   marginAmount: bigint;
   supplyAmount: bigint;
@@ -254,7 +254,7 @@ function blendAccountBps(existingUsd: bigint, existingBps: bigint, newUsd: bigin
   return (existingUsd * existingBps + newUsd * newBps) / total;
 }
 
-export interface ProjectOpenInput {
+interface ProjectOpenInput {
   marginAsset: MarginLocation;
   marginAmount: bigint;
   /** Solved against the router, not typed. */
@@ -411,14 +411,14 @@ export type LeverageError =
  * position opens, nothing reverts, and the debt is secured by assets the user never chose to
  * pledge. There is no on-chain signal, which is why this has to be caught before quoting.
  */
-export type CollateralNotCountedReason =
+type CollateralNotCountedReason =
   | "EMODE_EXCLUDED"
   | "NOT_ENABLED"
   | "RESERVE_DISABLED"
   | "ZERO_LTV"
   | "ISOLATION_MODE";
 
-export interface CollateralEnablementInput {
+interface CollateralEnablementInput {
   /** The user's current aToken balance. Non-zero means this is not a first supply, so Aave
    *  never runs the auto-enable path at all. */
   scaledATokenBalance: bigint;
@@ -485,7 +485,7 @@ export function collateralEnablement(p: CollateralEnablementInput): CollateralEn
   return { willCount: true, reason: null, silentlyMisSecures: false };
 }
 
-export interface ValidateSizingInput extends DeriveOpenInput {
+interface ValidateSizingInput extends DeriveOpenInput {
   marginBalance: bigint;
   /** From {@link maxSupplyAmount}, at whichever ceiling is currently in force. */
   maxSupply: bigint;
@@ -547,7 +547,7 @@ export function validateSizing(p: ValidateSizingInput): LeverageError | null {
   return null;
 }
 
-export interface LeverageErrorContext {
+interface LeverageErrorContext {
   collateralSymbol: string;
   marginSymbol: string;
   /** Pre-formatted for display — this module is bigint-only and knows nothing of decimals. */

@@ -1,6 +1,6 @@
 import type { Asset } from '../adapters/types';
 
-export interface ChainConfig {
+interface ChainConfig {
   chainId: number;
   name: string;
   explorerUrl: string;

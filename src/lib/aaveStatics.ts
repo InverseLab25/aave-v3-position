@@ -47,7 +47,7 @@ const NAME_ABI = [
 /** Only the one method these helpers call, so any viem/wagmi client shape satisfies it. */
 type Reader = Pick<PublicClient, 'readContract'>
 
-export interface ReserveTokens {
+interface ReserveTokens {
   aToken: Address
   vDebt: Address
 }

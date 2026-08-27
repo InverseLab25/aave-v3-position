@@ -30,7 +30,7 @@ export interface HashSyncClient {
   getBlock(args: { blockNumber: bigint }): Promise<{ timestamp: bigint }>
 }
 
-export interface HashSyncInput {
+interface HashSyncInput {
   client: HashSyncClient
   storage: DelegationStorage | null
   /** The AaveV3Strategies deployment whose events mark a transaction as ours. */
@@ -43,7 +43,7 @@ export interface HashSyncInput {
   hidden: readonly Address[]
 }
 
-export interface HashSyncResult {
+interface HashSyncResult {
   /** Receipts actually fetched — zero once the cache is warm. */
   examined: number
   /** Of those, how many turned out to be leveraged positions. */

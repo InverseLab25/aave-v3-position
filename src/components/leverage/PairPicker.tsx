@@ -1,7 +1,7 @@
 import type { Direction } from '../../lib/leverage'
 import { T } from '../../styles/theme'
 
-export interface PairOption {
+interface PairOption {
   address: `0x${string}`
   symbol: string
 }

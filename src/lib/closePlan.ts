@@ -192,7 +192,7 @@ export interface HeldSignature {
   reviewedOut: bigint
 }
 
-export interface SignatureNeed {
+interface SignatureNeed {
   chainId: number
   owner: Address
   aToken: Address
@@ -249,7 +249,7 @@ export function reuseBlocker(
   return null
 }
 
-export interface RouteSelection {
+interface RouteSelection {
   router: Address | null
   swapData: `0x${string}` | null
   chosen: QuoteResponse | null

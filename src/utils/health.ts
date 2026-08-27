@@ -16,9 +16,9 @@ export const HF_BLOCK = 1.03
 /** Projected HF below this (but at/above HF_BLOCK) → a non-blocking warning. */
 export const HF_WARN = 1.5
 
-export type HfLevel = 'ok' | 'warn' | 'block'
+type HfLevel = 'ok' | 'warn' | 'block'
 
-export interface HfEvaluation {
+interface HfEvaluation {
   level: HfLevel
   /** User-facing message; undefined when level is 'ok'. */
   message?: string

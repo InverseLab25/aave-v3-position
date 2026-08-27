@@ -8,7 +8,7 @@ import { QUOTE_ROUNDS, RATE_BUFFER_BPS } from '../flip/constants'
 import { FlipError, type FlipInput, type FlipPreview, type Position } from '../flip/types'
 
 /** What sizing needs from the hook. */
-export interface PreviewContext {
+interface PreviewContext {
   chainId: number
   publicClient: PublicClient | undefined
   readPosition: (input: FlipInput) => Promise<Position>

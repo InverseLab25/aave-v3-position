@@ -24,7 +24,7 @@ import { readOutcome, type ReceiptLog, type TxOutcome } from './txOutcome'
 export const RECEIPT_TIMEOUT_MS = 5 * 60 * 1000
 
 /** Just enough of a receipt to settle it. Structural, so a viem receipt fits unchanged. */
-export interface SettleReceipt {
+interface SettleReceipt {
   status: 'success' | 'reverted'
   logs?: readonly ReceiptLog[]
 }
@@ -41,14 +41,14 @@ export interface SettleClient {
  * here as a timeout. Reporting that as a revert would state as fact something that was a guess,
  * and send a user to redo work they may already have done.
  */
-export type Settlement =
+type Settlement =
   | { kind: 'settled'; receipt: SettleReceipt; outcome: TxOutcome | null }
   | { kind: 'reverted'; receipt: SettleReceipt }
   | { kind: 'timeout' }
   | { kind: 'unreadable'; detail: string }
   | { kind: 'abandoned' }
 
-export interface SettleInput {
+interface SettleInput {
   client: SettleClient
   hash: Hex
   wallet: Address

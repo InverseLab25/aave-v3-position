@@ -66,7 +66,7 @@ interface BaseContext {
  * never touches `held`; one context carrying both would make each callback close over a value it
  * does not use, which is exactly the dependency the hook's memoisation is trying not to have.
  */
-export interface PrepareContext extends BaseContext {
+interface PrepareContext extends BaseContext {
   held: HeldDelegation | null
   setStorageTick: (f: (t: number) => number) => void
 }

@@ -19,7 +19,7 @@
 import type { Address } from 'viem'
 import type { DelegationStorage } from './delegationCache'
 
-export const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
+const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
 
 /**
  * Pages to follow before giving up.
@@ -33,7 +33,7 @@ export const AAVE_GRAPHQL_URL = 'https://api.v3.aave.com/graphql'
 export const MAX_HISTORY_PAGES = 20
 
 /** History changes slowly, and a replay of it is expensive enough to be worth not repeating. */
-export const USER_HISTORY_STALE_MS = 5 * 60_000
+const USER_HISTORY_STALE_MS = 5 * 60_000
 
 /**
  * The union of what both readers need: `txHash` for discovery, the rest for cost basis.
@@ -88,13 +88,13 @@ const QUERY = `
   }
 `
 
-export interface TxAmount {
+interface TxAmount {
   amount: { value: string }
   usd?: number
   usdPerToken?: number
 }
 
-export interface TxReserve {
+interface TxReserve {
   underlyingToken: { address: string }
 }
 
@@ -111,7 +111,7 @@ interface HistoryResponse {
   userTransactionHistory?: { items?: HistoryItem[]; pageInfo?: { next?: string | null } }
 }
 
-export interface UserHistoryRequest {
+interface UserHistoryRequest {
   user: Address
   chainId: number
   /** Aave's Pool address for this chain — the indexer's notion of a "market". */
@@ -159,7 +159,7 @@ export async function fetchUserHistory({
 export const userHistoryQueryKey = (user: string | undefined, chainId: number, market: string | undefined) =>
   ['aaveUserHistory', user?.toLowerCase(), chainId, market?.toLowerCase()] as const
 
-export const HISTORY_SNAPSHOT_KEY = 'defi-route.aavehistory.v1'
+const HISTORY_SNAPSHOT_KEY = 'defi-route.aavehistory.v1'
 
 /**
  * How old a snapshot may be and still be worth painting.

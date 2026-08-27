@@ -47,7 +47,7 @@ export function oracleSeed({
   return seed > 0n ? seed : undefined
 }
 
-export interface SizeSwapInput {
+interface SizeSwapInput {
   /** Total collateral available to the user, in wei. */
   collAmount: bigint
   /** Live debt to repay, in wei. */
@@ -85,7 +85,7 @@ export interface SizeSwapInput {
   seedIn?: bigint
 }
 
-export interface SizeSwapResult {
+interface SizeSwapResult {
   /** Collateral fed to the swap. Always equal to `best.amountIn`. */
   requiredIn: bigint
   best: QuoteResponse

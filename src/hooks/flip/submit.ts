@@ -19,7 +19,7 @@ import { FlipError, type FlipInput, type FlipPreview, type FlipStep, type Positi
  * `signatures` is the ref itself: an unspent EIP-2612 signature stays valid until its deadline,
  * so banking it is what lets a second press skip the wallet entirely.
  */
-export interface FlipSubmitContext {
+interface FlipSubmitContext {
   address: Address | undefined
   chainId: number
   publicClient: PublicClient | undefined

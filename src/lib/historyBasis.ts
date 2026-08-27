@@ -15,9 +15,9 @@ import { quoteRate } from './deleverage'
 import type { TxHistoryEntry } from './txHistory'
 
 /** Which leg of the position is being priced. */
-export type PositionSide = 'supply' | 'borrow'
+type PositionSide = 'supply' | 'borrow'
 
-export interface HistoryBasis {
+interface HistoryBasis {
   /** Quote tokens per 1 unit of the asset — what a unit cost, or what it was sold for. */
   perUnit: number
   /** The token `perUnit` is denominated in: the debt for a long, the collateral for a short. */

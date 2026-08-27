@@ -9,7 +9,7 @@ import {
   type HistoryItem,
 } from '../lib/aaveUserHistory'
 
-export type CostBasis = {
+type CostBasis = {
   /** Weighted-average USD entry price of the tokens still held/owed. */
   avgEntryPriceUsd: number
   /** Realized USD P&L from withdraws/repays/liquidations processed against the running basis. */

@@ -61,7 +61,7 @@ export const SIZING_ROUNDS = 3
  * bounded: the grant only ever sets an allowance for this contract, which acts solely on
  * `msg.sender`'s behalf, and spending the nonce early only invalidates our own transaction.
  */
-export const PERMIT_TTL_FLOOR_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
+const PERMIT_TTL_FLOOR_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
 export const PERMIT_TTL_S = Math.max(1800, PERMIT_TTL_FLOOR_S)
 
 /** Integer precision the oracle seed carries prices at. Only the ratio matters. */

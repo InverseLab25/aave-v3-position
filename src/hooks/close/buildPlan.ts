@@ -44,7 +44,7 @@ const assertErc20Reserve = (address: Address, label: string): void => {
 //////////////////////////////////////////////////////////////*/
 
 /** What this needs from the hook. Passed in rather than closed over, so it can be tested alone. */
-export interface BuildPlanContext {
+interface BuildPlanContext {
   address: Address | undefined
   chainId: number
   publicClient: PublicClient | undefined

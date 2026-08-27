@@ -27,7 +27,7 @@ import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../
  * `cancelled` is a getter, not a boolean: the run awaits many times over, and an attempt that
  * has been superseded has to notice in between.
  */
-export interface PreviewRunContext {
+interface PreviewRunContext {
   input: LeverageOpenInput
   /**
    * The borrow a held signature has already committed to, or null when nothing is pinned.

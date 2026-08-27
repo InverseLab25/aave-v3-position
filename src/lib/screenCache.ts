@@ -17,9 +17,9 @@ import type { DelegationStorage } from './delegationCache'
 export const SCREEN_KEY = 'defi-route.txscreen.v1'
 
 /** `strategies` — one of ours, and filed in history. `other` — ordinary Aave activity. */
-export type Verdict = 'strategies' | 'other'
+type Verdict = 'strategies' | 'other'
 
-export interface ScreenScope {
+interface ScreenScope {
   wallet: Address
   chainId: number
 }

@@ -30,10 +30,10 @@ export interface SolveBorrowInput {
   quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
 }
 
-export type SolveBorrowError = 'ZERO_FLASH' | 'ZERO_RATE' | 'NO_ROUTE' | 'NOT_CONVERGING'
+type SolveBorrowError = 'ZERO_FLASH' | 'ZERO_RATE' | 'NO_ROUTE' | 'NOT_CONVERGING'
 
 /** What `seedBorrow` needs — the oracle half of `SolveBorrowInput`, without the router. */
-export type SeedBorrowInput = Pick<
+type SeedBorrowInput = Pick<
   SolveBorrowInput,
   | 'flashAmount' | 'debtMargin' | 'slipNum'
   | 'collateralPriceUsd' | 'debtPriceUsd' | 'collateralDecimals' | 'debtDecimals'
@@ -65,7 +65,7 @@ export function seedBorrow(p: SeedBorrowInput): bigint | null {
   return borrow > 0n ? borrow : null
 }
 
-export interface SolveBorrowResult {
+interface SolveBorrowResult {
   /** What to borrow from Aave. Always `best.amountIn` minus the debt-asset margin. */
   borrowAmount: bigint
   /** The full swap input the router was quoted for: `borrowAmount + debtMargin`. */
@@ -77,7 +77,7 @@ export interface SolveBorrowResult {
   minCollateralOut: bigint
 }
 
-export type SolveBorrowOutcome =
+type SolveBorrowOutcome =
   | { ok: true; solved: SolveBorrowResult }
   | { ok: false; error: SolveBorrowError }
 

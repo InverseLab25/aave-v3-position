@@ -38,7 +38,7 @@ export function bufferedGasLimit(estimate: bigint): bigint {
 }
 
 /** Priority-fee bump applied to every send. Matches what the close has always used. */
-export const FEE_PRIORITY_MULTIPLIER = 10n
+const FEE_PRIORITY_MULTIPLIER = 10n
 
 /**
  * Current network fees, bumped, in the shape `writeContract` wants — spread it into the call.

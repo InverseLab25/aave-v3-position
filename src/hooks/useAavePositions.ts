@@ -78,7 +78,7 @@ function calculateAPY(rateInRay: bigint) {
 import { useAaveHistoricalInterest } from './useAaveHistoricalInterest'
 
 /** Profit/loss breakdown attached to every supplied and borrowed row. */
-export interface PositionPnl {
+interface PositionPnl {
   avgEntryPriceUsd: number
   realizedPnlUsd: number
   unrealizedPriceGainUsd: number
@@ -162,7 +162,7 @@ export type ReserveOption = Omit<AvailableReserve, "underlyingAsset"> & {
   underlyingAsset: `0x${string}` | "native"
 }
 
-export interface UseAavePositionsOptions {
+interface UseAavePositionsOptions {
   /** View mode: fetch positions for this address instead of the connected wallet. */
   viewAddress?: `0x${string}`
   /** View mode: chain to read from. Falls back to the connected chain. */

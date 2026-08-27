@@ -11,7 +11,7 @@ import {
 import { FlipError, type FlipInput, type Position } from '../flip/types'
 
 /** What the position read needs from the hook. Passed in, so it can be tested without React. */
-export interface ReadPositionContext {
+interface ReadPositionContext {
   address: Address | undefined
   chainId: number
   publicClient: PublicClient | undefined

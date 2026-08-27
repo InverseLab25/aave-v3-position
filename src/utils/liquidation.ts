@@ -44,7 +44,7 @@ export interface SuppliedAssetLike {
  * Required rather than optional: defaulting a missing flag would silently drop every row, and
  * an empty collateral set reads as "nothing can be liquidated" rather than as a wiring bug.
  */
-export interface CollateralSuppliedLike extends SuppliedAssetLike {
+interface CollateralSuppliedLike extends SuppliedAssetLike {
   usageAsCollateralEnabledOnUser: boolean
 }
 
@@ -70,14 +70,14 @@ export function toCollateralInputs(assets: CollateralSuppliedLike[]): Collateral
  * Debt has no liquidation threshold of its own — Aave counts it at face value — so unlike
  * {@link CollateralInput} there is nothing to weight it by.
  */
-export interface DebtInput {
+interface DebtInput {
   symbol: string
   amount: number
   priceUsd: number
 }
 
 /** The subset of a borrowed-asset row the debt-side solve reads. */
-export interface BorrowedAssetLike {
+interface BorrowedAssetLike {
   symbol: string
   amount?: number
   priceInUsd?: string
@@ -92,7 +92,7 @@ export function toDebtInputs(assets: BorrowedAssetLike[]): DebtInput[] {
   }))
 }
 
-export interface LiquidationRow {
+interface LiquidationRow {
   symbol: string
   /** null when this asset cannot liquidate the position on its own. */
   liquidationPriceUsd: number | null
@@ -131,7 +131,7 @@ export function hasLiquidationRowsToShow(view: LiquidationView): boolean {
 }
 
 /** Half-width of the band around $1.00 within which an asset counts as a stablecoin. */
-export const STABLE_BAND = 0.02
+const STABLE_BAND = 0.02
 
 /**
  * A symbol allowlist rots on every new stablecoin listing and silently

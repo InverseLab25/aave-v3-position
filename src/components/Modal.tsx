@@ -15,7 +15,7 @@
 import { useEffect, type ReactNode } from 'react'
 import { closeButtonStyle, modalHeaderStyle, modalStyle, modalTitleStyle } from '../styles/theme'
 
-export interface ModalProps {
+interface ModalProps {
   /** Names the dialog, both on screen and to a screen reader. */
   title: ReactNode
   onClose: () => void

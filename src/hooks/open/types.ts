@@ -136,7 +136,7 @@ export const SIGNATURE_TTL_S = 1800n
  * comparing references would treat a caller re-creating an equal object every render as a change
  * on every render, permanently masking a settled preview.
  */
-export function reserveKey(r: ReserveInfo): string {
+function reserveKey(r: ReserveInfo): string {
   return `${r.address}|${r.decimals}|${r.priceUsd}|${r.ltvBps}|${r.liquidationThresholdBps}`
 }
 export function inputKey(i: LeverageOpenInput): string {

@@ -16,7 +16,7 @@ import { TxSteps, type TxStep } from './TxSteps'
 import type { TxOutcome } from '../lib/txOutcome'
 import { T } from '../styles/theme'
 
-export interface TxReportProps {
+interface TxReportProps {
   /** The waits this flow puts a user through. Empty for a flow with nothing to enumerate. */
   steps: readonly TxStep[]
   /** The attempt failed. Shown as a failure. */

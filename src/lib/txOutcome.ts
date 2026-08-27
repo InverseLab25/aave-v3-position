@@ -53,7 +53,7 @@ export interface ReceiptLog {
 }
 
 /** One filled swap, as the router reported it. */
-export interface RouterSwap {
+interface RouterSwap {
   /** The contract that emitted it — the router itself. */
   router: Address
   sender: Address
@@ -171,7 +171,7 @@ export function pickSwap(
 }
 
 /** How the settled fill compares with the route that was signed off. */
-export interface FillQuality {
+interface FillQuality {
   /** Received less quoted. Negative is the ordinary case: the price moved while it was in flight. */
   delta: bigint
   /** `delta` as a percentage of the quote. Null when there was no quote to measure against. */

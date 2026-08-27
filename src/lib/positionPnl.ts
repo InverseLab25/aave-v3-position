@@ -10,7 +10,7 @@
  * Nothing here reads state, storage or a clock. Every figure is an argument.
  */
 
-export type PnlSide = 'supply' | 'borrow'
+type PnlSide = 'supply' | 'borrow'
 
 /**
  * Which of the three answered.
@@ -19,15 +19,15 @@ export type PnlSide = 'supply' | 'borrow'
  * the override map a second time, which meant the badge and the number could in principle
  * disagree about where the figure came from.
  */
-export type EntrySource = 'override' | 'fills' | 'indexer' | 'none'
+type EntrySource = 'override' | 'fills' | 'indexer' | 'none'
 
-export interface EntryPrice {
+interface EntryPrice {
   /** USD per unit. Zero exactly when `source` is `none`. */
   usd: number
   source: EntrySource
 }
 
-export interface EntryPriceInput {
+interface EntryPriceInput {
   /** What the user typed for this row, if anything. */
   override?: number
   /** Replayed from this wallet's own fills — see `historyBasis`. */
