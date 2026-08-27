@@ -1,6 +1,16 @@
 import { describe, it, expect, vi } from 'vitest'
 import { pinnedGasLimit, GasEstimateError, GAS_LIMIT_BUFFER_PERCENT } from './gas'
 
+/** The rejection, typed. `.catch(e => e)` widens to include the resolved value. */
+async function rejection(p: Promise<unknown>): Promise<GasEstimateError> {
+  try {
+    await p
+  } catch (e) {
+    return e as GasEstimateError
+  }
+  throw new Error('expected a rejection')
+}
+
 describe('pinnedGasLimit', () => {
   it('buffers the estimate the same way the old inline code did', async () => {
     const gas = await pinnedGasLimit(async () => 100_000n, { label: 'close' })
@@ -18,8 +28,7 @@ describe('pinnedGasLimit', () => {
 
   it('keeps the underlying failure as the cause, so the reason is not lost', async () => {
     const cause = new Error('execution reverted: NoDebt()')
-    const err = await pinnedGasLimit(async () => { throw cause }, { label: 'close' })
-      .catch((e) => e as GasEstimateError)
+    const err = await rejection(pinnedGasLimit(async () => { throw cause }, { label: 'close' }))
     expect(err.cause).toBe(cause)
   })
 
@@ -40,10 +49,10 @@ describe('pinnedGasLimit', () => {
 
   it('flags an over-cap failure apart from an estimate failure', async () => {
     // The two need different words: one is retryable, the other needs a different route.
-    const over = await pinnedGasLimit(async () => 17_000_000n, { chainId: 8453 })
-      .catch((e) => e as GasEstimateError)
-    const failed = await pinnedGasLimit(async () => { throw new Error('rpc') }, { chainId: 8453 })
-      .catch((e) => e as GasEstimateError)
+    const over = await rejection(pinnedGasLimit(async () => 17_000_000n, { chainId: 8453 }))
+    const failed = await rejection(
+      pinnedGasLimit(async () => { throw new Error('rpc') }, { chainId: 8453 }),
+    )
     expect(over.overCap).toBe(true)
     expect(failed.overCap).toBe(false)
   })

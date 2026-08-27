@@ -1,331 +1,45 @@
 import { useCallback, useRef, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
-import {
-  erc20Abi, formatUnits, parseSignature, parseUnits,
-  type Address,
-} from 'viem'
+import { formatUnits, type Address } from 'viem'
 import { calculateAdjustedFees, pinnedGasLimit } from '../utils/gas'
-import { getChainConfig, getStrategiesAddress } from '../config/chains'
-import { getAdaptersForChain } from '../adapters'
-import { AggregatorHttpError, clearQuoteCache } from '../adapters/http'
-import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../adapters/native'
-import type { Adapter, Asset, QuoteResponse } from '../adapters/types'
-import {
-  COMPATIBLE_ADAPTERS,
-  CloseError,
-  toCloseError,
-  type CloseErrorKind,
-  rankRoutes,
-  quoteRate,
-  buildPermitTypedData,
-} from '../lib/deleverage'
+import { getChainConfig } from '../config/chains'
+import { clearQuoteCache } from '../adapters/http'
+import { CloseError, toCloseError, quoteRate } from '../lib/deleverage'
 import {
   assertExecutable,
   computeMinOut,
   deriveDebtRepay,
-  MIN_SIGNATURE_REMAINING_S,
-  reuseBlocker,
   isSlippageShapedFailure,
-  MAX_OUTPUT_DEGRADATION_PERCENT,
   PRICE_IMPACT_BLOCK_PERCENT,
   planWithdrawal,
   routeCostPercent,
   selectRoute,
   type HeldSignature,
-  type PermitArgs,
-  type RevokeArgs,
-  type Withdrawal,
 } from '../lib/closePlan'
 import { aaveV3StrategiesAbi, FULL_CLOSE, planClose } from '../lib/strategies-sdk'
-import { sizeSwap, oracleSeed } from '../lib/sizing'
 import type { TxOutcome } from '../lib/txOutcome'
 import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../lib/aaveStatics'
-
-/*//////////////////////////////////////////////////////////////
-                            TUNING
-//////////////////////////////////////////////////////////////*/
-
-/**
- * Headroom over the debt for interest accruing between the quote and execution (0.5%).
- *
- * Covers accrual ONLY. Slippage is handled separately, by sizing against the router's
- * guaranteed output, because the two compose multiplicatively: a fixed 0.5% margin is entirely
- * consumed by 0.5% slippage, leaving the swap short of the debt.
- */
-const ACCRUAL_BUFFER_BPS = 50n
-
-/** Verification re-quotes allowed while converging on the collateral actually required. */
-const SIZING_ROUNDS = 3
-
-/**
- * How long to wait for a submitted close to be mined before giving up on it (ms).
- *
- * There has to be a bound. On the public mempool a failing transaction still gets mined as a
- * reverted one, so the wait always ends — but an MEV-protected RPC (which KyberSwap offers,
- * and users are encouraged onto) only includes transactions that would SUCCEED. A close that
- * would revert is then simply never included, no receipt ever arrives, and an unbounded wait
- * leaves the UI claiming to be processing forever. A dropped or replaced transaction does the
- * same thing on any RPC.
- */
+import { buildPlan as buildPlanStep } from './close/buildPlan'
+import { buildFreshRoute, obtainPermits } from './close/signing'
 export { RECEIPT_TIMEOUT_MS } from '../lib/settle'
 
-/**
- * How long a permit signature stays valid (seconds).
- *
- * What actually decides whether a permit is spent is the aToken NONCE, and a transaction that
- * never landed did not spend it — so a retry after an unresolved close should reuse the
- * signature rather than ask for a new one. The deadline cannot be dropped in favour of that
- * check, though: it is signed into the EIP-712 payload and `permit()` reverts once
- * `block.timestamp` passes it, so a permit that outlives its deadline burns gas on-chain
- * instead of failing here. The deadline is therefore sized to make the nonce the decider in
- * practice, by outlasting the longest wait this flow can impose on itself.
- *
- * 30 minutes, matching the leverage-open and flip signatures so a user who signs on one screen
- * gets the same window everywhere.
- *
- * It also has to clear a floor, and every term of that floor is important:
- *   - 300 s   the review window between the two presses, which is the point of banking a
- *             signature at all;
- *   - the receipt timeout, so a close that is submitted and never mined still leaves a
- *             reusable permit behind. Without this term the permit was ALWAYS dead by the time
- *             the timeout fired — the window is measured from signing and the timeout from the
- *             later submission — so every unresolved close re-prompted needlessly;
- *   - MIN_SIGNATURE_REMAINING_S, the margin before expiry that has to outlast the re-quote,
- *             the simulation and block inclusion. A signature stops being reusable that far
- *             out, so the deadline is the margin PLUS the window we want, not the window.
- *
- * Taking the larger of the two keeps 30 minutes from silently becoming too short if the receipt
- * timeout is ever raised.
- *
- * The cost of a longer deadline is a longer window in which a leaked signature is live. It is
- * bounded: the grant only ever sets an allowance for this contract, which acts solely on
- * `msg.sender`'s behalf, and spending the nonce early only invalidates our own transaction.
- */
-const PERMIT_TTL_FLOOR_S = 300 + RECEIPT_TIMEOUT_MS / 1000 + Number(MIN_SIGNATURE_REMAINING_S)
-const PERMIT_TTL_S = Math.max(1800, PERMIT_TTL_FLOOR_S)
-
-/** Integer precision the oracle seed carries prices at. Only the ratio matters. */
-const PRICE_SCALE_DECIMALS = 8
-
-const NONCES_ABI = [
-  {
-    type: 'function',
-    name: 'nonces',
-    stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }],
-    outputs: [{ type: 'uint256' }],
-  },
-] as const
-
 /*//////////////////////////////////////////////////////////////
-                             TYPES
+                     TUNING, TYPES, CONSTANTS
 //////////////////////////////////////////////////////////////*/
 
-export interface CloseInput {
-  collateral: Asset
-  debtAsset: Asset
-  slippagePercent: number
-  /**
-   * How much collateral to swap, overriding the automatic sizing. Omit to swap only what the
-   * debt requires. `'all'` resolves to the live aToken balance, so a MAX choice is exact
-   * rather than a formatted number round-tripped through the UI.
-   *
-   * Swapping more than the debt needs is a deliberate use: the contract forwards the surplus
-   * debt token to the user, converting collateral to the debt asset in the same transaction.
-   */
-  collateralIn?: bigint | 'all'
-  /**
-   * How much debt to repay. Omit — or pass `'all'` — for a full close; anything smaller is a
-   * PARTIAL close, which repays that much and leaves the position open at lower leverage.
-   *
-   * The contract has always taken this as its own argument; a partial flash-loans exactly this
-   * amount rather than the balance it reads, so nothing can grow underneath it. Aave still
-   * enforces the resulting health factor inside the aToken's `finalizeTransfer`, which is why
-   * the caller has to project it before asking for a signature.
-   */
-  debtIn?: bigint | 'all'
-  /** Aborts the quotes behind this plan once its result stops mattering. */
-  signal?: AbortSignal
-}
+import {
+  SlippageTooTightError,
+  type CloseInput,
+  type CloseResult,
+  type CloseStep,
+  type ClosePreview,
+  type PreviewResult,
+} from './close/types'
 
-/** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
-interface ClosePlan {
-  /** AaveV3Strategies — the contract the close executes against. */
-  strategies: Address
-  collateralAddr: Address
-  debtAddr: Address
-  aToken: Address
-  /** aToken ERC-20 name, for the permit's EIP-712 domain. */
-  aTokenName: string
-  /** Permit nonce for the owner, read alongside the balances. */
-  nonce: bigint
-  /** What this close repays — the whole live debt, or the partial the caller asked for. */
-  debt: bigint
-  /**
-   * The `debtRepay` argument itself. {@link FULL_CLOSE} on a full close so the contract repays
-   * whatever is live when the block lands, rather than the balance read while planning — which
-   * would leave the interest accrued in between still owing on a position reported as closed.
-   */
-  debtRepay: bigint
-  /** Debt still owed once this lands. Zero on a full close. */
-  debtRemaining: bigint
-  /** The whole variable debt as read on chain — what `debt` is a repay out of. */
-  liveDebt: bigint
-  /**
-   * The repay follows the route rather than the other way round, so it has to be re-derived
-   * in `close()` from the calldata actually being submitted. That is a different quote from
-   * the one planning saw, and the flash loan is the repay amount.
-   */
-  deriveRepay: boolean
-  collAmount: bigint
-  /** Collateral fed to the swap. Always equal to `best.amountIn`. */
-  requiredIn: bigint
-  expectedOut: bigint
-  /** Debt token the router guarantees: expectedOut × (1 − slippage). */
-  minDebtOut: bigint
-  /** Debt plus the accrual buffer — what the swap must actually clear. */
-  needed: bigint
-  /** Collateral can repay the debt at all (not underwater). */
-  covered: boolean
-  /** Guaranteed output clears `needed` → the close cannot revert on swap output. */
-  guaranteed: boolean
-  best: QuoteResponse
-  /** Every compatible quote at `requiredIn`, best-first. */
-  ranked: QuoteResponse[]
-  adapters: Adapter[]
-  /** 10000 − slippageBps, for re-deriving a candidate's guaranteed output. */
-  slipNum: bigint
-  /** Re-quote at a given size, so close() can rebuild calldata from a CURRENT quote. */
-  quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
-  /** Lowercased router allowlist, read once per plan. */
-  allowedRouters: Set<string>
-}
-
-/** Router numbers surfaced to the UI so the user can review the swap before signing. */
-export interface ClosePreview {
-  covered: boolean
-  guaranteed: boolean
-  aggregator: string
-  collateralSymbol: string
-  debtSymbol: string
-  debtRepaid: string
-  /**
-   * Debt still owed once this lands — "0" on a full close. What tells the caller this is a
-   * partial, and therefore that it has a health factor left to project.
-   */
-  debtRemaining: string
-  collateralSwapped: string
-  collateralKeptSupplied: string
-  minDebtOut: string
-  expectedDebtOut: string
-  collateralKeptSuppliedUsd: number | null
-  /**
-   * What the swap has to clear: the debt plus headroom for interest accruing before the
-   * transaction lands. This, not `debtRepaid`, is what `guaranteed` is judged against.
-   */
-  debtRequired: string
-  /**
-   * Debt token the contract will forward to the user's wallet — swap output beyond what the
-   * flash loan takes back. Zero on an ordinary close; the point of an over-sized one.
-   */
-  debtReturned: string
-  /**
-   * Debt token per 1 collateral token on this route. Derived from the quote, not from oracle
-   * prices, so it carries the route's price impact at the size being swapped.
-   */
-  rate: string | null
-  /**
-   * The price implied by the router's guaranteed floor — `minDebtOut / requiredIn`. The
-   * worst rate the swap can fill at without reverting, which is the number a floor actually
-   * means to someone reading it.
-   */
-  guaranteedRate: string | null
-  /**
-   * What the route gives up, in percent of value in — price impact, DEX fees and spread
-   * together, from the aggregator's own USD figures for both sides. Null when unpriced.
-   */
-  routeCostPercent: number | null
-  /** Gas the aggregator estimates for the swap leg alone, in gas units. */
-  swapGasEstimate: string | null
-}
-
-/**
- * preview() outcome. A result object rather than a bare null, because the reasons a preview
- * fails are not interchangeable: "this pair has no route" is actionable, whereas "the contract
- * is paused" is not, and showing the former for the latter sends users in circles.
- */
-export interface PreviewResult {
-  preview: ClosePreview | null
-  error: { kind: CloseErrorKind; message: string } | null
-}
-
-export interface CloseResult {
-  hash: string | null
-  /**
-   * `signed` means the permits were captured and nothing was submitted — the user gets the
-   * numbers back to review, and the next press executes without a wallet prompt.
-   */
-  status: 'success' | 'reverted' | 'error' | 'signed'
-  /** Unix seconds the held signature is good until, when one was just taken. */
-  signatureExpiresAt?: number
-  /**
-   * Set when the failure was the aggregator refusing on output — the caller can offer a
-   * wider tolerance instead of presenting a dead end.
-   */
-  slippageTooTight?: boolean
-}
-
-/**
- * Where a close has got to.
- *
- * `running` used to cover all of it, which meant the modal could say only "Processing…" for three
- * distinct waits — two wallet prompts and an on-chain send. A user with a wallet that had not
- * surfaced its second prompt had no way to tell that from a transaction in flight.
- *
- * Named after what the user is being asked for: a withdrawal permit, then the revoke that follows
- * it at the next nonce, then the transaction itself.
- */
-export type CloseStep = 'idle' | 'permit' | 'revoke' | 'sending' | 'done' | 'error'
-
-/**
- * The aggregator refused on output. Distinguished from a generic failure because the remedy
- * is specific and offerable: widen the tolerance and try the same close again.
- */
-class SlippageTooTightError extends CloseError {
-  constructor(message: string) {
-    super('pair', message)
-    this.name = 'SlippageTooTightError'
-  }
-}
-
-/*//////////////////////////////////////////////////////////////
-                            HELPERS
-//////////////////////////////////////////////////////////////*/
-
-/**
- * A `priceInUsd` string to a scaled bigint. Returns 0 for anything unusable, which the oracle
- * seed reads as "no seed" and falls back to measuring the price with a quote.
- */
-const toPriceScaled = (price: string | undefined): bigint => {
-  if (!price) return 0n
-  try {
-    return parseUnits(price, PRICE_SCALE_DECIMALS)
-  } catch {
-    return 0n
-  }
-}
-
-/** Reject native-ETH sentinels, which are not Aave reserves and would resolve to zero tokens. */
-const assertErc20Reserve = (address: Address, label: string): void => {
-  if (isNativeAddress(address) || address.toLowerCase() === NATIVE_ZERO_ADDRESS) {
-    throw new CloseError(
-      'pair',
-      `Native ETH is not an Aave reserve — use the wrapped ${label} token (e.g. WETH)`,
-    )
-  }
-}
+// Re-exported so consumers keep importing the flow's vocabulary from the hook itself.
+export type { CloseInput, ClosePreview, CloseResult, CloseStep, PreviewResult }
 
 /*//////////////////////////////////////////////////////////////
                               HOOK
@@ -418,211 +132,11 @@ export function useDeleverageClose() {
    * preview() (display) and close() (execution) so both describe the same transaction.
    */
   const buildPlan = useCallback(
-    async (
-      { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal }: CloseInput,
-      logFn: (m: string) => void = () => {},
-    ): Promise<ClosePlan> => {
-      if (!address || !publicClient) throw new CloseError('wallet', 'Wallet not connected')
-
-      // AaveV3Strategies, which carries `closePositionWithPermit` alongside the open entry
-      // points. The separate AaveV3Deleverager it replaced was a strict subset of this contract.
-      const strategies = getStrategiesAddress(chainId)
-      if (!strategies) {
-        throw new CloseError('deployment', 'One-click close is not available on this network')
-      }
-      const chainConfig = getChainConfig(chainId)
-      if (!chainConfig) throw new CloseError('deployment', 'Unsupported chain')
-
-      const collateralAddr = collateral.underlyingAsset as Address
-      const debtAddr = debtAsset.underlyingAsset as Address
-      assertErc20Reserve(collateralAddr, 'collateral')
-      assertErc20Reserve(debtAddr, 'debt')
-
-      const slippageBps = Math.round(slippagePercent * 100)
-      // `Number.isFinite` first: NaN fails BOTH comparisons below, so without it a NaN slippage
-      // sails past this guard and dies in `BigInt()` with a RangeError instead of this message.
-      if (!Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps >= 10000) {
-        throw new CloseError('pair', 'Slippage must be between 0% and 100%')
-      }
-      const slipNum = BigInt(10000 - slippageBps)
-
-      // 1. Immutable wiring. Memoised, so warm this costs nothing and cold it is the only
-      //    waterfall — resolving it first is what lets everything live share one batch.
-      logFn('Reading contract state and Aave reserve addresses…')
-      const dataProvider = await getPoolDataProvider(
-        publicClient,
-        chainId,
-        chainConfig.aave.poolAddressesProvider as Address,
-      )
-      const [collTokens, debtTokens] = await Promise.all([
-        getReserveTokens(publicClient, chainId, dataProvider, collateralAddr),
-        getReserveTokens(publicClient, chainId, dataProvider, debtAddr),
-      ])
-      const { aToken } = collTokens
-      const { vDebt } = debtTokens
-      const aTokenName = await getATokenName(publicClient, chainId, aToken)
-
-      // 2. Everything live, in a single batch. None of these depends on the others, and the
-      //    nonce riding along here is what leaves close() with nothing to read before it can
-      //    open the wallet prompt.
-      const [isPaused, allowedRouterList, debt, collAmount, nonce] = await Promise.all([
-        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'paused' }),
-        // The whole allowlist in one read: the contract stores it in an enumerable set
-        // precisely so integrators can filter routes up front rather than probing per route.
-        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'getAllowedRouters' }),
-        publicClient.readContract({ address: vDebt, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
-        publicClient.readContract({ address: aToken, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
-        publicClient.readContract({ address: aToken, abi: NONCES_ABI, functionName: 'nonces', args: [address] }),
-      ])
-
-      if (isPaused !== 0n) {
-        throw new CloseError('deployment', 'One-click close is paused on this deployment')
-      }
-      const allowedRouters = new Set(allowedRouterList.map((r) => r.toLowerCase()))
-      if (allowedRouters.size === 0) {
-        throw new CloseError('deployment', 'No swap routers are allowlisted on this contract yet')
-      }
-      if (debt === 0n) throw new CloseError('pair', 'No debt to close')
-      if (collAmount === 0n) throw new CloseError('pair', 'No collateral to withdraw')
-      // An explicit amount above the balance is a typo, not a MAX — `'all'` is how you ask for
-      // everything. Left unchecked it sizes a swap larger than the withdrawal that funds it, and
-      // surfaces first as a negative "kept supplied" in the preview.
-      if (typeof collateralIn === 'bigint' && collateralIn > collAmount) {
-        throw new CloseError(
-          'pair',
-          `You have ${formatUnits(collAmount, collateral.decimals)} ${collateral.symbol} supplied`,
-        )
-      }
-
-      // A repay above the live debt is a typo, not a MAX — `'all'` is how you ask for the lot.
-      // Left unchecked the contract silently caps it, so the user is shown a swap sized for
-      // more debt than exists and the surplus quietly lands in their wallet instead.
-      if (typeof debtIn === 'bigint') {
-        if (debtIn <= 0n) throw new CloseError('pair', 'Enter how much debt to repay')
-        if (debtIn > debt) {
-          throw new CloseError(
-            'pair',
-            `You owe ${formatUnits(debt, debtAsset.decimals)} ${debtAsset.symbol}`,
-          )
-        }
-      }
-      const explicitRepay = typeof debtIn === 'bigint' ? debtIn : null
-      /**
-       * The collateral amount decides the repay, and the aggregator's answer is what decides
-       * it. Nothing to aim sizing at yet — the quote produces the target rather than consuming
-       * one — so it aims at the whole debt and the answer is read back off the result.
-       */
-      const deriveRepay = collateralIn !== undefined && explicitRepay === null
-      const targetRepay = explicitRepay ?? debt
-      const targetNeeded =
-        targetRepay < debt ? targetRepay : (targetRepay * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
-
-      // 3. Quote and size.
-      logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
-      const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
-        (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
-      )
-      const quoteAt = async (amountIn: bigint) => {
-        // An aggregator that refused to answer is not evidence about the pair. Tracked per call
-        // rather than per plan, because the sizing loop quotes several times and only the round
-        // that came back empty needs explaining.
-        let throttled = false
-        const ranked = rankRoutes(
-          await Promise.all(
-            adapters.map((a) =>
-              a
-                .getQuote(collateral, debtAsset, amountIn.toString(), slippagePercent, chainId, signal)
-                .catch((e: unknown) => {
-                  if (e instanceof AggregatorHttpError && e.retryable) throttled = true
-                  return null
-                }),
-            ),
-          ),
-        )
-        // Only when NOTHING priced: one throttled adapter alongside one that answered is a
-        // complete answer, and `sizeSwap` should get on with it.
-        if (ranked.length === 0 && throttled) {
-          throw new CloseError(
-            'aggregator',
-            'The price aggregator is rate-limiting us or is down — wait a moment and try again',
-          )
-        }
-        return ranked
-      }
-
-      const sized = await sizeSwap({
-        collAmount,
-        debt: targetRepay,
-        needed: targetNeeded,
-        slipNum,
-        rounds: SIZING_ROUNDS,
-        quoteAt,
-        fixedIn: collateralIn === 'all' ? collAmount : collateralIn,
-        // Aave's own oracle prices ride along on both assets, so the first guess is free.
-        // Without it every refresh pays for a full-collateral probe just to learn the rate.
-        seedIn: oracleSeed({
-          needed: targetNeeded,
-          slipNum,
-          collateralDecimals: collateral.decimals,
-          debtDecimals: debtAsset.decimals,
-          collateralPrice: toPriceScaled(collateral.priceInUsd),
-          debtPrice: toPriceScaled(debtAsset.priceInUsd),
-        }),
-      })
-
-      // In derived mode the repay comes off the quote that was just taken; otherwise it is
-      // whatever the caller asked for, already checked against the live debt above.
-      const debtRepaid = deriveRepay
-        ? deriveDebtRepay({ guaranteedOut: sized.minDebtOut, debt })
-        : targetRepay
-      if (debtRepaid <= 0n) {
-        throw new CloseError(
-          'pair',
-          `That much ${collateral.symbol} does not buy enough ${debtAsset.symbol} to repay anything — swap more`,
-        )
-      }
-      const partial = debtRepaid < debt
-      // The buffer covers interest accruing between this read and the block that lands, which
-      // only matters when the flash is sized on chain from a balance that has grown. A partial
-      // flashes the fixed `debtRepaid`, so there is nothing to buffer against.
-      const needed = partial ? debtRepaid : (debtRepaid * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
-      /**
-       * A derived partial funds itself BY CONSTRUCTION: the repay is the router's own
-       * guarantee, so the swap cannot come up short of it, and there is no whole debt left to
-       * be short of either. `sizeSwap` judged this quote against the full debt and said no,
-       * which is the right answer to a different question.
-       *
-       * Not once the cap bites and this is a full close again — the flash is then read on
-       * chain and can have grown, which is exactly what the ordinary checks are for.
-       */
-      const selfFunding = deriveRepay && partial
-
-      return {
-        strategies,
-        collateralAddr,
-        debtAddr,
-        aToken,
-        aTokenName,
-        nonce,
-        collAmount,
-        slipNum,
-        adapters,
-        allowedRouters,
-        quoteAt,
-        ...sized,
-        // After the spread: these are the plan's answers, not the sizing pass's.
-        debt: debtRepaid,
-        liveDebt: debt,
-        deriveRepay,
-        debtRepay: partial ? debtRepaid : FULL_CLOSE,
-        debtRemaining: debt - debtRepaid,
-        needed,
-        covered: selfFunding || sized.covered,
-        guaranteed: selfFunding || sized.guaranteed,
-      }
-    },
+    (input: CloseInput, logFn: (m: string) => void = () => {}) =>
+      buildPlanStep(input, { address, chainId, publicClient, log: logFn }),
     [address, chainId, publicClient],
   )
+
 
   /*────────────────────────── preview ──────────────────────────*/
 
@@ -679,166 +193,6 @@ export function useDeleverageClose() {
       setExecError(null)
       setSettleNote(null)
 
-      /**
-       * Reuse the held permits, or take fresh ones and stop.
-       *
-       * Stopping is the point: the first press banks an approval and hands the numbers back
-       * for review, so the second press submits with no wallet dialog in between. That gap is
-       * what used to let the router's output floor go stale and revert.
-       *
-       * Returns null when a signature was just taken and nothing should be submitted.
-       */
-      const obtainPermits = async (
-        p: ClosePlan,
-        w: Withdrawal,
-      ): Promise<{ permit: PermitArgs; revoke: RevokeArgs } | null> => {
-        if (!address || !walletClient) throw new CloseError('wallet', 'Wallet not connected')
-
-        const need = {
-          chainId,
-          owner: address,
-          aToken: p.aToken,
-          spender: p.strategies,
-          nonce: p.nonce,
-          // What is actually pulled, NOT the headroomed permit value — see canReuseSignature.
-          value: w.pullAmount,
-          nowSeconds: BigInt(Math.floor(Date.now() / 1000)),
-        }
-
-        const held = signatures.current
-        const blocker = reuseBlocker(held, need)
-        if (blocker === null && held !== null) {
-          log('Using the approval you already signed — no wallet prompt needed.')
-          return { permit: held.permit, revoke: held.revoke }
-        }
-        if (held !== null) {
-          // A held signature that cannot be reused is worth explaining: every reason is
-          // individually plausible, and only the real one distinguishes drift from expiry
-          // from a spent nonce.
-          log(`Re-signing: ${blocker}.`)
-          if (import.meta.env.DEV) console.warn('[close] signature not reusable:', blocker, { held, need })
-        }
-
-        const deadline = BigInt(Math.floor(Date.now() / 1000) + PERMIT_TTL_S)
-        const domain = { aToken: p.aToken, aTokenName: p.aTokenName, chainId, owner: address, spender: p.strategies }
-
-        setStep('permit')
-        log('Requesting permit signature (1 of 2)…')
-        const grant = parseSignature(
-          await walletClient.signTypedData({
-            account: address,
-            ...buildPermitTypedData({ ...domain, value: w.permitValue, nonce: p.nonce, deadline }),
-          }),
-        )
-
-        // The revoke, at the next nonce and over value 0. Sequential nonces mean it can only
-        // ever apply after the grant, and it is signed here so the contract never has to trust
-        // a value the user did not authorise. Same deadline: both are consumed in the same
-        // transaction, so a separate expiry would only let one half outlive the other.
-        setStep('revoke')
-        log('Requesting revoke signature (2 of 2)…')
-        const revoke = parseSignature(
-          await walletClient.signTypedData({
-            account: address,
-            ...buildPermitTypedData({ ...domain, value: 0n, nonce: p.nonce + 1n, deadline }),
-          }),
-        )
-
-        const vOf = (sig: ReturnType<typeof parseSignature>) =>
-          sig.v !== undefined ? Number(sig.v) : sig.yParity + 27
-
-        signatures.current = {
-          chainId,
-          owner: address,
-          aToken: p.aToken,
-          spender: p.strategies,
-          nonce: p.nonce,
-          value: w.permitValue,
-          deadline,
-          permit: { value: w.permitValue, deadline, v: vOf(grant), r: grant.r, s: grant.s },
-          revoke: { deadline, v: vOf(revoke), r: revoke.r, s: revoke.s },
-          // The number the user is about to be shown and asked to confirm. buildFreshRoute
-          // measures the executing route against this, not against its own re-quote.
-          reviewedOut: p.expectedOut,
-        }
-        return null
-      }
-
-      /**
-       * Build the calldata that will actually execute, from a quote taken right now.
-       *
-       * The router freezes `minReturnAmount = quotedOut × (1 − slippage)` into its calldata and
-       * enforces it on execution ("Return amount is not enough"). Anything that separates this
-       * build from submission — a wallet dialog, a plan carried over from the preview — ages
-       * that floor until the price moves past it.
-       */
-      const buildFreshRoute = async (p: ClosePlan) => {
-        log('Refreshing the swap route before submitting…')
-        clearQuoteCache() // the reuse window outlasts a fast signing; force the network
-        const candidates = await p.quoteAt(p.requiredIn)
-        const { router, swapData, chosen, tx, rejected } = await selectRoute({
-          candidates,
-          adapters: p.adapters,
-          strategies: p.strategies,
-          allowedRouters: p.allowedRouters,
-          slippagePercent: input.slippagePercent,
-          chainId,
-          // No floor in derived mode: a route that returns less does not fail, it repays less.
-          debt: p.deriveRepay ? 0n : p.debt,
-          slipNum: p.slipNum,
-        })
-
-        if (!router || !swapData || !chosen || !tx) {
-          throw new CloseError(
-            'pair',
-            `No usable swap route for the close. Tried: ${rejected.join('; ') || 'none'}`,
-          )
-        }
-        // A new quote at a new price has to re-clear what sizing cleared.
-        if (BigInt(chosen.amountIn) !== p.requiredIn) {
-          throw new CloseError('pair', 'Re-quote returned a different swap size — try again')
-        }
-        // The build endpoint re-simulates and returns its OWN amountOut, which is what the
-        // router's minReturnAmount is derived from. Prefer it over the quote's wherever a
-        // floor or a comparison is being made.
-        const builtOut = tx.amountOut ? BigInt(tx.amountOut) : BigInt(chosen.amountOut)
-
-        // Skipped in derived mode, which has no fixed target to fall short of — a lighter
-        // route simply repays less. The degradation check below is what stops one that moved
-        // far enough to matter against the numbers the user actually reviewed.
-        if (!p.deriveRepay && (builtOut * p.slipNum) / 10000n < p.needed) {
-          throw new CloseError(
-            'pair',
-            `The price moved and the route no longer guarantees repaying the debt at ${input.slippagePercent}% slippage. Nothing was submitted — try again, or raise the slippage.`,
-          )
-        }
-
-        // Clearing the debt is not the same as being worth executing. On a well-covered
-        // position a route that degraded several percent still clears it, and the surplus —
-        // which is the user's — silently shrinks. Compare against what they actually reviewed
-        // and stop, rather than submit numbers they never saw.
-        //
-        // The baseline is the output quoted when the SIGNATURE was taken, carried on the held
-        // signature. Neither obvious alternative works: `p.expectedOut` is re-quoted by this
-        // press's own `buildPlan`, and the router's `outputChangePercent` measures its build
-        // against the re-quote it was handed seconds earlier. Both span milliseconds, so both
-        // are blind to exactly the window this guard exists to cover — the one where the user
-        // was reading the numbers.
-        const baseline = signatures.current?.reviewedOut ?? p.expectedOut
-        const degradation =
-          baseline > 0n ? (Number(builtOut - baseline) / Number(baseline)) * 100 : 0
-        if (degradation < MAX_OUTPUT_DEGRADATION_PERCENT) {
-          throw new CloseError(
-            'pair',
-            `The route got ${Math.abs(degradation).toFixed(2)}% worse than the quote you reviewed, so nothing was submitted. The numbers have been refreshed — press again to accept the new ones.`,
-          )
-        }
-        if (chosen.aggregator !== p.best.aggregator) {
-          log(`${p.best.aggregator} unusable — falling back to ${chosen.aggregator}.`)
-        }
-        return { router, swapData, chosen, builtOut, quotedOut: BigInt(chosen.amountOut), outputChangePercent: tx.outputChangePercent }
-      }
-
       try {
         if (!address || !publicClient || !walletClient) {
           throw new CloseError('wallet', 'Wallet not connected')
@@ -884,7 +238,9 @@ export function useDeleverageClose() {
           )
         }
 
-        const permits = await obtainPermits(p, withdrawal)
+        const permits = await obtainPermits(p, withdrawal, {
+          address, chainId, walletClient, signatures, log, setStep,
+        })
         if (!permits) {
           log('Approval signed. Review the numbers, then press again to submit.')
           setStep('idle')
@@ -895,7 +251,9 @@ export function useDeleverageClose() {
           }
         }
 
-        const route = await buildFreshRoute(p)
+        const route = await buildFreshRoute(p, {
+          chainId, slippagePercent: input.slippagePercent, signatures, log,
+        })
         const { router, swapData, builtOut, quotedOut, outputChangePercent } = route
         // Derived from the route that is actually about to execute, so the contract enforces
         // the user's slippage on the whole output rather than only on the part repaying the
