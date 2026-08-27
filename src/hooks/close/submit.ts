@@ -1,7 +1,7 @@
 import { formatUnits, type Address, type PublicClient, type WalletClient } from 'viem'
 import type { Config } from 'wagmi'
 import { estimateFeesPerGas, simulateContract } from 'wagmi/actions'
-import { calculateAdjustedFees, pinnedGasLimit } from '../../utils/gas'
+import { calculateAdjustedFees, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
 import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
 import { computeMinOut, deriveDebtRepay, isSlippageShapedFailure, planWithdrawal } from '../../lib/closePlan'
@@ -170,15 +170,37 @@ export async function submitClose(
         const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
           calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
 
-        log('Simulating close transaction…')
+        // Gas FIRST, then the call — and the call runs AT that limit.
+        //
+        // Simulating with no limit only proves the transaction succeeds with the whole block to
+        // spend, which is not what gets broadcast. Establishing the limit first and handing it to
+        // `eth_call` proves it succeeds in the gas it will actually be given, which is the only
+        // question that matters once the buffer can be clamped down to this chain's cap.
+        //
+        // `estimateContractGas` executes the transaction too, so it is now the first thing to
+        // meet a route that went stale. Both share one catch for that reason.
+        log('Sizing and simulating the close…')
+        let gas: bigint
         let request
         try {
+          gas = await pinnedGasLimit(
+            () =>
+              publicClient.estimateContractGas({
+                address: p.strategies,
+                abi: aaveV3StrategiesAbi,
+                functionName: 'closePositionWithPermit',
+                args,
+                account: address,
+              }),
+            { chainId, label: 'close' },
+          )
           ;({ request } = await simulateContract(config, {
             address: p.strategies,
             abi: aaveV3StrategiesAbi,
             functionName: 'closePositionWithPermit',
             args,
             account: address,
+            gas,
             // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
             // three falls outside every member of it.
             ...(adjustedMaxFeePerGas
@@ -186,6 +208,11 @@ export async function submitClose(
               : { gasPrice: adjustedGasPrice }),
           }))
         } catch (e) {
+          // Over the chain's per-transaction cap is not a stale route and not retryable: the
+          // route has to change. Refreshing the quote and inviting another press would send the
+          // user round a loop that cannot end.
+          if (e instanceof GasEstimateError && e.overCap) throw new CloseError('pair', e.message)
+
           // Almost always the route: the price moved past the floor frozen into the calldata.
           // Drop the quote cache so the panel repopulates from the network rather than from a
           // response just proven stale.
@@ -194,7 +221,9 @@ export async function submitClose(
           // numbers the user has not seen. The refreshed preview goes back in front of them,
           // and the held signature survives, so their next press costs no wallet prompt.
           clearQuoteCache()
-          const detail = (e as { shortMessage?: string }).shortMessage ?? (e as Error).message
+          // `pinnedGasLimit` wraps the node's error; the revert reason is on the cause.
+          const src = e instanceof GasEstimateError ? (e.cause ?? e) : e
+          const detail = (src as { shortMessage?: string }).shortMessage ?? (src as Error).message
           // The aggregator refusing on output is a tolerance problem, not a dead end — say so,
           // and let the caller offer a wider one. Anything else is reported as-is.
           if (isSlippageShapedFailure(detail)) {
@@ -207,21 +236,6 @@ export async function submitClose(
             `Simulation failed, so nothing was submitted (${detail}). The quote has been refreshed — check the new numbers and press again.`,
           )
         }
-
-        // Pin a buffered gas limit: a flash-loan close touches far more state than a plain
-        // Aave action, and an unpinned limit leaves it to the wallet's estimate. A failed
-        // estimate stops the send — the held permit survives, so a retry costs no new prompt.
-        const gas = await pinnedGasLimit(
-          () =>
-            publicClient.estimateContractGas({
-              address: p.strategies,
-              abi: aaveV3StrategiesAbi,
-              functionName: 'closePositionWithPermit',
-              args,
-              account: address,
-            }),
-          { chainId, label: 'close' },
-        )
 
         log('Submitting close transaction…')
         setStep('sending')

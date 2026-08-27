@@ -370,6 +370,7 @@ const route = (builtOut: bigint) => ({
 describe('close() — signatures, reuse and the degradation baseline', () => {
   let signTypedData: ReturnType<typeof vi.fn>
   let writeContract: ReturnType<typeof vi.fn>
+  let estimateContractGas: ReturnType<typeof vi.fn>
   let waitForTransactionReceipt: ReturnType<typeof vi.fn>
   let selectRoute: ReturnType<typeof vi.fn>
   let simulateContract: ReturnType<typeof vi.fn>
@@ -380,6 +381,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
   beforeEach(async () => {
     signTypedData = vi.fn().mockResolvedValue(SIG)
     writeContract = vi.fn().mockResolvedValue('0xhash')
+    estimateContractGas = vi.fn().mockResolvedValue(900_000n)
     waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success' })
 
     mocks.useWalletClient.mockReturnValue({ data: { signTypedData, writeContract } })
@@ -393,7 +395,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
         throw new Error(`unmocked read: ${functionName}`)
       }),
       waitForTransactionReceipt,
-      estimateContractGas: vi.fn().mockResolvedValue(900_000n),
+      estimateContractGas,
     })
     // The single adapter behind the real `quoteAt`, so buildFreshRoute re-quotes for real.
     mocks.getAdaptersForChain.mockReturnValue([
@@ -703,6 +705,30 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
    */
   const debtRepayArg = () =>
     (simulateContract.mock.calls.at(-1)?.[1] as { args: readonly unknown[] }).args[3]
+
+  it('simulates AT the gas limit it is about to broadcast, not with the block to spend', async () => {
+    // Simulating unbounded only proves the close succeeds with the whole block available, which
+    // is not what gets sent. The limit can also be clamped down to the chain's per-transaction
+    // cap, so "succeeds unbounded" and "succeeds in what we give it" are different questions.
+    const r = mount()
+    await r.current.close(baseInput)
+    await r.current.close(baseInput)
+
+    const simulated = (simulateContract.mock.calls.at(-1)?.[1] as { gas?: bigint }).gas
+    const sent = (writeContract.mock.calls.at(-1)?.[0] as { gas?: bigint }).gas
+    expect(simulated).toBeDefined()
+    expect(simulated).toBe(sent)
+  })
+
+  it('estimates gas BEFORE simulating, since the estimate is what the simulation is given', async () => {
+    const r = mount()
+    await r.current.close(baseInput)
+    await r.current.close(baseInput)
+
+    const estimateOrder = estimateContractGas.mock.invocationCallOrder.at(-1)!
+    const simulateOrder = simulateContract.mock.invocationCallOrder.at(-1)!
+    expect(estimateOrder).toBeLessThan(simulateOrder)
+  })
 
   it('repays with the max sentinel on a full close, so no dust debt is left behind', async () => {
     // Passing the plan-time balance instead would leave whatever interest accrued between the
