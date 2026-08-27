@@ -235,6 +235,34 @@ describe('preview', () => {
     expect(mocks.selectRoute.mock.calls.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('sends the route it re-quoted after signing, not the one the preview showed', async () => {
+    // A maker-settled route's signed orders expire about a minute after the build, and three
+    // wallet prompts outlast that. Sizing stays as signed; only the calldata is refreshed.
+    mocks.writeContract.mockResolvedValue('0xhash')
+    mocks.waitForTransactionReceipt.mockResolvedValue({ status: 'success', logs: [] })
+    // Same shape as the default mock — only the calldata differs per round, so the assertion
+    // is about WHICH quote reached the contract, not about sizing.
+    let nth = 0
+    mocks.selectRoute.mockImplementation(({ candidates }: { candidates: { amountOut: string }[] }) =>
+      Promise.resolve({
+        router: ROUTER,
+        swapData: `0xdata${++nth}`,
+        chosen: candidates[0],
+        tx: { to: ROUTER, data: `0xdata${nth}` },
+        rejected: [],
+      }),
+    )
+
+    const { result } = renderHook(() => useFlipPosition())
+    await act(async () => {
+      await result.current.flip(INPUT)
+    })
+
+    const sent = mocks.writeContract.mock.calls.at(-1)?.[0] as { args: readonly unknown[] }
+    expect(sent.args.at(-1)).toBe(`0xdata${nth}`)
+    expect(nth).toBeGreaterThan(2)
+  })
+
   it('refuses when the destination reserve would not count as collateral', async () => {
     // Supplying is not collateralising. The contract cannot flip that switch on the user's
     // behalf, so the borrow would revert on chain after the swap had already happened.

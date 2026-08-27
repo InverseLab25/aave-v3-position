@@ -69,18 +69,9 @@ export async function previewFlip(
       let route: Awaited<ReturnType<typeof selectRoute>> | null = null
 
       for (let round = 0; round < QUOTE_ROUNDS; round++) {
-        const candidates = await quoteAll(adapters, input, size.flashAmount, chainId)
-        route = await selectRoute({
-          candidates,
-          adapters,
-          strategies: flipper,
-          allowedRouters,
-          slippagePercent: input.slippagePercent,
-          chainId,
-          // The sale has to clear the debt it is retiring, or the leg reverts before it can
-          // supply anything. Below that bar a route is not usable at any leverage.
-          debt: pos.debtAmount,
-          slipNum,
+        route = await quoteAndSelect({
+          input, chainId, adapters, allowedRouters, flipper,
+          flashAmount: size.flashAmount, debt: pos.debtAmount, slipNum,
         })
         if (!route?.chosen) {
           throw new FlipError(
@@ -107,6 +98,35 @@ export async function previewFlip(
         swapData: route.swapData,
         quotedOut: BigInt(route.chosen.amountOut),
       }
+}
+
+/**
+ * One quote round: ask every adapter at `flashAmount`, take the first that builds into calldata
+ * the contract will accept. Also run once more after the signatures — a maker-settled route's
+ * signed orders expire about a minute after the build, and three wallet prompts outlast that.
+ */
+export async function quoteAndSelect(p: {
+  input: FlipInput
+  chainId: number
+  adapters: ReturnType<typeof getAdaptersForChain>
+  allowedRouters: Set<string>
+  flipper: Address
+  flashAmount: bigint
+  debt: bigint
+  slipNum: bigint
+}) {
+  return selectRoute({
+    candidates: await quoteAll(p.adapters, p.input, p.flashAmount, p.chainId),
+    adapters: p.adapters,
+    strategies: p.flipper,
+    allowedRouters: p.allowedRouters,
+    slippagePercent: p.input.slippagePercent,
+    chainId: p.chainId,
+    // The sale has to clear the debt it is retiring, or the leg reverts before it can supply
+    // anything. Below that bar a route is not usable at any leverage.
+    debt: p.debt,
+    slipNum: p.slipNum,
+  })
 }
 
 function sizingInput(input: FlipInput, pos: Position) {

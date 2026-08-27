@@ -1,6 +1,9 @@
 import type { Account, Address, Chain, PublicClient, Transport, WalletClient } from 'viem'
 import { getFlipperAddress } from '../../config/chains'
+import { getChainConfig } from '../../config/chains'
+import { getAdaptersForChain } from '../../adapters'
 import { adjustedFees, pinnedGasLimit } from '../../utils/gas'
+import { quoteAndSelect } from './preview'
 import { canReuseSignature, reuseBlocker, type HeldSignature } from '../../lib/closePlan'
 import {
   aaveV3FlipperAbi,
@@ -148,13 +151,39 @@ export async function submitFlip(
           }),
         )
 
+        // Re-quote at the SAME flash size, and send that calldata instead of the plan's.
+        // A maker-settled route carries signed orders that expire about a minute after the
+        // build, and three wallet prompts outlast that. Only the route is refreshed: every
+        // amount stays as signed, because the delegation commits to this exact borrow.
+        const fresh = await quoteAndSelect({
+          input,
+          chainId,
+          adapters: getAdaptersForChain(getChainConfig(chainId)?.adapters ?? []),
+          allowedRouters: new Set(
+            (
+              (await publicClient.readContract({
+                address: flipper,
+                abi: aaveV3FlipperAbi,
+                functionName: 'getAllowedRouters',
+              })) as readonly Address[]
+            ).map((r) => r.toLowerCase()),
+          ),
+          flipper,
+          flashAmount: plan.flashAmount,
+          debt: plan.debtAmount,
+          slipNum: BigInt(Math.round((100 - input.slippagePercent) * 100)),
+        })
+        // No fresh route means no send: the plan's calldata is the stale thing we are replacing.
+        if (!fresh?.router || !fresh.swapData) throw new FlipError('No route for this flip')
+        log(`route refreshed before sending (${fresh.chosen?.aggregator})`)
+
         const { functionName, args } = planFlip({
           fromAsset: input.fromAsset.underlyingAsset as Address,
           toAsset: input.toAsset.underlyingAsset as Address,
           flashAmount: plan.flashAmount,
           borrowAmount: plan.borrowAmount,
           minOut: plan.minOut,
-          router: plan.router,
+          router: fresh.router,
           permit: {
             amount: held.permit.value,
             deadline: held.permit.deadline,
@@ -164,7 +193,7 @@ export async function submitFlip(
           },
           revokePermit: held.revoke,
           delegation: toStrategiesSig(delegationSig, deadline),
-          swapData: plan.swapData,
+          swapData: fresh.swapData,
         })
 
         // Estimated here, never left to the wallet. A flip touches a flash loan, a swap, a
