@@ -13,6 +13,8 @@ export interface KyberHop {
   swapAmount: string;
   exchange?: string;
   poolType?: string;
+  /** `_ce` present marks a hop that settles through a maker. See `isSmartSettlement`. */
+  extra?: { _ce?: unknown };
 }
 
 /**

@@ -20,7 +20,7 @@ import { getTxGasCap } from '../config/chains'
  */
 /**
  * Safety buffer applied to an `eth_estimateGas` result before it is pinned as the
- * transaction's gas limit (+10%).
+ * transaction's gas limit (+50%).
  *
  * We must pin one. For an injected wallet viem's `sendTransaction` takes the
  * `json-rpc` branch: it forwards `gas: undefined` straight to `eth_sendTransaction`
@@ -30,7 +30,7 @@ import { getTxGasCap } from '../config/chains'
  * cold `setUsingAsCollateral` bitmap write it was never quoted for, and dies with
  * out-of-gas inside SupplyLogic. Unused gas is refunded, so the buffer is free.
  */
-export const GAS_LIMIT_BUFFER_PERCENT = 110n
+export const GAS_LIMIT_BUFFER_PERCENT = 150n
 
 /** Apply the safety buffer to a raw gas estimate. */
 export function bufferedGasLimit(estimate: bigint): bigint {

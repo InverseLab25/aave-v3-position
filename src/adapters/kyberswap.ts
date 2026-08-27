@@ -31,6 +31,16 @@ function withGasHeadroom(gas: string | undefined): string | undefined {
   }
 }
 
+/**
+ * Whether any hop settles through a maker rather than a pool.
+ *
+ * Kyber's own frontend derives it exactly this way and buffers gas 50% when true — which is
+ * where {@link GAS_LIMIT_BUFFER_PERCENT} comes from. Every Base route measured so far is true,
+ * so nothing branches on it yet; it is here to display and for the chain where it is false.
+ */
+export const isSmartSettlement = (route: KyberHop[][]): boolean =>
+  route.some((path) => path.some((hop) => Boolean(hop.extra?._ce)));
+
 /** The subset of `/routes` this adapter reads. `routeSummary` is replayed verbatim into /route/build. */
 interface KyberRoutesResponse {
   code: number;

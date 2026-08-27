@@ -24,7 +24,7 @@ vi.mock('./http', async (orig) => ({
 import { AggregatorHttpError } from './http'
 import { isNativeAddress, NATIVE_ADDRESS, NATIVE_ZERO_ADDRESS } from './native'
 import { allAdapters, getAdaptersForChain } from './index'
-import { kyberSwapAdapter } from './kyberswap'
+import { isSmartSettlement, kyberSwapAdapter } from './kyberswap'
 
 describe('native sentinel', () => {
   it('recognises the canonical sentinel whatever its casing', () => {
@@ -353,5 +353,20 @@ describe('KyberSwap — buildTransaction', () => {
     mocks.limitedFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 0 }) })
 
     await expect(kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)).rejects.toThrow()
+  })
+})
+
+describe('isSmartSettlement', () => {
+  const hop = (extra?: { _ce?: unknown }) => ({ tokenIn: '0xa', tokenOut: '0xb', swapAmount: '1', extra })
+
+  it('is true when any hop anywhere in the split carries _ce', () => {
+    // Kyber marks maker-settled hops with `extra._ce` and buffers gas 50% on it. One hop is
+    // enough — the whole transaction pays for the settlement machinery.
+    expect(isSmartSettlement([[hop()], [hop(), hop({ _ce: 1 })]])).toBe(true)
+  })
+
+  it('is false when nothing does', () => {
+    expect(isSmartSettlement([[hop()], [hop(), hop({})]])).toBe(false)
+    expect(isSmartSettlement([])).toBe(false)
   })
 })

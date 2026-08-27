@@ -59,10 +59,10 @@ describe('pinnedGasLimit', () => {
 
   it('leaves the full buffer alone on a chain with no cap', async () => {
     // Arbitrum takes 40,000,000 in one transaction, so nothing clamps.
-    expect(await pinnedGasLimit(async () => 15_500_000n, { chainId: 42161 })).toBe(17_050_000n)
+    expect(await pinnedGasLimit(async () => 15_500_000n, { chainId: 42161 })).toBe(23_250_000n)
   })
 
   it('does not clamp when the chain is unknown', async () => {
-    expect(await pinnedGasLimit(async () => 15_500_000n, { chainId: 999999 })).toBe(17_050_000n)
+    expect(await pinnedGasLimit(async () => 15_500_000n, { chainId: 999999 })).toBe(23_250_000n)
   })
 })
