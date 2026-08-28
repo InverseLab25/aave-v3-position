@@ -60,6 +60,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const [previewFor, setPreviewFor] = useState<string | null>(null)
   const [isQuoting, setIsQuoting] = useState(false)
   const [tick, setTick] = useState(0)
+  /** Why the last run found no usable route. Empty unless `previewError` is NO_ROUTE. */
+  const [rejected, setRejected] = useState<string[]>([])
   const [step, setStep] = useState<OpenStep>('idle')
   const [txHash, setTxHash] = useState<Hex | undefined>()
   const [execError, setExecError] = useState<string | null>(null)
@@ -265,7 +267,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       await runPreview({
         input, pinned, forInput, client, chainId, owner,
         cancelled: () => cancelled,
-        setIsQuoting, setPreviewError, setPreview, setPreviewFor,
+        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
       })
     }, DEBOUNCE_MS)
 
@@ -349,6 +351,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   return {
     preview: effectivePreview,
     previewError: effectivePreviewError,
+    /** Why each candidate route was unusable — feeds the NO_ROUTE message. */
+    rejected,
     isQuoting: effectiveIsQuoting,
     refresh,
     /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */

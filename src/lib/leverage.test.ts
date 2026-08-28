@@ -560,3 +560,27 @@ describe('validateSizing — collateral enablement', () => {
     expect(validateSizing(sized)).toBeNull()
   })
 })
+
+describe('leverageErrorMessage — NO_ROUTE', () => {
+  const ctx = {
+    collateralSymbol: 'WETH', marginSymbol: 'USDC',
+    marginBalance: '0', maxSupply: '0', dangerMaxSupply: null,
+  }
+
+  it('says WHY each route was unusable when it knows', () => {
+    // The bug this exists for: a gas check rejected the only allowlisted router, and the user
+    // was told the pair could not be priced. Unfalsifiable from the outside, and wrong.
+    const msg = leverageErrorMessage('NO_ROUTE', {
+      ...ctx,
+      rejected: ['KyberSwap: route needs 17592312 gas; this chain caps a transaction at 16777216'],
+    })
+    expect(msg).toContain('17592312')
+    expect(msg).toContain('KyberSwap')
+  })
+
+  it('falls back to the old wording when there is nothing to report', () => {
+    expect(leverageErrorMessage('NO_ROUTE', ctx)).toBe('No allowlisted router can price this pair')
+    expect(leverageErrorMessage('NO_ROUTE', { ...ctx, rejected: [] }))
+      .toBe('No allowlisted router can price this pair')
+  })
+})

@@ -42,6 +42,8 @@ interface PreviewRunContext {
   cancelled: () => boolean
   setIsQuoting: (v: boolean) => void
   setPreviewError: (v: LeverageError | null) => void
+  /** Why each candidate was unusable. Cleared per run, so a stale reason cannot outlive it. */
+  setRejected: (v: string[]) => void
   setPreview: (v: OpenPreview | null) => void
   setPreviewFor: (v: string) => void
 }
@@ -50,7 +52,7 @@ interface PreviewRunContext {
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
     input, pinned, forInput, client, chainId, cancelled,
-    setIsQuoting, setPreviewError, setPreview, setPreviewFor,
+    setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
   } = ctx
 
       /**
@@ -64,6 +66,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
       let produced = false
       setIsQuoting(true)
       setPreviewError(null)
+      setRejected([])
       try {
         if (!client) {
           setPreviewError('NO_CLIENT')
@@ -234,7 +237,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // Build FIRST, then validate what was actually built. The list is best-output-first, so
         // a fallback prices strictly worse than the route the borrow was solved against. The
         // walk is shared with the close flow so the allowlist and calldata checks cannot drift.
-        const { selected } = await selectBuildableRoute(candidates, {
+        const { selected, rejected } = await selectBuildableRoute(candidates, {
           build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
           isAllowlisted: (router) => allowed.has(router.toLowerCase()),
           label: (c) => c.a.name,
@@ -245,6 +248,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // superseded attempt writes a no-route error that a reverted input would make current.
         if (cancelled()) return
         if (!selected) {
+          setRejected(rejected)
           setPreviewError(nothingPriced())
           return
         }

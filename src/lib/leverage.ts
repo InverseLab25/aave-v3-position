@@ -562,6 +562,14 @@ interface LeverageErrorContext {
   marginWorth?: string | null;
   /** From {@link collateralEnablement}, so `COLLATERAL_NOT_ENABLED` can say WHICH way it failed. */
   collateral?: CollateralEnablement | null;
+  /**
+   * Why each candidate route was unusable, from `selectBuildableRoute`.
+   *
+   * Without it "no router can price this pair" is unfalsifiable from the outside — it reads as
+   * a liquidity problem whatever the cause, and the one time it fired it was a gas check
+   * rejecting the only allowlisted router.
+   */
+  rejected?: string[];
 }
 
 /**
@@ -625,7 +633,9 @@ export function leverageErrorMessage(error: LeverageError, ctx: LeverageErrorCon
     case "LTV_EXCEEDED":
       return `Too much debt against this much ${ctx.collateralSymbol} — Aave would reject the borrow`;
     case "NO_ROUTE":
-      return "No allowlisted router can price this pair";
+      return ctx.rejected?.length
+        ? `No usable route: ${ctx.rejected.join('; ')}`
+        : "No allowlisted router can price this pair";
     case "AGGREGATOR_UNAVAILABLE":
       return "The price aggregator is rate-limiting us or is down — wait a moment and refresh";
     case "QUOTE_FAILED":

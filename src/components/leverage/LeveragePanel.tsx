@@ -440,7 +440,7 @@ export function LeveragePanel({
   })()
 
   const {
-    preview, previewError, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
+    preview, previewError, rejected, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
 
@@ -550,6 +550,7 @@ export function LeveragePanel({
         ? null
         : display(dangerMax, collateralReserve.raw.decimals, 4),
       marginWorth,
+      rejected,
       collateral: enablement,
     })
     : null
