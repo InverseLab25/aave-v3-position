@@ -64,6 +64,15 @@ describe('validateSwapTx — per-transaction gas cap', () => {
     to: '0xR', spender: '0xR', data: '0xdead', value: '0',
   }
 
+  it('judges the aggregator\'s own figure, not a padded one', () => {
+    // The bug: the adapter padded its gas 20% and this check compared the padded number to the
+    // cap, so a 1M USDC route measuring 13.2M was rejected 5 times in 6 — the pad, not the
+    // route, put it over. A pad is for SETTING a limit, where over-estimating is refunded. It
+    // has no business in a decision, where over-estimating costs the trade.
+    const underCap = (TX_GAS_CAP_2_24 - 1_000_000n).toString()
+    expect(validateSwapTx({ ...ok, gasEstimate: underCap }, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+
   it('rejects a route whose gas cannot fit in one transaction', () => {
     // Base and Ethereum both refuse a transaction above 2^24 at the node, before it is ever
     // mined — "gas limit too high". Catching it here costs a route; catching it at send costs

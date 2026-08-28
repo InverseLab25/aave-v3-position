@@ -108,10 +108,10 @@ describe('KyberSwap — getQuote', () => {
       aggregator: 'KyberSwap',
       amountIn: '1000000000000000000',
       amountOut: '2990000000',
-      // 250000 with 20% headroom on top — the aggregator's own number runs short.
-      gasEstimate: '300000',
-      // gasUsd is NOT padded: it ranks routes against other aggregators, and inflating
-      // only KyberSwap's cost would push its routes down for a reason unrelated to price.
+      // The aggregator's own figure, unpadded. It is unreliable in BOTH directions — measured
+      // 169% under on one route and ~11% over on another — so nothing here may inflate it: this
+      // number reaches `validateSwapTx`, where over-stating costs a route that would have run.
+      gasEstimate: '250000',
       gasUsd: '12.50',
       // The aggregator's own figures, kept untouched for route-cost comparison.
       rawAmountInUsd: '3000',
@@ -258,12 +258,14 @@ describe('KyberSwap — buildTransaction', () => {
     expect(tx.outputChangePercent).toBe(-0.17)
   })
 
-  it('carries the build gas with the same 20% headroom the quote gets', async () => {
+  it('carries the build gas as reported, so the cap check judges the real figure', async () => {
+    // Padding this 20% rejected a 1,000,000 USDC route five times in six: the route measured
+    // 13.2M against a 16,777,216 cap, and the pad — not the route — put it over.
     mocks.limitedFetch.mockResolvedValue(buildOk())
 
     const tx = await kyberSwapAdapter.buildTransaction(quote, 0.5, WALLET, 1)
 
-    expect(tx.gasEstimate).toBe('300000')
+    expect(tx.gasEstimate).toBe('250000')
   })
 
   it('leaves gas undefined when the build omits it, rather than inventing a floor', async () => {

@@ -74,9 +74,13 @@ export interface TransactionPayload {
    */
   outputChangePercent?: number;
   /**
-   * Gas for the swap leg alone, in gas units, already carrying the adapter's headroom.
-   * Undefined when the aggregator did not return one — absent is not zero, and a caller
-   * that treats it as zero would pin a limit the swap cannot run in.
+   * Gas for the swap leg alone, in gas units, exactly as the aggregator reported it.
+   *
+   * Never padded. This reaches `validateSwapTx`, which compares it to the chain's
+   * per-transaction cap — and there over-stating costs a route that would have run. Padding
+   * belongs where a limit is SET, not where one is judged; see `pinnedGasLimit`.
+   *
+   * Undefined when the aggregator returned none. Absent is not zero.
    */
   gasEstimate?: string;
 }
