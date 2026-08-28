@@ -25,7 +25,8 @@ export interface KyberHop {
 export type RouteDetails =
   | { type: 'kyber'; totalAmountIn: bigint; paths: KyberHop[][] }
   | { type: 'odos-defillama' }
-  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap'; info: string };
+  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap'; info: string }
+  | { type: 'nordstern'; hops: number };
 
 export interface QuoteResponse {
   aggregator: string;

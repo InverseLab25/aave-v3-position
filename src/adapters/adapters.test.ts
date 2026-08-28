@@ -25,6 +25,7 @@ import { AggregatorHttpError } from './http'
 import { isNativeAddress, NATIVE_ADDRESS, NATIVE_ZERO_ADDRESS } from './native'
 import { allAdapters, getAdaptersForChain } from './index'
 import { isSmartSettlement, kyberSwapAdapter } from './kyberswap'
+import { nordsternAdapter } from './nordstern'
 
 describe('native sentinel', () => {
   it('recognises the canonical sentinel whatever its casing', () => {
@@ -370,5 +371,37 @@ describe('isSmartSettlement', () => {
   it('is false when nothing does', () => {
     expect(isSmartSettlement([[hop()], [hop(), hop({})]])).toBe(false)
     expect(isSmartSettlement([])).toBe(false)
+  })
+})
+
+describe('Nordstern — the Guard check', () => {
+  const WETH_B = { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 }
+  const USDC_B = { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 }
+  const GUARD = '0xC87De04e2EC1F4282dFF2933A2D58199f688fC3d'
+  const quote = { aggregator: 'Nordstern', rawQuote: { src: USDC_B.underlyingAsset, dst: WETH_B.underlyingAsset, amount: '1000000000' } } as never
+  const reply = (to: string) => ({ ok: true, status: 200, json: async () => ({ toAmount: '409473892950776899', gasEstimate: '141103', tx: { to, data: '0xfeed', value: 0 } }) })
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('refuses a build that targets anything but the Guard', async () => {
+    // Their docs ask integrators to check this, and on the plain-swap screen we have nothing
+    // else: `to` and `spender` go straight to the user's wallet to approve and call, with no
+    // on-chain allowlist behind them.
+    mocks.limitedFetch.mockResolvedValue(reply('0x000000000000000000000000000000000000dEaD'))
+    await expect(nordsternAdapter.buildTransaction(quote, 0.5, GUARD, 8453))
+      .rejects.toThrow(/not the Guard/)
+  })
+
+  it('accepts the Guard, and makes it the approval target too', async () => {
+    // The Guard pulls with `transferFrom(msg.sender, …)`, so call target and approval target are
+    // one address. `validateSwapTx` rejects a build where they differ.
+    mocks.limitedFetch.mockResolvedValue(reply(GUARD))
+    const tx = await nordsternAdapter.buildTransaction(quote, 0.5, GUARD, 8453)
+    expect(tx.to).toBe(GUARD)
+    expect(tx.spender).toBe(tx.to)
+  })
+
+  it('does not quote on a chain with no Guard listed', async () => {
+    expect(await nordsternAdapter.getQuote(USDC_B, WETH_B, '1000000000', 0.5, 1)).toBeNull()
   })
 })

@@ -73,7 +73,7 @@ export const kyberSwapAdapter: Adapter = {
     try {
       const chainStr = getKyberChain(chainId);
       if (!chainStr) return null;
-      const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/routes?tokenIn=${fromAsset.underlyingAsset}&tokenOut=${toAsset.underlyingAsset}&amountIn=${amountIn}&gasInclude=true`;
+      const url = `https://aggregator-api.kyberswap.com/${chainStr}/api/v1/routes?tokenIn=${fromAsset.underlyingAsset}&tokenOut=${toAsset.underlyingAsset}&amountIn=${amountIn}&gasInclude=true&excludeRFQSources=true`;
       // Routed through the shared gate: the response depends only on the URL, so identical
       // requests (concurrent re-renders, a re-quote at a size already probed, the preview
       // being rebuilt for execution) collapse to one call, under KyberSwap's 3/s ceiling.
@@ -133,6 +133,7 @@ export const kyberSwapAdapter: Adapter = {
         slippageTolerance: slippage * 100,
         deadline: Math.floor(Date.now() / 1000) + BUILD_DEADLINE_S,
         source: KYBER_CLIENT_ID,
+        excludeRFQSources: true,
         // Both of these must stay off, and for the same reason: the deleverager never holds
         // the collateral outside the transaction — it only has it mid-flash-loan. Any
         // server-side execution against `sender` therefore reverts with

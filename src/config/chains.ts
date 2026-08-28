@@ -131,7 +131,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       // contract/broadcast/DeployStrategies.s.sol/8453/run-latest.json
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_8453, 49_831_780n),
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Nordstern', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 },

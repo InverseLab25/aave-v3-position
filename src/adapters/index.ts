@@ -1,5 +1,6 @@
 import type { Adapter } from './types';
 import { kyberSwapAdapter } from './kyberswap';
+import { nordsternAdapter } from './nordstern';
 import { openOceanAdapter } from './openocean';
 import { paraSwapAdapter } from './paraswap';
 import { cowSwapAdapter } from './cowswap';
@@ -8,6 +9,7 @@ import { zeroxAdapter } from './zerox';
 
 export const allAdapters: Adapter[] = [
   kyberSwapAdapter,
+  nordsternAdapter,
   openOceanAdapter,
   paraSwapAdapter,
   cowSwapAdapter,

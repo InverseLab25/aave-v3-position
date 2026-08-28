@@ -286,6 +286,7 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
       prepared.current = null
       forget()
     } catch (err) {
+      console.log(err)
       const decoded = decodeStrategiesError(err)
       setExecError(decoded?.message ?? extractRevertMessage(err))
       setExecRemedy(decoded?.remedy ?? null)
