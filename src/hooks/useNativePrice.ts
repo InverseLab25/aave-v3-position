@@ -1,49 +1,36 @@
 import { useState, useEffect } from 'react';
 import { useChainId } from 'wagmi';
-import { fetchQuoteJson } from '../adapters/http';
+import { limitedFetch } from '../adapters/http';
 
 const POLL_MS = 10_000;
 
-/** The de-facto native-token sentinel every aggregator here accepts. */
-const NATIVE_SENTINEL = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
-
-/** One native token, priced in one unit. `amountIn` is always 1e18 — every native here is 18dp. */
-const ONE_NATIVE = '1000000000000000000';
-
-interface NativeQuote {
-  /** KyberSwap's own chain slug. Matches `getKyberChain` in adapters/kyberswap.ts. */
-  slug: string;
-  /** The stablecoin to price against, and ITS decimals — which are not always six. */
-  stable: string;
-  decimals: number;
-}
-
 /**
- * How to price each chain's native currency.
+ * The WRAPPED native token per chain — what the price API knows the asset by.
  *
- * A per-chain stablecoin rather than one address reused everywhere, because the "same" stable has
- * a different address on every chain and several chains carry both a native and a bridged version
- * that can trade apart. Each entry below was confirmed against the live API to return a quote at a
- * sane price — a wrong address does not error, it returns a plausible number for the wrong token.
- *
- * A chain absent here cannot be priced, and the hook returns null so the caller falls back to the
- * Aave oracle. Testnets are deliberately absent: there is no real liquidity to quote.
+ * A chain absent here cannot be priced and the hook returns null, so the caller falls back to
+ * the Aave oracle. Testnets are deliberately absent: no real liquidity to price against.
  */
-const NATIVE_QUOTES: Record<number, NativeQuote> = {
-  1: { slug: 'ethereum', stable: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
-  10: { slug: 'optimism', stable: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', decimals: 6 },
-  137: { slug: 'polygon', stable: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', decimals: 6 },
-  8453: { slug: 'base', stable: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },
-  42161: { slug: 'arbitrum', stable: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', decimals: 6 },
+const WRAPPED_NATIVE: Record<number, string> = {
+  1: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',      // WETH
+  10: '0x4200000000000000000000000000000000000006',     // WETH
+  137: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',    // WPOL
+  8453: '0x4200000000000000000000000000000000000006',   // WETH
+  42161: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',  // WETH
 };
 
-const quoteUrl = (q: NativeQuote) =>
-  `https://aggregator-api.kyberswap.com/${q.slug}/api/v1/routes` +
-  `?tokenIn=${NATIVE_SENTINEL}&tokenOut=${q.stable}&amountIn=${ONE_NATIVE}`;
+const PRICES_URL = 'https://token-api.kyberswap.com/api/v1/public/tokens/prices';
 
-interface KyberRoutesResponse {
+/**
+ * The price API answers with both sides of a spread. We take `PriceSell`.
+ *
+ * Which side is which is not obvious from the names, and the docs do not say — measured on Base,
+ * `PriceSell` came back ABOVE `PriceBuy` (2465.75 against 2430.18, about 1.4% apart), so the
+ * naming reads from the venue's side rather than ours. Do not reason from the names alone; if a
+ * caller ever needs the other side, check the live pair first.
+ */
+interface PricesResponse {
   code: number;
-  data?: { routeSummary?: { amountOut: string } };
+  data?: Record<string, Record<string, { PriceBuy?: number; PriceSell?: number }>>;
 }
 
 /**
@@ -65,13 +52,13 @@ interface KyberRoutesResponse {
 export function useNativePrice(chainId?: number) {
   const connectedChainId = useChainId();
   const resolvedChainId = chainId ?? connectedChainId;
-  const quote = NATIVE_QUOTES[resolvedChainId];
+  const token = WRAPPED_NATIVE[resolvedChainId];
 
   // One piece of state, so the price can never be read against a chain it did not come from.
   const [quoted, setQuoted] = useState<{ chainId: number; price: number } | null>(null);
 
   useEffect(() => {
-    if (!quote) return;
+    if (!token) return;
     let cancelled = false;
     let inFlight = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -82,16 +69,22 @@ export function useNativePrice(chainId?: number) {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        // Through the shared gate rather than a bare fetch: this hits the SAME origin as the
-        // swap-quote adapter, so an unmetered poll here spends part of KyberSwap's 3/s budget
-        // without the limiter knowing, and can push a sizing burst over the limit into 429s.
-        const json = await fetchQuoteJson<KyberRoutesResponse>(quoteUrl(quote));
-        const amountOut = json.data?.routeSummary?.amountOut;
-        if (!cancelled && json.code === 0 && amountOut) {
-          setQuoted({
-            chainId: resolvedChainId,
-            price: Number(amountOut) / 10 ** quote.decimals,
-          });
+        // A dedicated price endpoint, not a swap quote. The old version asked for a route from
+        // 1 native into a stablecoin and read the output — which priced gas through whatever
+        // liquidity happened to exist, and spent the swap adapter's rate-limit budget doing it.
+        const res = await limitedFetch(PRICES_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [resolvedChainId]: [token] }),
+        });
+        if (!res.ok) return;
+        const json = (await res.json()) as PricesResponse;
+        // Keys come back as the API spelled them, which need not match our casing.
+        const forChain = json.data?.[String(resolvedChainId)] ?? {};
+        const entry = Object.entries(forChain)
+          .find(([addr]) => addr.toLowerCase() === token.toLowerCase())?.[1];
+        if (!cancelled && json.code === 0 && entry?.PriceSell) {
+          setQuoted({ chainId: resolvedChainId, price: entry.PriceSell });
         }
       } catch (e) {
         if (!cancelled) console.error('Failed to fetch native price from Kyberswap', e);
@@ -125,7 +118,7 @@ export function useNativePrice(chainId?: number) {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
     // Re-quotes from scratch on a chain switch, which is the point.
-  }, [resolvedChainId, quote]);
+  }, [resolvedChainId, token]);
 
   // Derived, not stored: a price from the previous chain must stop being returned the instant
   // the chain changes, without a state write from render or an effect.
