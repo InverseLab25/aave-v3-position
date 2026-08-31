@@ -32,6 +32,15 @@ export interface FlipPreview extends FlipSize {
   swapData: Hex
   /** The chosen route's quoted output, before the user's slippage is applied. */
   quotedOut: bigint
+  /**
+   * The position this was sized against — the reads `previewFlip` already paid for.
+   *
+   * Carried so `submitFlip` does not read the whole thing a second time: it needs the aToken,
+   * the two names and the two nonces, and asking again is a full extra round of reads for
+   * values a preview taken moments earlier already has. It is also the SAME reading the sizing
+   * used, which is the reading the signatures have to match.
+   */
+  position: Position
 }
 
 export type FlipStep = 'idle' | 'permit' | 'revoke' | 'delegation' | 'sending' | 'done' | 'error'

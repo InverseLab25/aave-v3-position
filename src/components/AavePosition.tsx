@@ -105,7 +105,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
    * opened on another device, or before the storage was cleared — which is a fact about the wallet
    * rather than about whichever address is on screen.
    */
-  const historySync = useHistorySync()
+  const historySync = useHistorySync(availableReserves, chainId)
 
   const [closeTarget, setCloseTarget] = useState<BorrowedAsset | null>(null)
   const [withdrawTarget, setWithdrawTarget] = useState<{ asset: SuppliedAsset } | null>(null)

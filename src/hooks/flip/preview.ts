@@ -97,6 +97,7 @@ export async function previewFlip(
         router: route.router,
         swapData: route.swapData,
         quotedOut: BigInt(route.chosen.amountOut),
+        position: pos,
       }
 }
 

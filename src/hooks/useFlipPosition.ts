@@ -59,9 +59,9 @@ export function useFlipPosition() {
     (input: FlipInput) =>
       submitFlip(input, {
         address, chainId, publicClient, walletClient, signatures,
-        preview, readPosition, log, setStep, setExecError,
+        preview, log, setStep, setExecError,
       }),
-    [address, chainId, log, preview, publicClient, readPosition, walletClient],
+    [address, chainId, log, preview, publicClient, walletClient],
   )
 
   return { preview, flip, step, logs, execError, clearSignatures }

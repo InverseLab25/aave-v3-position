@@ -129,6 +129,20 @@ export function DexDiscovery() {
     setErrors({});
   }
 
+  /**
+   * The request every async write below has to still belong to.
+   *
+   * Clearing the map on a key change is not enough on its own: a quote fired for the OLD pair
+   * resolves AFTER the clear and writes itself into the fresh map, where it is then rendered
+   * and priced with the new pair's decimals. Every write stamps the key it was fired for and
+   * drops itself if the form has moved on since.
+   */
+  const requestKeyRef = useRef(requestKey);
+  useEffect(() => {
+    requestKeyRef.current = requestKey;
+  });
+  const isCurrent = (key: string) => requestKeyRef.current === key;
+
   const handleSwapAssets = () => {
     // Block direction swap while a confirm modal is open — otherwise the modal keeps
     // rendering with a payload built for the old pair, which the user could execute.
@@ -151,6 +165,7 @@ export function DexDiscovery() {
     }
 
     const now = Date.now();
+    const firedFor = requestKey;
 
     adapters.forEach(adapter => {
       if (fetchingRef.current[adapter.name]) return;
@@ -164,7 +179,7 @@ export function DexDiscovery() {
 
       adapter.getQuote(fromAsset, toAsset, amountIn, slippage, chainId)
         .then(res => {
-          if (res) {
+          if (res && isCurrent(firedFor)) {
             setQuoteMap(prev => ({ ...prev, [adapter.name]: res }));
             setErrors(prev => {
               const newErrs = { ...prev };
@@ -174,7 +189,7 @@ export function DexDiscovery() {
           }
         })
         .catch(err => {
-          setErrors(prev => ({ ...prev, [adapter.name]: err.message || 'Failed' }));
+          if (isCurrent(firedFor)) setErrors(prev => ({ ...prev, [adapter.name]: err.message || 'Failed' }));
         })
         .finally(() => {
           fetchingRef.current[adapter.name] = false;
@@ -284,8 +299,13 @@ export function DexDiscovery() {
 
     setSwapStarted(false); // fresh review starts unfrozen
     setIsBuildingTx(prev => ({ ...prev, [aggregatorName]: true }));
+    const firedFor = requestKeyRef.current;
     try {
       const txData = await adapter.buildTransaction(quote, slippage, address, chainId);
+      // The amount and both selects are disabled while this runs, but slippage is not — and
+      // calldata built at the old tolerance carries the old floor into a modal the user reads
+      // as current.
+      if (requestKeyRef.current !== firedFor) return;
       setBuiltTxs(prev => ({ ...prev, [aggregatorName]: txData }));
       setActiveQuoteRefreshedAt(Date.now());
     } catch (e) {

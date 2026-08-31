@@ -40,7 +40,6 @@ export const PERMIT_HEADROOM_BPS = 2500n
 
 export const RECEIPT_TIMEOUT_MS = 90_000
 
-export const POOL_ADDRESSES_PROVIDER_ABI = parseAbi(['function getPriceOracle() view returns (address)'])
 export const ORACLE_ABI = parseAbi(['function getAssetPrice(address asset) view returns (uint256)'])
 export const DATA_PROVIDER_ABI = parseAbi([
   'function getReserveConfigurationData(address asset) view returns (uint256 decimals, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen)',

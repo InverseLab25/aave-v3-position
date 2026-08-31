@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getChainConfig: vi.fn(),
   getFlipperAddress: vi.fn(),
   getPoolDataProvider: vi.fn(),
+  getPriceOracle: vi.fn(),
   getReserveTokens: vi.fn(),
   getATokenName: vi.fn(),
   getAdaptersForChain: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('../config/chains', async (orig) => ({
 }))
 vi.mock('../lib/aaveStatics', () => ({
   getPoolDataProvider: mocks.getPoolDataProvider,
+  getPriceOracle: mocks.getPriceOracle,
   getReserveTokens: mocks.getReserveTokens,
   getATokenName: mocks.getATokenName,
 }))
@@ -170,6 +172,8 @@ beforeEach(() => {
   })
   mocks.getFlipperAddress.mockReturnValue(FLIPPER)
   mocks.getPoolDataProvider.mockResolvedValue('0xcccc111111111111111111111111111111111111')
+  // Memoised beside the data provider now, so the read no longer goes through publicClient.
+  mocks.getPriceOracle.mockResolvedValue('0xdddd111111111111111111111111111111111111')
   mocks.getReserveTokens.mockImplementation(
     (_c: unknown, _id: unknown, _dp: unknown, asset: string) =>
       Promise.resolve(

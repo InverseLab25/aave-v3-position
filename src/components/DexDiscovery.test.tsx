@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { act, render, screen, fireEvent } from '@testing-library/react'
 
 /**
  * DexDiscovery's own logic is token-list assembly and selection: which tokens each side offers,
@@ -155,6 +155,45 @@ describe('DexDiscovery — token list assembly', () => {
     const opts = optionsOf(fromSelect())
     expect(opts).toContain('WETH-supplied')
     expect(opts).not.toContain('WETH')
+  })
+})
+
+describe('DexDiscovery — a quote that outlived its request', () => {
+  it('drops a route that answered for the pair the user has already left', async () => {
+    // Clearing the map on a pair change is not enough on its own: the in-flight quote resolves
+    // AFTER the clear and writes itself into the fresh map, where it renders — and is formatted
+    // with the new pair's decimals.
+    let answer: (q: unknown) => void = () => {}
+    mocks.getAdaptersForChain.mockReturnValue([
+      {
+        name: 'KyberSwap',
+        supportsExecution: true,
+        getQuote: vi.fn(() => new Promise((resolve) => { answer = resolve })),
+        buildTransaction: vi.fn(),
+      },
+    ])
+
+    render(<DexDiscovery />)
+    fireEvent.change(screen.getByPlaceholderText('0.0'), { target: { value: '1' } })
+    await act(async () => { await Promise.resolve() })
+
+    // The user moves on before the aggregator answers.
+    fireEvent.change(toSelect(), { target: { value: DAI } })
+    await act(async () => {
+      answer({
+        aggregator: 'KyberSwap',
+        amountIn: '1000000000000000000',
+        amountOut: '2000000000',
+        amountOutUsd: '2000.00',
+        gasUsd: '0',
+        netReturnUsd: 2000,
+        rawQuote: {},
+        routeDetails: { type: 'kyber', totalAmountIn: 1n, paths: [] },
+      })
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByText('BEST RETURN')).toBeNull()
   })
 })
 

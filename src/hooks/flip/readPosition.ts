@@ -1,12 +1,11 @@
 import type { Address, PublicClient } from 'viem'
 import { getChainConfig } from '../../config/chains'
-import { getATokenName, getPoolDataProvider, getReserveTokens } from '../../lib/aaveStatics'
+import { getATokenName, getPoolDataProvider, getPriceOracle, getReserveTokens } from '../../lib/aaveStatics'
 import { collateralEnablement } from '../../lib/leverage'
 import {
   DATA_PROVIDER_ABI,
   NONCES_ABI,
   ORACLE_ABI,
-  POOL_ADDRESSES_PROVIDER_ABI,
 } from '../flip/constants'
 import { FlipError, type FlipInput, type Position } from '../flip/types'
 
@@ -40,16 +39,12 @@ export async function readPosition(
       const fromAddr = input.fromAsset.underlyingAsset as Address
       const toAddr = input.toAsset.underlyingAsset as Address
 
-      const dataProvider = await getPoolDataProvider(
-        publicClient,
-        chainId,
-        cfg.aave.poolAddressesProvider,
-      )
-      const oracle = (await publicClient.readContract({
-        address: cfg.aave.poolAddressesProvider,
-        abi: POOL_ADDRESSES_PROVIDER_ABI,
-        functionName: 'getPriceOracle',
-      })) as Address
+      // Both memoised and both off the same provider, so they go together rather than in
+      // series — cold this is one round trip instead of two, warm it is none.
+      const [dataProvider, oracle] = await Promise.all([
+        getPoolDataProvider(publicClient, chainId, cfg.aave.poolAddressesProvider),
+        getPriceOracle(publicClient, chainId, cfg.aave.poolAddressesProvider),
+      ])
 
       const from = await getReserveTokens(publicClient, chainId, dataProvider, fromAddr)
 
@@ -96,6 +91,7 @@ export async function readPosition(
         aTokenNonce,
         delegationNonce,
         aFromName,
+        vDebtFromName,
       ] = await Promise.all([
         price(fromAddr),
         price(toAddr),
@@ -112,6 +108,10 @@ export async function readPosition(
         nonces(from.aToken),
         nonces(from.vDebt),
         getATokenName(publicClient, chainId, from.aToken),
+        // Rides in the batch rather than after it. Aave names a variable-debt token after its
+        // aToken's reserve and the EIP-712 domain uses that name, so it is read separately
+        // rather than assumed equal — but there is no reason to read it a round trip later.
+        getATokenName(publicClient, chainId, from.vDebt),
       ])
 
       // Supplying is not collateralising. Aave only auto-enables a reserve on a FIRST supply, and
@@ -136,9 +136,7 @@ export async function readPosition(
         aFrom: from.aToken,
         aFromName,
         vDebtFrom: from.vDebt,
-        // Aave names a variable-debt token after its aToken's reserve, and the EIP-712 domain
-        // uses that name. Read separately rather than assumed equal to the aToken's.
-        vDebtFromName: await getATokenName(publicClient, chainId, from.vDebt),
+        vDebtFromName,
         collateralAmount: fromUser[0],
         debtAmount: toUser[2],
         fromPriceUsd,

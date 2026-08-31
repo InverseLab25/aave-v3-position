@@ -24,6 +24,13 @@ const PROVIDER_ABI = [
     inputs: [],
     outputs: [{ type: 'address' }],
   },
+  {
+    type: 'function',
+    name: 'getPriceOracle',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
 ] as const
 
 const DATA_PROVIDER_ABI = [
@@ -53,6 +60,7 @@ interface ReserveTokens {
 }
 
 const dataProviders = new Map<string, Promise<Address>>()
+const priceOracles = new Map<string, Promise<Address>>()
 const reserveTokens = new Map<string, Promise<ReserveTokens>>()
 
 /**
@@ -82,6 +90,24 @@ export function getPoolDataProvider(
       address: poolAddressesProvider,
       abi: PROVIDER_ABI,
       functionName: 'getPoolDataProvider',
+    }),
+  )
+}
+
+/**
+ * The market's price oracle. Fixed for the life of the deployment, like the data provider it
+ * sits beside — the flip flow was reading it fresh on every preview.
+ */
+export function getPriceOracle(
+  client: Reader,
+  chainId: number,
+  poolAddressesProvider: Address,
+): Promise<Address> {
+  return memo(priceOracles, `${chainId}|${poolAddressesProvider.toLowerCase()}`, () =>
+    client.readContract({
+      address: poolAddressesProvider,
+      abi: PROVIDER_ABI,
+      functionName: 'getPriceOracle',
     }),
   )
 }

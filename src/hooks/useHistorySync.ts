@@ -18,22 +18,20 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { useChainId, useConfig, useConnection, useReadContracts } from 'wagmi'
+import { useChainId, useConfig, useConnection } from 'wagmi'
 import { getBlock, getTransactionReceipt } from 'viem/actions'
 import {
   type Address,
   type Client,
 } from 'viem'
 import { getChainConfig, syncableChains } from '../config/chains'
-import { uiPoolDataProviderAbi } from '../config/uiPoolDataProviderAbi'
 import { browserStorage } from '../lib/delegationCache'
 import { syncChainFromHashes, type HashSyncClient } from '../lib/hashSync'
 import { positionHashes } from '../lib/aaveTxHashes'
 import { userHistoryQuery } from '../lib/aaveUserHistory'
 import { clearScreened } from '../lib/screenCache'
 import { buildTokenMap, positionTokens, type TokenMeta } from '../lib/tokenMeta'
-
-const RESERVE_STALE_MS = 10 * 60_000
+import type { AvailableReserve } from './useAavePositions'
 
 export interface HistorySyncStatus {
   /** A catch-up scan is in flight on at least one chain. */
@@ -48,15 +46,6 @@ export interface HistorySync {
   status: HistorySyncStatus
   /** Forgets every cursor and re-reads each chain from its deployment block. */
   resync: () => void
-}
-
-/** What a reserve read gives back, reduced to the two questions a history row asks of it. */
-interface ReserveShape {
-  symbol: string
-  decimals: bigint
-  underlyingAsset: Address
-  aTokenAddress: Address
-  variableDebtTokenAddress: Address
 }
 
 interface ChainMeta {
@@ -87,7 +76,16 @@ function syncClient(client: Client): HashSyncClient {
   }
 }
 
-export function useHistorySync(): HistorySync {
+/**
+ * @param reserves     Every reserve on `reservesChainId`, as `useAavePositions` already parsed
+ *                     them. Used only to name what a recovered row moved.
+ * @param reservesChainId The chain those reserves describe — the chain being VIEWED, which is
+ *                     not always the connected one.
+ */
+export function useHistorySync(
+  reserves: readonly AvailableReserve[] = [],
+  reservesChainId?: number,
+): HistorySync {
   const { address: wallet } = useConnection()
   const config = useConfig()
   const queryClient = useQueryClient()
@@ -110,42 +108,31 @@ export function useHistorySync(): HistorySync {
     [connectedChainId],
   )
 
-  const { data: reserveData } = useReadContracts({
-    contracts: chains.map((chain) => ({
-      chainId: chain.chainId,
-      address: getChainConfig(chain.chainId)?.aave.uiPoolDataProvider,
-      abi: uiPoolDataProviderAbi,
-      functionName: 'getReservesData',
-      args: [getChainConfig(chain.chainId)?.aave.poolAddressesProvider],
-    })),
-    query: { enabled: !!wallet && chains.length > 0, staleTime: RESERVE_STALE_MS },
-  })
-
   /**
-   * Token names and position tokens per chain.
+   * Token names and position tokens for the chain being synced.
    *
-   * The panel only ever loads reserves for the chain being VIEWED, so without this a backfilled
-   * Arbitrum row would read "1234567 raw units" against a bare address — and the aToken and
-   * variable-debt rows, which Aave mints straight to the user, would pad every entry with a second
-   * copy of what the position panel already says.
+   * The reserves are HANDED IN rather than read here. This used to issue its own
+   * `getReservesData`, which is the largest response the app asks for — and `useAavePositions`
+   * was already holding a parsed copy of exactly it, fetched at the same moment under a
+   * different query key, so react-query could not collapse the two.
+   *
+   * Only used when they belong to the connected chain: the sync is for the connected WALLET, and
+   * labelling a Base row with Arbitrum's reserves would read as a symbol rather than as the gap
+   * it is. On any other chain this stays empty and `runChain` finds nothing to do.
    */
   const meta = useMemo(() => {
     const byChain = new Map<number, ChainMeta>()
-    chains.forEach((chain, i) => {
-      const result = reserveData?.[i]
-      if (result?.status !== 'success') return
-      const [reserves] = result.result as unknown as [readonly ReserveShape[], unknown]
-      const sources = reserves.map((r) => ({
-        symbol: r.symbol,
-        decimals: Number(r.decimals),
-        underlyingAsset: r.underlyingAsset,
-        aTokenAddress: r.aTokenAddress,
-        variableDebtTokenAddress: r.variableDebtTokenAddress,
-      }))
-      byChain.set(chain.chainId, { tokens: buildTokenMap(sources), hidden: positionTokens(sources) })
-    })
+    if (reservesChainId !== connectedChainId || reserves.length === 0) return byChain
+    const sources = reserves.map((r) => ({
+      symbol: r.symbol,
+      decimals: r.raw.decimals,
+      underlyingAsset: r.underlyingAsset,
+      aTokenAddress: r.aTokenAddress,
+      variableDebtTokenAddress: r.variableDebtTokenAddress,
+    }))
+    byChain.set(connectedChainId, { tokens: buildTokenMap(sources), hidden: positionTokens(sources) })
     return byChain
-  }, [chains, reserveData])
+  }, [reserves, reservesChainId, connectedChainId])
 
   const [status, setStatus] = useState<HistorySyncStatus>({
     scanning: false,

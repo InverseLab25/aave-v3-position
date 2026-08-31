@@ -14,7 +14,7 @@ import {
   toStrategiesSig,
 } from '../../lib/strategies-sdk'
 import { PERMIT_HEADROOM_BPS, SIGNATURE_TTL_S } from '../flip/constants'
-import { FlipError, type FlipInput, type FlipPreview, type FlipStep, type Position } from './types'
+import { FlipError, type FlipInput, type FlipPreview, type FlipStep } from './types'
 
 /**
  * What the send needs from the hook.
@@ -33,7 +33,6 @@ interface FlipSubmitContext {
   walletClient: WalletClient<Transport, Chain, Account> | undefined
   signatures: { current: HeldSignature | null }
   preview: (input: FlipInput) => Promise<FlipPreview>
-  readPosition: (input: FlipInput) => Promise<Position>
   log: (m: string) => void
   setStep: (s: FlipStep) => void
   setExecError: (m: string | null) => void
@@ -55,7 +54,7 @@ export async function submitFlip(
 ): Promise<{ hash: `0x${string}`; receipt: unknown }> {
   const {
     address, chainId, publicClient, walletClient, signatures,
-    preview, readPosition, log, setStep, setExecError,
+    preview, log, setStep, setExecError,
   } = ctx
 
       setExecError(null)
@@ -68,7 +67,10 @@ export async function submitFlip(
         if (!flipper) throw new FlipError('Position flips are not deployed on this chain')
 
         const plan = await preview(input)
-        const pos = await readPosition(input)
+        // The reads the preview already made, not a second round of them: the sizing and the
+        // signatures have to agree on one reading of the position, and asking twice invites
+        // them to disagree as well as costing the round trip.
+        const pos = plan.position
         const now = BigInt(Math.floor(Date.now() / 1000))
         const deadline = now + SIGNATURE_TTL_S
 

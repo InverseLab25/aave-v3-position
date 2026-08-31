@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
   useChainId: vi.fn(),
   useConfig: vi.fn(),
-  useReadContracts: vi.fn(),
   syncChainFromHashes: vi.fn(),
   historyQueryFn: vi.fn(),
   syncableChains: vi.fn(),
@@ -25,7 +24,6 @@ vi.mock('wagmi', () => ({
   useConnection: mocks.useConnection,
   useChainId: mocks.useChainId,
   useConfig: mocks.useConfig,
-  useReadContracts: mocks.useReadContracts,
 }))
 vi.mock('viem/actions', () => ({
   getBlock: vi.fn(),
@@ -52,44 +50,44 @@ vi.mock('../lib/screenCache', async (orig) => ({
 }))
 
 import { useHistorySync } from './useHistorySync'
+import type { AvailableReserve } from './useAavePositions'
 
 const mount = () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   )
-  return renderHook(() => useHistorySync(), { wrapper })
+  return renderHook(() => useHistorySync(reserves, reservesChainId), { wrapper })
 }
 
-/** One reserve, in the shape `getReservesData` answers with. */
+/**
+ * One reserve, as `useAavePositions` hands it over — only the naming fields are read, so the
+ * rest of `AvailableReserve` is left off rather than filled in with numbers nothing looks at.
+ */
 const reserve = {
   symbol: 'WETH',
-  decimals: 18n,
   underlyingAsset: WETH,
   aTokenAddress: A_WETH,
   variableDebtTokenAddress: D_WETH,
-}
+  raw: { decimals: 18 },
+} as unknown as AvailableReserve
 
-function reservesLoaded(chains = 1) {
-  mocks.useReadContracts.mockReturnValue({
-    data: Array.from({ length: chains }, () => ({
-      status: 'success',
-      result: [[reserve], {}],
-    })),
-  })
-}
+/** What the panel passes in. Set per test; the default is one reserve on the connected chain. */
+let reserves: AvailableReserve[] = []
+let reservesChainId: number | undefined
 
 beforeEach(() => {
   vi.clearAllMocks()
   mocks.useConnection.mockReturnValue({ address: WALLET })
   mocks.useChainId.mockReturnValue(8453)
+  reserves = [reserve]
+  reservesChainId = 8453
   mocks.useConfig.mockReturnValue({ chains: [], getClient: () => ({}) })
   mocks.syncChainFromHashes.mockResolvedValue({ examined: 0, found: 0 })
   mocks.historyQueryFn.mockResolvedValue([])
   mocks.syncableChains.mockReturnValue([
     { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
   ])
-  reservesLoaded()
 })
 
 describe('useHistorySync', () => {
@@ -101,7 +99,6 @@ describe('useHistorySync', () => {
       { chainId: 8453, address: STRATEGIES, fromBlock: 49_831_780n },
       { chainId: 42161, address: STRATEGIES, fromBlock: 493_443_506n },
     ])
-    reservesLoaded(2)
 
     mount()
 
@@ -115,7 +112,8 @@ describe('useHistorySync', () => {
       { chainId: 42161, address: STRATEGIES, fromBlock: 493_443_506n },
     ])
     mocks.useChainId.mockReturnValue(42161)
-    reservesLoaded(2)
+    // The panel is showing that chain too, which is what makes its reserves usable here.
+    reservesChainId = 42161
 
     mount()
 
@@ -134,7 +132,7 @@ describe('useHistorySync', () => {
   it('waits for the metadata that makes a recovered row readable', async () => {
     // Without it a backfilled row on a chain the panel is not viewing reads "1234 raw units"
     // against a bare address, and there is no second pass that comes back to name it.
-    mocks.useReadContracts.mockReturnValue({ data: undefined })
+    reserves = []
 
     mount()
 
