@@ -52,6 +52,14 @@ interface NordsternQuote {
   amount: string;
 }
 
+/**
+ * Nordstern attributes API traffic by `Referer`. In the browser this is already handled: the
+ * page's own origin is sent automatically, and `Referer` is a forbidden header name there, so
+ * this object is dropped rather than applied. It is here for a caller outside the browser —
+ * a test, a script, anything on Node — where nothing sets it for us.
+ */
+const ATTRIBUTION = { Referer: 'https://defi-route.siddhnathbrass.in' };
+
 const routeUrl = (chainId: number, q: NordsternQuote, slippage: number, from: string) =>
   `https://api.nordstern.finance/aggregator/${chainId}` +
   `?src=${q.src}&dst=${q.dst}&amount=${q.amount}&from=${from}&slippage=${slippage}`;
@@ -70,7 +78,7 @@ export const nordsternAdapter: Adapter = {
     try {
       const route = await fetchQuoteJson<NordsternRoute>(
         routeUrl(chainId, q, slippage, QUOTE_PLACEHOLDER),
-        { signal },
+        { signal, headers: ATTRIBUTION },
       );
       if (!route?.toAmount) return null;
 
@@ -106,7 +114,10 @@ export const nordsternAdapter: Adapter = {
     if (!guard) throw new Error(`Nordstern: unsupported chain ${chainId}`);
     // Re-asked rather than carried over: the quote was addressed to a placeholder, and the
     // recipient is inside the calldata. Not cacheable for the same reason KyberSwap's build is not.
-    const res = await limitedFetch(routeUrl(chainId, quote.rawQuote as NordsternQuote, slippage, walletAddress));
+    const res = await limitedFetch(
+      routeUrl(chainId, quote.rawQuote as NordsternQuote, slippage, walletAddress),
+      { headers: ATTRIBUTION },
+    );
     if (!res.ok) throw new Error(`Nordstern: build failed (HTTP ${res.status})`);
     const route = (await res.json()) as NordsternRoute;
     if (!route?.tx?.data) throw new Error('Nordstern: build returned no transaction');

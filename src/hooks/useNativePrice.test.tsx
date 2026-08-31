@@ -7,10 +7,17 @@ import { renderHook, waitFor } from '@testing-library/react'
  * price be read against another — a stale ETH figure shown while Polygon is selected would put a
  * sub-cent transaction at ether rates.
  */
-const mocks = vi.hoisted(() => ({ useChainId: vi.fn(), limitedFetch: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+  useChainId: vi.fn(),
+  limitedFetch: vi.fn(),
+  nordsternQuote: vi.fn(),
+}))
 
 vi.mock('wagmi', () => ({ useChainId: mocks.useChainId }))
 vi.mock('../adapters/http', () => ({ limitedFetch: mocks.limitedFetch }))
+// The second price source. Stubbed at the adapter rather than at the network, because that is
+// the seam the hook actually uses — and the adapter is what decides which chains it serves.
+vi.mock('../adapters/nordstern', () => ({ nordsternAdapter: { getQuote: mocks.nordsternQuote } }))
 
 import { useNativePrice } from './useNativePrice'
 
@@ -37,6 +44,9 @@ beforeEach(() => {
   vi.clearAllMocks()
   mocks.useChainId.mockReturnValue(1)
   mocks.limitedFetch.mockResolvedValue(priced(1, WETH_MAINNET, 1890))
+  // Silent by default: the suites below are about the Kyber leg, and a second source answering
+  // underneath them would decide their assertions.
+  mocks.nordsternQuote.mockResolvedValue(null)
 })
 
 afterEach(() => vi.useRealTimers())
@@ -149,6 +159,38 @@ describe('useNativePrice — failure handling', () => {
     expect(result.current).toBeNull()
 
     spy.mockRestore()
+  })
+
+  it('takes the better of the two sources, whichever one it is', async () => {
+    // Both are asked for the same thing — what one native token sells for — so the higher figure
+    // is the better rate. Nordstern answers with a route, hence USDC wei rather than a price.
+    mocks.nordsternQuote.mockResolvedValue({ aggregator: 'Nordstern', amountOut: '1920000000' })
+    const { result } = renderHook(() => useNativePrice(1))
+
+    await waitFor(() => expect(result.current).toBe(1920))
+  })
+
+  it('keeps the price when one source is down and the other answers', async () => {
+    // Halving the number of sources must not cost the caller its price and drop it back to the
+    // Aave oracle — either one alone is a usable figure.
+    mocks.limitedFetch.mockRejectedValue(new Error('price API down'))
+    mocks.nordsternQuote.mockResolvedValue({ aggregator: 'Nordstern', amountOut: '1875500000' })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { result } = renderHook(() => useNativePrice(1))
+
+    await waitFor(() => expect(result.current).toBe(1875.5))
+    expect(spy).toHaveBeenCalled()
+
+    spy.mockRestore()
+  })
+
+  it('ignores a chain Nordstern does not serve rather than zeroing the price', async () => {
+    // The adapter answers null off its own Guard list; that is an absent source, not a price of
+    // zero, and a zero would win nothing but would poison a Math.max that took it literally.
+    mocks.nordsternQuote.mockResolvedValue(null)
+    const { result } = renderHook(() => useNativePrice(1))
+
+    await waitFor(() => expect(result.current).toBe(1890))
   })
 
   it('survives a thrown request', async () => {

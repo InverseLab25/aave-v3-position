@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
+import { formatUnits } from 'viem';
 import { useChainId } from 'wagmi';
 import { limitedFetch } from '../adapters/http';
+import { NATIVE_ADDRESS } from '../adapters/native';
+import { nordsternAdapter } from '../adapters/nordstern';
 
 const POLL_MS = 10_000;
 
@@ -20,6 +23,27 @@ const WRAPPED_NATIVE: Record<number, string> = {
 
 const PRICES_URL = 'https://token-api.kyberswap.com/api/v1/public/tokens/prices';
 
+/** One native token, priced in one unit. `amountIn` is always 1e18 — every native here is 18dp. */
+const ONE_NATIVE = '1000000000000000000';
+
+/**
+ * The stablecoin each chain's native token is priced against, and ITS decimals — which are not
+ * always six on every chain, so the pair is carried together.
+ *
+ * Only used by the sources that have no price endpoint and have to be asked for a route instead.
+ * A per-chain address rather than one reused everywhere, because the "same" stablecoin has a
+ * different address on every chain and several chains carry both a native and a bridged version
+ * that can trade apart. Each entry was confirmed against the live API to return a sane price — a
+ * wrong address does not error, it returns a plausible number for the wrong token.
+ */
+const STABLE: Record<number, { address: string; decimals: number }> = {
+  1: { address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },      // USDT
+  10: { address: '0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85', decimals: 6 },     // USDC
+  137: { address: '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359', decimals: 6 },    // USDC
+  8453: { address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', decimals: 6 },   // USDC
+  42161: { address: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', decimals: 6 },  // USDC
+};
+
 /**
  * The price API answers with both sides of a spread. We take `PriceSell`.
  *
@@ -31,6 +55,66 @@ const PRICES_URL = 'https://token-api.kyberswap.com/api/v1/public/tokens/prices'
 interface PricesResponse {
   code: number;
   data?: Record<string, Record<string, { PriceBuy?: number; PriceSell?: number }>>;
+}
+
+/**
+ * A source that threw is a source that did not answer.
+ *
+ * Caught per source rather than around the pair, so one being down cannot cost us the other's
+ * price — but still reported, because a source that has stopped answering entirely is worth
+ * seeing in a console rather than silently halving where the price comes from.
+ */
+const reportAndSkip = (source: string) => (e: unknown): null => {
+  console.error(`Failed to fetch native price from ${source}`, e);
+  return null;
+};
+
+/**
+ * USD per native from KyberSwap's price endpoint. Null when it does not answer.
+ *
+ * A dedicated price endpoint, not a swap quote. The old version asked for a route from 1 native
+ * into a stablecoin and read the output — which priced gas through whatever liquidity happened
+ * to exist, and spent the swap adapter's rate-limit budget doing it.
+ */
+async function kyberPrice(chainId: number, token: string): Promise<number | null> {
+  const res = await limitedFetch(PRICES_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [chainId]: [token] }),
+  });
+  if (!res.ok) return null;
+  const json = (await res.json()) as PricesResponse;
+  if (json.code !== 0) return null;
+  // Keys come back as the API spelled them, which need not match our casing.
+  const forChain = json.data?.[String(chainId)] ?? {};
+  const entry = Object.entries(forChain)
+    .find(([addr]) => addr.toLowerCase() === token.toLowerCase())?.[1];
+  return entry?.PriceSell ?? null;
+}
+
+/**
+ * USD per native from Nordstern, which publishes no price endpoint — so this IS a swap quote:
+ * one native token into the chain's stablecoin, priced at what the route returns.
+ *
+ * Null on any chain Nordstern does not serve, which the adapter decides for itself by whether it
+ * has a Guard address for that chain. Quoted through the adapter rather than by hand so the
+ * Guard check, the attribution header and the shared rate-limit gate all still apply.
+ */
+async function nordsternPrice(chainId: number): Promise<number | null> {
+  const stable = STABLE[chainId];
+  if (!stable) return null;
+  const quote = await nordsternAdapter.getQuote(
+    { underlyingAsset: NATIVE_ADDRESS, symbol: '', decimals: 18 },
+    { underlyingAsset: stable.address, symbol: '', decimals: stable.decimals },
+    ONE_NATIVE,
+    // Slippage does not touch `toAmount`, which is the pre-slippage output — it only sets the
+    // floor written into calldata this never asks for. Their documented default.
+    0.5,
+    chainId,
+  );
+  if (!quote) return null;
+  const price = Number(formatUnits(BigInt(quote.amountOut), stable.decimals));
+  return price > 0 ? price : null;
 }
 
 /**
@@ -69,25 +153,23 @@ export function useNativePrice(chainId?: number) {
       if (cancelled || inFlight) return;
       inFlight = true;
       try {
-        // A dedicated price endpoint, not a swap quote. The old version asked for a route from
-        // 1 native into a stablecoin and read the output — which priced gas through whatever
-        // liquidity happened to exist, and spent the swap adapter's rate-limit budget doing it.
-        const res = await limitedFetch(PRICES_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ [resolvedChainId]: [token] }),
-        });
-        if (!res.ok) return;
-        const json = (await res.json()) as PricesResponse;
-        // Keys come back as the API spelled them, which need not match our casing.
-        const forChain = json.data?.[String(resolvedChainId)] ?? {};
-        const entry = Object.entries(forChain)
-          .find(([addr]) => addr.toLowerCase() === token.toLowerCase())?.[1];
-        if (!cancelled && json.code === 0 && entry?.PriceSell) {
-          setQuoted({ chainId: resolvedChainId, price: entry.PriceSell });
+        // Asked together, and one failing does not take the other down — either source alone is
+        // a usable price, and dropping both because one 500'd leaves the caller on the oracle.
+        const [kyber, nordstern] = await Promise.all([
+          kyberPrice(resolvedChainId, token).catch(reportAndSkip('KyberSwap')),
+          nordsternPrice(resolvedChainId).catch(reportAndSkip('Nordstern')),
+        ]);
+
+        // The best rate on offer, which for the token you are SPENDING on gas is the highest
+        // figure: it is the most USD anyone will give you for one native token. It also errs in
+        // the safe direction for the callers — a higher native price reserves more for gas in
+        // `maxAmount` and quotes a slightly dearer fee, rather than under-reserving.
+        const best = Math.max(...[kyber, nordstern].filter((p): p is number => p !== null && p > 0));
+        if (!cancelled && Number.isFinite(best)) {
+          setQuoted({ chainId: resolvedChainId, price: best });
         }
       } catch (e) {
-        if (!cancelled) console.error('Failed to fetch native price from Kyberswap', e);
+        if (!cancelled) console.error('Failed to fetch native price', e);
       } finally {
         inFlight = false;
         // Schedule the next poll only once this one has settled. `setInterval` fired on a
