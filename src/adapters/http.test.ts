@@ -156,6 +156,42 @@ describe('fetchQuoteJson', () => {
     expect(cachedQuoteCount()).toBe(1)
   })
 
+  it('stops asking an origin that said it has had enough', async () => {
+    // Being throttled is self-reinforcing: the poll keeps firing, every request is refused, and
+    // the window never gets room to clear. The next ask is refused locally instead.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchQuoteJson(`${KYBER}?amountIn=20`)).rejects.toThrow(AggregatorHttpError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // A different URL on the same origin, so the quote cache cannot be what refuses it.
+    await expect(fetchQuoteJson(`${KYBER}?amountIn=21`)).rejects.toThrow(AggregatorHttpError)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // Another origin is unaffected — one aggregator throttling is not evidence about the rest.
+    await expect(fetchQuoteJson('https://open-api.openocean.finance/v4/base/quote?a=1'))
+      .rejects.toThrow(AggregatorHttpError)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    // And it is a pause, not a ban.
+    await vi.advanceTimersByTimeAsync(16_000)
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 0 }) })
+    await expect(fetchQuoteJson(`${KYBER}?amountIn=22`)).resolves.toEqual({ code: 0 })
+  })
+
+  it('lets a build through even while quotes are backing off', async () => {
+    // A build is a user waiting on an action they took. Refusing it locally to save a request
+    // trades their transaction for our tidiness.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchQuoteJson(`${KYBER}?amountIn=30`)).rejects.toThrow(AggregatorHttpError)
+    await limitedFetch(`${KYBER}/build`, { method: 'POST' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('clearQuoteCache forces the next identical request back to the network', async () => {
     const fetchMock = vi
       .fn()
@@ -209,11 +245,15 @@ describe('HTTP failures are distinguishable from a missing route', () => {
     expect(err.status).toBe(503)
   })
 
-  it('does not cache the failure — the next ask hits the network again', async () => {
+  it('does not cache the failure — a later ask hits the network again', async () => {
+    // The property is that a failed request is never kept as the answer. The wait is the
+    // back-off below, not the cache: asking the same URL the instant after a 429 is refused
+    // locally now, which is the point of it.
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) })
     vi.stubGlobal('fetch', fetchMock)
 
     await fetchQuoteJson(`${KYBER}?amountIn=11`).catch(() => null)
+    await vi.advanceTimersByTimeAsync(16_000)
     await fetchQuoteJson(`${KYBER}?amountIn=11`).catch(() => null)
 
     expect(fetchMock).toHaveBeenCalledTimes(2)

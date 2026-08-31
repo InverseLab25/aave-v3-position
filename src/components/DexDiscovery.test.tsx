@@ -67,6 +67,8 @@ const chainConfig = (over: Record<string, unknown> = {}) => ({
 const positions = (over: Record<string, unknown> = {}) => ({
   suppliedAssets: [],
   borrowedAssets: [],
+  // Where the configured default tokens get a price: they carry none of their own.
+  availableReserves: [],
   isConnected: true,
   chainId: 1,
   ...over,
@@ -194,6 +196,46 @@ describe('DexDiscovery — a quote that outlived its request', () => {
     })
 
     expect(screen.queryByText('BEST RETURN')).toBeNull()
+  })
+})
+
+describe('DexDiscovery — how often it actually asks', () => {
+  it('honours an adapter that wants five seconds between quotes', async () => {
+    vi.useFakeTimers()
+    const getQuote = vi.fn().mockResolvedValue(null)
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'Socket', supportsExecution: true, minQuoteIntervalMs: 5000, getQuote, buildTransaction: vi.fn() },
+    ])
+
+    render(<DexDiscovery />)
+    fireEvent.change(screen.getByPlaceholderText('0.0'), { target: { value: '1' } })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+
+    // Ten seconds of a one-second poll, against a five-second floor.
+    expect(getQuote.mock.calls.length).toBeLessThanOrEqual(3)
+    vi.useRealTimers()
+  })
+})
+
+describe('DexDiscovery — pricing the configured tokens', () => {
+  it('prices a default token off the Aave reserve, and the native token off its wrapper', () => {
+    // The configured defaults carry no price of their own, so every ~$ on this screen read
+    // $0.00 — and an aggregator that derives amountOutUsd from the destination token's price
+    // reported its whole USD column as zero.
+    mocks.useAavePositions.mockReturnValue(
+      positions({
+        availableReserves: [
+          { underlyingAsset: WETH, symbol: 'WETH', priceInUsd: '2500' },
+          { underlyingAsset: DAI, symbol: 'DAI', priceInUsd: '1' },
+        ],
+      }),
+    )
+    render(<DexDiscovery />)
+
+    // ETH is the default sell side and is not an Aave reserve; it takes WETH's price.
+    fireEvent.change(screen.getByPlaceholderText('0.0'), { target: { value: '2' } })
+    expect(screen.getByText('~$5000.00')).toBeTruthy()
   })
 })
 

@@ -69,7 +69,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_1 ?? '') as `0x${string}`,
       flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_1 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Socket', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', decimals: 6 },
@@ -88,7 +88,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_10 ?? '') as `0x${string}`,
       flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_10 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Socket', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607', symbol: 'USDC', decimals: 6 },
@@ -107,7 +107,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       strategies: (import.meta.env.VITE_STRATEGIES_ADDRESS_137 ?? '') as `0x${string}`,
       flipper: (import.meta.env.VITE_FLIPPER_ADDRESS_137 ?? '') as `0x${string}`,
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Socket', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', symbol: 'WPOL', decimals: 18 },
       { underlyingAsset: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174', symbol: 'USDC', decimals: 6 },
@@ -131,7 +131,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       // contract/broadcast/DeployStrategies.s.sol/8453/run-latest.json
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_8453, 49_831_780n),
     },
-    adapters: ['KyberSwap', 'Nordstern', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Nordstern', 'Socket', 'OpenOcean', 'ParaSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 },
@@ -153,7 +153,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       // because deployment goes through CREATE2.
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_42161, 493_443_506n),
     },
-    adapters: ['KyberSwap', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Socket', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', symbol: 'USDC', decimals: 6 },

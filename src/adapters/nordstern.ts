@@ -1,4 +1,4 @@
-import type { Adapter, QuoteResponse, TransactionPayload } from './types';
+import type { Adapter, QuoteResponse, RouteHop, TransactionPayload } from './types';
 import { fetchQuoteJson, limitedFetch } from './http';
 
 /**
@@ -36,14 +36,48 @@ const GUARDS: Record<number, string> = {
  */
 const QUOTE_PLACEHOLDER = '0x0000000000000000000000000000000000000000';
 
+/** One leg of one path, as Nordstern names it. `type` is the venue ("uniswap_v4", …). */
+interface NordsternLeg {
+  tokenIn: string;
+  tokenOut: string;
+  amountIn: string;
+  type?: string;
+  pool?: string;
+}
+
+/** One path of the split, with the share of the input it takes. */
+interface NordsternSwap {
+  amountIn: string;
+  route?: NordsternLeg[];
+}
+
 /** The subset of the response this adapter reads. */
 interface NordsternRoute {
   toAmount: string;
   minToAmount?: string;
   gasEstimate?: string;
-  swaps?: unknown[];
+  swaps?: NordsternSwap[];
   tx?: { to: string; data: string; value: string | number };
 }
+
+/**
+ * Nordstern's split, in the shape the route panel already renders for KyberSwap.
+ *
+ * Each `swaps` entry is one path and carries its own share of the input, which is what the
+ * panel's percentage is derived from; each leg inside it names the venue and the pair.
+ */
+const toPaths = (swaps: NordsternSwap[] | undefined): RouteHop[][] =>
+  (swaps ?? []).map((path) =>
+    (path.route ?? []).map((leg) => ({
+      tokenIn: leg.tokenIn,
+      tokenOut: leg.tokenOut,
+      // The PATH's input on the first leg, so the percentage reads against the whole trade the
+      // way Kyber's does; every later leg carries its own.
+      swapAmount: leg.amountIn,
+      exchange: leg.type,
+      poolType: leg.pool,
+    })),
+  );
 
 /** What `buildTransaction` needs to re-ask for the same route, addressed to the real caller. */
 interface NordsternQuote {
@@ -100,7 +134,11 @@ export const nordsternAdapter: Adapter = {
         gasUsd: '0',
         netReturnUsd: amountOutUsd,
         rawQuote: q,
-        routeDetails: { type: 'nordstern', hops: route.swaps?.length ?? 0 },
+        routeDetails: {
+          type: 'nordstern',
+          totalAmountIn: BigInt(amountIn),
+          paths: toPaths(route.swaps),
+        },
       };
     } catch (e) {
       // An abort is the caller withdrawing interest, not a fault. Same reading as KyberSwap's.

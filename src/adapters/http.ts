@@ -70,6 +70,18 @@ function acquireSlot(url: string): Promise<void> {
 }
 
 /**
+ * How long an origin is left alone after it says it has had enough.
+ *
+ * Being throttled is self-reinforcing: the poll keeps firing, every request is refused, and the
+ * window never gets a chance to clear. Long enough to actually stop asking, short enough that a
+ * user who set an amount down and came back finds prices moving again.
+ */
+const COOLDOWN_MS = 15_000
+
+/** Origins that refused, and the moment they may be asked again. */
+const cooldowns = new Map<string, number>()
+
+/**
  * An aggregator answered, but not with a quote — a rate limit, an outage, a rejected request.
  *
  * Worth its own type because the alternative is indistinguishable from "this pair has no
@@ -96,7 +108,13 @@ export class AggregatorHttpError extends Error {
 
 /** Parsed JSON, or a typed failure. A non-2xx body is never worth parsing as a quote. */
 async function okJson<T>(res: Response, url: string): Promise<T> {
-  if (!res.ok) throw new AggregatorHttpError(res.status, url)
+  if (!res.ok) {
+    const error = new AggregatorHttpError(res.status, url)
+    // Only for the refusals that asking again could fix. A 400 is a bad request and will be
+    // just as bad in fifteen seconds; a 429 or a 5xx is the endpoint asking for room.
+    if (error.retryable) cooldowns.set(originOf(url), Date.now() + COOLDOWN_MS)
+    throw error
+  }
   return res.json() as Promise<T>
 }
 
@@ -160,6 +178,16 @@ export function fetchQuoteJson<T = unknown>(url: string, init?: RequestInit): Pr
   const signal = init?.signal
   // Nothing to spend a rate-limit slot on: the caller stopped caring before it asked.
   if (signal?.aborted) return Promise.reject(abortError())
+
+  // This origin asked for room and has not had it yet. Refused here rather than on the wire, so
+  // a polling screen stops adding to the queue that is keeping the window shut. Deliberately
+  // NOT applied to `limitedFetch`: a build is a user waiting on an action, and letting it try
+  // is worth more than the request it spends.
+  const until = cooldowns.get(originOf(url))
+  if (until !== undefined) {
+    if (Date.now() < until) return Promise.reject(new AggregatorHttpError(429, url))
+    cooldowns.delete(originOf(url))
+  }
 
   const now = Date.now()
   const hit = quoteCache.get(url)
@@ -238,4 +266,5 @@ export function clearQuoteCache(): void {
 export function resetHttpGate(): void {
   quoteCache.clear()
   buckets.clear()
+  cooldowns.clear()
 }

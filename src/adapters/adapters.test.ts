@@ -26,6 +26,7 @@ import { isNativeAddress, NATIVE_ADDRESS, NATIVE_ZERO_ADDRESS } from './native'
 import { allAdapters, getAdaptersForChain } from './index'
 import { isSmartSettlement, kyberSwapAdapter } from './kyberswap'
 import { nordsternAdapter } from './nordstern'
+import { socketAdapter } from './socket'
 
 describe('native sentinel', () => {
   it('recognises the canonical sentinel whatever its casing', () => {
@@ -401,7 +402,166 @@ describe('Nordstern — the Guard check', () => {
     expect(tx.spender).toBe(tx.to)
   })
 
+  it('reports the split the way the route panel already renders one', async () => {
+    // Trimmed from a live Base response: two paths, 95.6% through one pool and 4.4% through
+    // three. `hops: n` said nothing the panel could draw, so the fold rendered empty.
+    mocks.fetchQuoteJson.mockResolvedValue({
+      toAmount: '2472325837',
+      gasEstimate: '280263',
+      swaps: [
+        {
+          amountIn: '956277194740797864',
+          route: [{
+            tokenIn: WETH_B.underlyingAsset, tokenOut: USDC_B.underlyingAsset,
+            amountIn: '956277194740797824', type: 'elfomofi', pool: '0xc1b1',
+          }],
+        },
+        {
+          amountIn: '43722805259202136',
+          route: [
+            { tokenIn: WETH_B.underlyingAsset, tokenOut: '0xEeee', amountIn: '43722805259202136', type: 'native_wrapping' },
+            { tokenIn: '0xEeee', tokenOut: '0xcbB7', amountIn: '43722775822343824', type: 'uniswap_v4' },
+            { tokenIn: '0xcbB7', tokenOut: USDC_B.underlyingAsset, amountIn: '136952', type: 'elfomofi' },
+          ],
+        },
+      ],
+    })
+
+    const q = await nordsternAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)
+    const details = q?.routeDetails
+    if (details?.type !== 'nordstern') throw new Error('expected a nordstern split')
+
+    expect(details.totalAmountIn).toBe(1000000000000000000n)
+    expect(details.paths.map((p) => p.length)).toEqual([1, 3])
+    // The share the panel prints, taken off the first leg of each path.
+    expect(details.paths.map((p) => Number((BigInt(p[0].swapAmount) * 10000n) / details.totalAmountIn) / 100))
+      .toEqual([95.62, 4.37])
+    expect(details.paths[1][1].exchange).toBe('uniswap_v4')
+  })
+
   it('does not quote on a chain with no Guard listed', async () => {
     expect(await nordsternAdapter.getQuote(USDC_B, WETH_B, '1000000000', 0.5, 1)).toBeNull()
+  })
+})
+
+describe('Socket — same-chain routing', () => {
+  const WETH_B = { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 }
+  const USDC_B = { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 }
+  const ALLOWANCE_HOLDER = '0x50c4E75a512F2A14A7b304787Adf79C4531A5909'
+
+  /** One route, in the shape `/v3/swap/quote` answers with. */
+  const route = (over: Record<string, unknown> = {}) => ({
+    expiresAt: Math.floor(Date.now() / 1000) + 60,
+    output: { amount: '2472325837', valueInUsd: 2472.32 },
+    routeDetails: { dexDetails: { protocol: { displayName: 'Kyberswap' } } },
+    approval: { spenderAddress: ALLOWANCE_HOLDER },
+    txData: { kind: 'evm_tx', object: { to: ALLOWANCE_HOLDER, data: '0xfeed', value: '0' } },
+    gasFee: { gasLimit: '650000', feeInUsd: 0.01 },
+    ...over,
+  })
+
+  const quoted = { aggregator: 'Socket', rawQuote: {
+    chainId: 8453,
+    inputToken: WETH_B.underlyingAsset,
+    outputToken: USDC_B.underlyingAsset,
+    inputAmount: '1000000000000000000',
+  } } as never
+
+  beforeEach(() => vi.clearAllMocks())
+
+  it('takes the route with the most output, not the one listed first', async () => {
+    // Socket returns several and tags its own favourite; this app ranks every aggregator on
+    // output, so it picks on the same basis inside Socket as it does across the others.
+    mocks.fetchQuoteJson.mockResolvedValue({
+      success: true,
+      result: {
+        input: { amount: '1000000000000000000', valueInUsd: 2475 },
+        routes: [route(), route({ output: { amount: '2480000000', valueInUsd: 2480 } })],
+      },
+    })
+
+    const q = await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)
+
+    expect(q?.amountOut).toBe('2480000000')
+    // Both sides priced, so the route-cost percentage has something to work with.
+    expect(q?.rawAmountInUsd).toBe('2475')
+    expect(q?.rawAmountOutUsd).toBe('2480')
+  })
+
+  it('quotes same-chain only, with the caller on both ends of the trade', async () => {
+    mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route()] } })
+
+    await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)
+
+    const url = mocks.fetchQuoteJson.mock.calls[0][0] as string
+    expect(url).toContain('originChainId=8453')
+    expect(url).toContain('destinationChainId=8453')
+    // A decimal percentage, not basis points.
+    expect(url).toContain('slippage=0.5')
+    // Socket simulates each DEX route and drops the reverting ones.
+    expect(url).toContain('simulatedQuotesRequired=true')
+    expect(url).toContain('quoteType=EXACT_INPUT')
+  })
+
+  it('reads the routes out of the envelope the live API actually returns', async () => {
+    // The published example shows a bare object; the API wraps it in { success, result }.
+    // Reading the top level found nothing, so the adapter answered null on every call and
+    // Socket simply never appeared in the list.
+    mocks.fetchQuoteJson.mockResolvedValue({ routes: [route()] })
+    expect(await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)).toBeNull()
+
+    mocks.fetchQuoteJson.mockResolvedValue({ success: true, result: { routes: [route()] } })
+    const q = await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)
+    expect(q?.amountOut).toBe('2472325837')
+    // Socket routes through other aggregators; the row names the one underneath.
+    expect(q?.routeDetails).toMatchObject({ type: 'socket', info: 'Kyberswap' })
+  })
+
+  it('does not quote on a chain Socket does not serve', async () => {
+    expect(await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 999)).toBeNull()
+    expect(mocks.fetchQuoteJson).not.toHaveBeenCalled()
+  })
+
+  it('approves the contract it calls, which is what makes the route executable at all', async () => {
+    // Socket wraps the router call inside the AllowanceHolder's calldata, so the approval target
+    // and the call target are one address. `validateSwapTx` rejects a build where they differ.
+    mocks.limitedFetch.mockResolvedValue({ ok: true, json: async () => ({ result: { routes: [route()] } }) })
+
+    const tx = await socketAdapter.buildTransaction(quoted, 0.5, ALLOWANCE_HOLDER, 8453)
+
+    expect(tx.to).toBe(ALLOWANCE_HOLDER)
+    expect(tx.spender).toBe(tx.to)
+  })
+
+  it('needs no approval target of its own when the input is the native token', async () => {
+    mocks.limitedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { routes: [route({ approval: null })] } }),
+    })
+
+    const tx = await socketAdapter.buildTransaction(quoted, 0.5, ALLOWANCE_HOLDER, 8453)
+
+    expect(tx.spender).toBe(tx.to)
+  })
+
+  it('refuses an expired route rather than letting the chain charge for it', async () => {
+    mocks.limitedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { routes: [route({ expiresAt: Math.floor(Date.now() / 1000) - 1 })] } }),
+    })
+
+    await expect(socketAdapter.buildTransaction(quoted, 0.5, ALLOWANCE_HOLDER, 8453))
+      .rejects.toThrow(/expired/)
+  })
+
+  it('refuses anything that is not a plain EVM transaction', async () => {
+    // Socket also answers for Solana, Sui, Tron and Bitcoin, none of which this app can submit.
+    mocks.limitedFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ result: { routes: [route({ txData: { kind: 'svm_instructions', object: { to: 'x', data: '0x1', value: '0' } } })] } }),
+    })
+
+    await expect(socketAdapter.buildTransaction(quoted, 0.5, ALLOWANCE_HOLDER, 8453))
+      .rejects.toThrow(/not an EVM transaction/)
   })
 })

@@ -6,8 +6,13 @@ export interface Asset {
   amount?: number;
 }
 
-/** One hop of a KyberSwap split route. */
-export interface KyberHop {
+/**
+ * One hop of a split route.
+ *
+ * KyberSwap's own shape, adopted by any aggregator that reports its path in the same terms —
+ * Nordstern maps onto it exactly, so the two share a renderer rather than growing a second one.
+ */
+export interface RouteHop {
   tokenIn: string;
   tokenOut: string;
   swapAmount: string;
@@ -23,10 +28,9 @@ export interface KyberHop {
  * panel type-safe without an escape hatch.
  */
 export type RouteDetails =
-  | { type: 'kyber'; totalAmountIn: bigint; paths: KyberHop[][] }
+  | { type: 'kyber' | 'nordstern'; totalAmountIn: bigint; paths: RouteHop[][] }
   | { type: 'odos-defillama' }
-  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap'; info: string }
-  | { type: 'nordstern'; hops: number };
+  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap' | 'socket'; info: string };
 
 export interface QuoteResponse {
   aggregator: string;
@@ -90,6 +94,14 @@ export interface Adapter {
   name: string;
   /** Whether this adapter supports on-chain execution (CowSwap = false) */
   supportsExecution: boolean;
+  /**
+   * Shortest gap between quotes the streaming screen may ask for, in ms. Default 1000.
+   *
+   * A property of the endpoint rather than of the caller: OpenOcean and Socket's public backend
+   * both answer a per-second poll with 429s, and the shared HTTP gate cannot help — it meters
+   * per origin against OUR budget, and these limits are shared with everyone else using them.
+   */
+  minQuoteIntervalMs?: number;
   /** `signal` aborts a superseded request so it stops consuming the aggregator. */
   getQuote: (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number, signal?: AbortSignal) => Promise<QuoteResponse | null>;
   buildTransaction: (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number) => Promise<TransactionPayload>;

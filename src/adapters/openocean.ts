@@ -24,6 +24,8 @@ interface OpenOceanQuote {
 export const openOceanAdapter: Adapter = {
   name: 'OpenOcean',
   supportsExecution: true,
+  /** Was a name check inside the streaming screen; it belongs to the endpoint, not the caller. */
+  minQuoteIntervalMs: 5_000,
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number): Promise<QuoteResponse | null> => {
     try {
       const chainStr = getOpenOceanChain(chainId);

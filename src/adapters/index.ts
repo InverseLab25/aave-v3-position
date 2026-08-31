@@ -3,6 +3,7 @@ import { kyberSwapAdapter } from './kyberswap';
 import { nordsternAdapter } from './nordstern';
 import { openOceanAdapter } from './openocean';
 import { paraSwapAdapter } from './paraswap';
+import { socketAdapter } from './socket';
 import { cowSwapAdapter } from './cowswap';
 // import { odosAdapter } from './odos';
 import { zeroxAdapter } from './zerox';
@@ -12,6 +13,7 @@ export const allAdapters: Adapter[] = [
   nordsternAdapter,
   openOceanAdapter,
   paraSwapAdapter,
+  socketAdapter,
   cowSwapAdapter,
   // odosAdapter,
   zeroxAdapter

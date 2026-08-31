@@ -1,4 +1,4 @@
-import type { Adapter, Asset, KyberHop, QuoteResponse, TransactionPayload } from './types';
+import type { Adapter, Asset, RouteHop, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 import { AggregatorHttpError, fetchQuoteJson, limitedFetch } from './http';
 
@@ -12,7 +12,7 @@ const KYBER_CLIENT_ID = 'defi-route';
  * where {@link GAS_LIMIT_BUFFER_PERCENT} comes from. Every Base route measured so far is true,
  * so nothing branches on it yet; it is here to display and for the chain where it is false.
  */
-export const isSmartSettlement = (route: KyberHop[][]): boolean =>
+export const isSmartSettlement = (route: RouteHop[][]): boolean =>
   route.some((path) => path.some((hop) => Boolean(hop.extra?._ce)));
 
 /** The subset of `/routes` this adapter reads. `routeSummary` is replayed verbatim into /route/build. */
@@ -26,7 +26,7 @@ interface KyberRoutesResponse {
       amountOutUsd: string;
       gas: string;
       gasUsd: string;
-      route: KyberHop[][];
+      route: RouteHop[][];
     };
   };
 }

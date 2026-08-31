@@ -6,12 +6,12 @@ import { getAdaptersForChain } from '../adapters';
 import { NATIVE_ADDRESS, isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
 import { ConfirmSwapModal } from './ConfirmSwapModal';
-import type { Asset, QuoteResponse, TransactionPayload, KyberHop } from '../adapters';
+import type { Asset, QuoteResponse, TransactionPayload, RouteHop } from '../adapters';
 
 type Token = Asset & { source?: 'supplied' | 'borrowed' | 'default' };
 
 export function DexDiscovery() {
-  const { suppliedAssets, borrowedAssets, isConnected, chainId } = useAavePositions();
+  const { suppliedAssets, borrowedAssets, availableReserves, isConnected, chainId } = useAavePositions();
   const { address, chain } = useConnection();
   const chainConfig = getChainConfig(chainId);
 
@@ -19,8 +19,23 @@ export function DexDiscovery() {
     return getAdaptersForChain(chainConfig?.adapters ?? []);
   }, [chainConfig]);
 
+  /**
+   * Aave's oracle price per underlying, keyed by lower-cased address.
+   *
+   * The configured default tokens carry no price of their own, so every `~$` on this screen read
+   * $0.00 unless the user happened to hold that asset in Aave — and an aggregator that reports no
+   * USD figures of its own (Nordstern) derives `amountOutUsd` from the destination token's price,
+   * so its whole USD column read as zero.
+   */
+  const priceOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of availableReserves) map.set(r.underlyingAsset.toLowerCase(), r.priceInUsd);
+    return map;
+  }, [availableReserves]);
+
   const defaultTokens = useMemo<Token[]>(() => {
-    const base = (chainConfig?.defaultTokens ?? []).map(t => ({ ...t, source: 'default' as const }));
+    const priced = (t: Asset) => ({ ...t, priceInUsd: priceOf.get(t.underlyingAsset.toLowerCase()) });
+    const base = (chainConfig?.defaultTokens ?? []).map(t => ({ ...priced(t), source: 'default' as const }));
     // Expose the chain's native currency (ETH/BNB/POL/…) as a first-class swap token,
     // but only where swaps are actually supported. The native symbol/decimals come from
     // the connected chain, falling back to the wrapped-native default (WETH → ETH).
@@ -29,9 +44,17 @@ export function DexDiscovery() {
       ?? chainConfig.defaultTokens?.[0]?.symbol?.replace(/^W/, '')
       ?? 'ETH';
     const nativeDecimals = chain?.nativeCurrency?.decimals ?? 18;
-    const nativeToken: Token = { underlyingAsset: NATIVE_ADDRESS, symbol: nativeSymbol, decimals: nativeDecimals, source: 'default' };
+    const nativeToken: Token = {
+      underlyingAsset: NATIVE_ADDRESS,
+      symbol: nativeSymbol,
+      decimals: nativeDecimals,
+      // The native token is not an Aave reserve, but its wrapper is and they trade at par —
+      // which is the same assumption the symbol above already makes of `defaultTokens[0]`.
+      priceInUsd: base[0]?.priceInUsd,
+      source: 'default',
+    };
     return [nativeToken, ...base];
-  }, [chainConfig, chain]);
+  }, [chainConfig, chain, priceOf]);
 
   // Merge Aave positions with default tokens, deduped by address
   const allFromTokens = useMemo<Token[]>(() => {
@@ -71,7 +94,14 @@ export function DexDiscovery() {
   const [amountStr, setAmountStr] = useState<string>('');
   const [slippage, setSlippage] = useState<number>(0.1);
   const [quoteMap, setQuoteMap] = useState<Record<string, QuoteResponse | null>>({});
-  const [, setErrors] = useState<Record<string, string>>({});
+  /**
+   * Why an aggregator has no card, keyed by name.
+   *
+   * These were collected and thrown away, so an aggregator that was rate-limited or down simply
+   * vanished from the list — indistinguishable from one that had no route for the pair, and with
+   * nothing on screen to say which.
+   */
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [builtTxs, setBuiltTxs] = useState<Record<string, TransactionPayload>>({});
   const [isBuildingTx, setIsBuildingTx] = useState<Record<string, boolean>>({});
 
@@ -171,7 +201,9 @@ export function DexDiscovery() {
       if (fetchingRef.current[adapter.name]) return;
 
       const lastFetch = lastFetchRef.current[adapter.name] || 0;
-      const throttleMs = adapter.name === 'OpenOcean' ? 5000 : 1000;
+      // The adapter's own floor where it has one — a fact about its endpoint's quota rather
+      // than about this screen, and it was a growing list of names here.
+      const throttleMs = adapter.minQuoteIntervalMs ?? 1000;
       if (now - lastFetch < throttleMs - 100) return; // Allow 100ms jitter
 
       lastFetchRef.current[adapter.name] = now;
@@ -273,13 +305,20 @@ export function DexDiscovery() {
   useEffect(() => {
     if (!activeAggregator || swapStarted) return;
     const tick = () => refreshActiveQuoteRef.current();
+    // Never faster than the aggregator's own floor. This path bypasses the per-adapter throttle
+    // in `fetchAllQuotes` entirely, so on an endpoint that wants five seconds between quotes it
+    // was asking every two — and building on top of that.
+    const every = Math.max(
+      adapters.find((a) => a.name === activeAggregator)?.minQuoteIntervalMs ?? 0,
+      2000,
+    );
     const kickoff = setTimeout(tick, 0);
-    const id = setInterval(tick, 2000);
+    const id = setInterval(tick, every);
     return () => {
       clearTimeout(kickoff);
       clearInterval(id);
     };
-  }, [activeAggregator, swapStarted]);
+  }, [activeAggregator, swapStarted, adapters]);
 
   const clearTx = (aggregatorName: string) => {
     setSwapStarted(false); // reopening a fresh review — allow auto-refresh again
@@ -504,17 +543,23 @@ export function DexDiscovery() {
                 </div>
               )}
 
-              {isValidInput && !isTxActive && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', fontSize: '14px', color: '#16a34a' }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#16a34a', animation: 'pulse 1.5s infinite' }}></div>
-                  Live Streaming Quotes...
-                </div>
-              )}
-
               {isValidInput && isTxActive && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px', fontSize: '14px', color: '#d97706' }}>
                   <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: '#d97706' }}></div>
                   Live streaming paused — executing transaction.
+                </div>
+              )}
+
+              {/* Named rather than silently absent. An aggregator refusing is a fact about the
+                  aggregator; having no route is a fact about the pair, and they read the same
+                  way when both are just a missing card. */}
+              {Object.keys(errors).length > 0 && (
+                <div style={{ marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {Object.entries(errors).map(([name, message]) => (
+                    <div key={name} style={{ fontSize: '12px', color: '#9ca3af' }}>
+                      {name}: {/429|rate/i.test(message) ? 'rate limited, backing off' : message}
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -535,60 +580,70 @@ export function DexDiscovery() {
 
                     return (
                       <div key={route.aggregator} style={{
-                        padding: '20px',
+                        padding: '12px 14px',
                         border: isBest ? '2px solid var(--success-color)' : '1px solid var(--border-color)',
                         borderRadius: '8px',
                         backgroundColor: isBest ? '#f0fdf4' : '#fafafa',
                         position: 'relative'
                       }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                          <div style={{ fontWeight: 'bold', fontSize: '18px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <div style={{ fontWeight: 'bold', fontSize: '15px' }}>
                             {route.aggregator}
                             {isBest && <span style={{ marginLeft: '10px', fontSize: '12px', backgroundColor: 'var(--success-color)', color: 'white', padding: '3px 8px', borderRadius: '12px' }}>BEST RETURN</span>}
                             {!canExecute && <span style={{ marginLeft: '10px', fontSize: '11px', backgroundColor: '#6b7280', color: 'white', padding: '2px 6px', borderRadius: '4px' }}>Quote Only</span>}
                           </div>
                         </div>
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '10px' }}>
                           <div>
                             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>You Pay</div>
-                            <div style={{ fontSize: '16px', fontWeight: 'bold' }}>
+                            <div style={{ fontSize: '15px', fontWeight: 'bold' }}>
                               {Number(formatUnits(BigInt(route.amountIn), fromAsset.decimals)).toFixed(6)} {fromAsset.symbol}
                             </div>
                           </div>
 
                           <div>
                             <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>You Receive</div>
-                            <div style={{ fontSize: '16px', fontWeight: 'bold', color: isBest ? 'var(--success-color)' : 'var(--text-primary)' }}>
+                            <div style={{ fontSize: '15px', fontWeight: 'bold', color: isBest ? 'var(--success-color)' : 'var(--text-primary)' }}>
                               {Number(formatUnits(BigInt(route.amountOut), toAsset.decimals)).toFixed(6)} {toAsset.symbol}
                             </div>
-                            <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>~${Number(route.amountOutUsd).toFixed(2)}</div>
-                            <div style={{ fontSize: '11px', color: '#6b7280', marginTop: '6px', fontWeight: '500' }}>
-                              Min Output: {minOutputFormatted} {toAsset.symbol}
+                            <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                              ~${Number(route.amountOutUsd).toFixed(2)} · min {minOutputFormatted} {toAsset.symbol}
                             </div>
                           </div>
                         </div>
 
-                        <div style={{ display: 'flex', gap: '15px', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '15px', padding: '10px', backgroundColor: '#fff', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                          <div>⛽ Gas Est: <strong style={{ color: '#dc2626' }}>-${Number(route.gasUsd).toFixed(2)}</strong></div>
-                        </div>
 
+                        {/* Folded away by default. A split route is a dozen lines of hops nobody
+                            reads while comparing aggregators, and it pushed the Execute button
+                            off the card. `<details>` rather than a state flag: the browser gives
+                            the toggle, the keyboard handling and the disclosure marker for free. */}
                         {route.routeDetails && (
-                          <div style={{ marginBottom: '15px' }}>
-                            <div style={{ fontSize: '11px', fontWeight: 'bold', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>Route Details</div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <details style={{ marginBottom: '10px' }}>
+                            <summary style={{ fontSize: '11px', fontWeight: 'bold', color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer' }}>
+                              Route Details
+                              {/* Only where the aggregator actually priced its own gas. Several
+                                  report none and carry '0', and "-$0.00" beside a rival's
+                                  "-$0.12" reads as free rather than as unreported. */}
+                              {Number(route.gasUsd) > 0 && (
+                                <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400, marginLeft: '8px' }}>
+                                  ⛽ <strong style={{ color: '#dc2626' }}>-${Number(route.gasUsd).toFixed(2)}</strong>
+                                </span>
+                              )}
+                            </summary>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
 
-                              {route.routeDetails.type === 'kyber' && (() => {
+                              {(route.routeDetails.type === 'kyber' || route.routeDetails.type === 'nordstern') && (() => {
                                 // Bind the narrowed union member: TypeScript drops narrowing on a
                                 // property access once it crosses into a callback, but keeps it on
                                 // an immutable local.
-                                const kyber = route.routeDetails;
+                                const split = route.routeDetails;
                                 return (
                                 <>
-                                  {kyber.paths.map((path: KyberHop[], pathIdx: number) => {
+                                  {split.paths.map((path: RouteHop[], pathIdx: number) => {
                                     const firstHop = path[0];
                                     const pathAmountIn = BigInt(firstHop.swapAmount);
-                                    const totalAmountIn: bigint = kyber.totalAmountIn;
+                                    const totalAmountIn: bigint = split.totalAmountIn;
                                     const percentage = totalAmountIn > 0n
                                       ? Number((pathAmountIn * 10000n) / totalAmountIn) / 100
                                       : 100;
@@ -619,13 +674,13 @@ export function DexDiscovery() {
                                 );
                               })()}
 
-                              {(route.routeDetails.type === 'openocean' || route.routeDetails.type === 'paraswap' || route.routeDetails.type === 'cowswap') && (
+                              {(route.routeDetails.type === 'openocean' || route.routeDetails.type === 'paraswap' || route.routeDetails.type === 'cowswap' || route.routeDetails.type === 'socket') && (
                                 <div style={{ fontSize: '13px', color: '#4b5563' }}>
                                   100% ➔ <span style={{ backgroundColor: '#f3f4f6', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>{route.routeDetails.info}</span>
                                 </div>
                               )}
                             </div>
-                          </div>
+                          </details>
                         )}
 
                         {/* Swap Execution Area */}
