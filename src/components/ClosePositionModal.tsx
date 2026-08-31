@@ -13,6 +13,7 @@ import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePla
 import { simulateAndWrite } from '../utils/contract'
 import { Modal } from './Modal'
 import { TxReport } from './TxReport'
+import { RoutePicker } from './RoutePicker'
 import { SlippageField } from './leverage/SlippageField'
 import { T, MODAL_WIDTH } from '../styles/theme'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
@@ -114,6 +115,11 @@ export function ClosePositionModal({
   const [isComplete, setIsComplete] = useState<boolean>(false)
 
   const [preview, setPreview] = useState<ClosePreview | null>(null)
+  /**
+   * The aggregator the user pinned in the route list, or null while the ranking decides. Held
+   * across re-quotes on purpose — a pin overrides the ranking until it is taken off.
+   */
+  const [pinnedRoute, setPinnedRoute] = useState<string | null>(null)
   /** Why the preview could not be produced — paused contract, empty router allowlist, etc. */
   const [previewError, setPreviewError] = useState<{ kind: CloseErrorKind; message: string } | null>(null)
   /**
@@ -240,6 +246,7 @@ export function ClosePositionModal({
           slippagePercent: slippage,
           collateralIn,
           debtIn,
+          preferredAggregator: pinnedRoute ?? undefined,
           signal: controller.signal,
         })
         if (isMounted) { setPreview(p.preview); setPreviewError(p.error) }
@@ -255,7 +262,7 @@ export function ClosePositionModal({
       clearTimeout(timeout)
       controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, isSameAsset, closeAvailable, quotePreview, refreshTick])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, pinnedRoute, isSameAsset, closeAvailable, quotePreview, refreshTick])
 
   // Ticks only while an approval is held. Everything it writes happens inside the interval
   // callback, so the countdown never sets state as a render side effect.
@@ -354,6 +361,9 @@ export function ClosePositionModal({
       slippagePercent: slippage,
       collateralIn,
       debtIn,
+      // Same pin the preview was priced under, or the user signs for a route they were never
+      // shown — `close()` re-plans from scratch and would otherwise take the ranking's winner.
+      preferredAggregator: pinnedRoute ?? undefined,
     })
     if (result.hash) setTxHash(result.hash as `0x${string}`)
     if (result.status === 'signed') {
@@ -415,14 +425,31 @@ export function ClosePositionModal({
   //
   // Paused while a close is running: a re-quote landing mid-flow would move the figures under
   // the user and spend rate-limit budget the execution path needs.
+  //
+  // Held while the tab is hidden. Browsers throttle a background timer rather than stopping it,
+  // so left alone this keeps asking the slowest endpoint in the app for prices nobody can see,
+  // roughly once a minute, for as long as the modal stays open. The re-quote is re-armed the
+  // moment the tab is looked at again — which is also the first moment a stale price could be
+  // read — so nothing is lost by holding it.
   useEffect(() => {
     if (isSameAsset || !closeAvailable || !selectedCollateral) return
     if (isProcessing || isQuoting) return
-    const id = setTimeout(() => {
+
+    const requote = () => {
       clearQuoteCache()
       setRefreshTick((t) => t + 1)
-    }, QUOTE_REFRESH_MS)
-    return () => clearTimeout(id)
+    }
+    const visible = () => document.visibilityState === 'visible'
+    const id = visible() ? setTimeout(requote, QUOTE_REFRESH_MS) : undefined
+    const onVisibilityChange = () => {
+      if (visible()) requote()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
+    return () => {
+      clearTimeout(id)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
   /**
    * Where a partial close leaves the account's health factor.
@@ -795,6 +822,19 @@ export function ClosePositionModal({
                   ↻ {isQuoting ? 'Pricing…' : 'Refresh'}
                 </button>
               </div>
+              {/* Above the numbers, because pinning re-prices every one of them. Renders nothing
+                  until more than one aggregator has answered. */}
+              {preview && (
+                <div style={{ marginBottom: T.space[3] }}>
+                  <RoutePicker
+                    routes={preview.routes}
+                    symbol={preview.debtSymbol}
+                    pinned={pinnedRoute}
+                    onPin={setPinnedRoute}
+                    disabled={isQuoting}
+                  />
+                </div>
+              )}
               {preview && preview.covered ? (
                 <div style={{
                   padding: T.space[3], background: T.surfaceAlt,

@@ -89,6 +89,7 @@ const okPreview = (over: Record<string, unknown> = {}) => ({
   covered: true,
   guaranteed: true,
   aggregator: 'KyberSwap',
+  routes: [],
   collateralSymbol: 'WETH',
   debtSymbol: 'USDC',
   debtRepaid: '20000',

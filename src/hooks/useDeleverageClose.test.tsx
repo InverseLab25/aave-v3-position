@@ -234,6 +234,32 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(error).toBeNull()
   })
 
+  it('lists every aggregator that answered, so the picker has something to offer', async () => {
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+    ])
+    sizeSwapCallingQuoteAt()
+
+    const { preview } = await previewWith()
+
+    expect(preview?.routes.map((r) => r.aggregator)).toEqual(['KyberSwap'])
+  })
+
+  it('names the pinned aggregator when it is the one that cannot serve the swap', async () => {
+    // The pair priced fine — one route answered and was dropped by the pin. Reporting this as a
+    // pair problem would send the user hunting for liquidity that is right there.
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+    ])
+    sizeSwapCallingQuoteAt()
+
+    const { preview, error } = await previewWith({ preferredAggregator: 'Nordstern' })
+
+    expect(preview).toBeNull()
+    expect(error?.message).toMatch(/Nordstern/)
+    expect(error?.message).toMatch(/pick another route/)
+  })
+
   it('rejects a NaN slippage instead of dying in BigInt()', async () => {
     // Math.round(NaN) is NaN, and NaN fails BOTH the < 0 and >= 10000 comparisons, so before
     // the isFinite guard this sailed through and threw a RangeError from BigInt(10000 - NaN)

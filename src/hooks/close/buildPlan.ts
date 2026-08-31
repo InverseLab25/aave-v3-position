@@ -3,12 +3,13 @@ import { getChainConfig, getStrategiesAddress } from '../../config/chains'
 import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { COMPATIBLE_ADAPTERS, CloseError, rankRoutes } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, CloseError, applyPin, rankRoutes } from '../../lib/deleverage'
 import { deriveDebtRepay } from '../../lib/closePlan'
 import { aaveV3StrategiesAbi, FULL_CLOSE } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
 import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS, SIZING_ROUNDS } from './constants'
+import type { QuoteResponse } from '../../adapters/types'
 import type { ClosePlan, CloseInput } from './types'
 
 
@@ -58,7 +59,7 @@ interface BuildPlanContext {
  * because every failure here has a different remedy.
  */
 export async function buildPlan(
-  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal }: CloseInput,
+  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal, preferredAggregator }: CloseInput,
   ctx: BuildPlanContext,
 ): Promise<ClosePlan> {
   const { address, chainId, publicClient } = ctx
@@ -164,6 +165,12 @@ export async function buildPlan(
       const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
         (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
       )
+      /**
+       * The last round's full field, kept for the picker. Written on every round rather than
+       * only the first, so the list is priced at the size the plan actually settled on.
+       */
+      let offers: QuoteResponse[] = []
+
       const quoteAt = async (amountIn: bigint) => {
         // An aggregator that refused to answer is not evidence about the pair. Tracked per call
         // rather than per plan, because the sizing loop quotes several times and only the round
@@ -189,7 +196,18 @@ export async function buildPlan(
             'The price aggregator is rate-limiting us or is down — wait a moment and try again',
           )
         }
-        return ranked
+        offers = ranked
+
+        const usable = applyPin(ranked, preferredAggregator, (q) => q.aggregator)
+        // Named as the pin's failure rather than the pair's: the pair priced fine, and the fix
+        // is to pin something else or nothing at all.
+        if (usable.length === 0 && ranked.length > 0) {
+          throw new CloseError(
+            'pair',
+            `${preferredAggregator} has no route for this swap — pick another route`,
+          )
+        }
+        return usable
       }
 
       const sized = await sizeSwap({
@@ -251,6 +269,7 @@ export async function buildPlan(
         adapters,
         allowedRouters,
         quoteAt,
+        offers,
         ...sized,
         // After the spread: these are the plan's answers, not the sizing pass's.
         debt: debtRepaid,

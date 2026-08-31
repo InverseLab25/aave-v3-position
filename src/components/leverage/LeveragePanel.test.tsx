@@ -80,6 +80,7 @@ function setHook(over: Record<string, unknown> = {}) {
   hookState = {
     preview: null,
     previewError: null,
+    routes: [],
     isQuoting: false,
     step: 'idle',
     txHash: undefined,

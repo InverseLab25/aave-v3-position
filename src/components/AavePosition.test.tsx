@@ -159,7 +159,7 @@ beforeEach(() => {
   }))
   mocks.useAavePositions.mockReturnValue(EMPTY_PORTFOLIO)
   mocks.useLeverageOpen.mockReturnValue({
-    preview: null, previewError: null, isQuoting: false,
+    preview: null, previewError: null, routes: [], isQuoting: false,
     refresh: vi.fn(),
     execute: vi.fn(), step: 'idle', txHash: undefined, execError: null, execRemedy: null,
   })

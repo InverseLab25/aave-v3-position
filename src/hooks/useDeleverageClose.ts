@@ -151,6 +151,12 @@ export function useDeleverageClose() {
             covered: p.covered,
             guaranteed: p.guaranteed,
             aggregator: p.best.aggregator,
+            // Pre-formatted here rather than in the modal: the plan is the only place that knows
+            // the debt asset's decimals without the UI having to look them up again.
+            routes: p.offers.map((q) => ({
+              aggregator: q.aggregator,
+              amountOut: formatUnits(BigInt(q.amountOut), dDec),
+            })),
             collateralSymbol: input.collateral.symbol,
             debtSymbol: input.debtAsset.symbol,
             debtRepaid: formatUnits(p.debt, dDec),

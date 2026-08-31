@@ -394,6 +394,12 @@ export type LeverageError =
   | "AGGREGATOR_UNAVAILABLE"
   | "QUOTE_FAILED"
   | "QUOTE_MOVED"
+  /**
+   * The user pinned an aggregator in the route list and that one cannot serve this trade —
+   * it did not price the pair, or it priced it and the build was unusable. Separate from
+   * `NO_ROUTE` because the fix is to unpin rather than to go looking for liquidity.
+   */
+  | "ROUTE_UNAVAILABLE"
   | "PAUSED"
   | "NO_CLIENT";
 
@@ -570,6 +576,8 @@ interface LeverageErrorContext {
    * rejecting the only allowlisted router.
    */
   rejected?: string[];
+  /** The aggregator the user pinned, so `ROUTE_UNAVAILABLE` can name it. */
+  pinnedAggregator?: string;
 }
 
 /**
@@ -642,6 +650,12 @@ export function leverageErrorMessage(error: LeverageError, ctx: LeverageErrorCon
       return "Could not price this position — try a smaller supply";
     case "QUOTE_MOVED":
       return "The rate moved while pricing this — refresh to requote";
+    case "ROUTE_UNAVAILABLE": {
+      const who = ctx.pinnedAggregator ?? "That route";
+      return ctx.rejected?.length
+        ? `${who} cannot serve this trade: ${ctx.rejected.join('; ')} — pick another route`
+        : `${who} has no route for this pair — pick another route`;
+    }
     case "PAUSED":
       return "Leverage is paused";
     case "NO_CLIENT":

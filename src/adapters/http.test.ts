@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   AggregatorHttpError, fetchQuoteJson, limitedFetch, clearQuoteCache, resetHttpGate,
+  cachedQuoteCount,
 } from './http'
 
 const KYBER = 'https://aggregator-api.kyberswap.com/ethereum/api/v1/routes'
@@ -72,7 +73,9 @@ describe('fetchQuoteJson', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('does not share an abortable request, so one caller cannot cancel another', async () => {
+  it('shares one request with an abortable caller too', async () => {
+    // This is what the close flow gets back: it passes a signal on every quote, so before this
+    // it re-asked the network for sizes a preview had just priced.
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 0 }) })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -82,8 +85,75 @@ describe('fetchQuoteJson', () => {
       fetchQuoteJson(`${KYBER}?amountIn=9`, { signal: controller.signal }),
     ])
 
-    // The plain one may be cached; the abortable one must have gone to the network on its own.
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('lets one caller abort without cancelling another that is still waiting', async () => {
+    // The property the old "never share an abortable request" rule was protecting. Sharing is
+    // only safe while this holds.
+    let settle: (v: unknown) => void = () => {}
+    const fetchMock = vi.fn().mockReturnValue(
+      new Promise((r) => { settle = r }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const leaving = new AbortController()
+    const staying = fetchQuoteJson(`${KYBER}?amountIn=10`)
+    const going = fetchQuoteJson(`${KYBER}?amountIn=10`, { signal: leaving.signal })
+    await vi.advanceTimersByTimeAsync(0)
+
+    leaving.abort()
+    await expect(going).rejects.toThrow(/abort/i)
+
+    settle({ ok: true, status: 200, json: async () => ({ code: 0 }) })
+    await expect(staying).resolves.toEqual({ code: 0 })
+  })
+
+  it('cancels the request itself once every waiter has gone', async () => {
+    const fetchMock = vi.fn().mockReturnValue(new Promise(() => {}))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const a = new AbortController()
+    const b = new AbortController()
+    const first = fetchQuoteJson(`${KYBER}?amountIn=13`, { signal: a.signal })
+    const second = fetchQuoteJson(`${KYBER}?amountIn=13`, { signal: b.signal })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const underlying = fetchMock.mock.calls[0][1] as { signal: AbortSignal }
+    a.abort()
+    await expect(first).rejects.toThrow(/abort/i)
+    expect(underlying.signal.aborted).toBe(false) // b is still waiting on it
+
+    b.abort()
+    await expect(second).rejects.toThrow(/abort/i)
+    expect(underlying.signal.aborted).toBe(true)
+  })
+
+  it('never reaches the network for a caller that gave up before asking', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      fetchQuoteJson(`${KYBER}?amountIn=14`, { signal: controller.signal }),
+    ).rejects.toThrow(/abort/i)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not keep quotes nobody can read any more', async () => {
+    // Every solver round asks about a different size, and a Kyber route response is tens of
+    // kilobytes. Without the sweep the map grew for the life of the session.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ code: 0 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    for (const size of [1, 2, 3]) await fetchQuoteJson(`${KYBER}?amountIn=${size}00`)
+    await vi.advanceTimersByTimeAsync(5_000)
+    await fetchQuoteJson(`${KYBER}?amountIn=400`)
+
+    // Only the entry just inserted survives; the three that timed out were swept with it.
+    expect(cachedQuoteCount()).toBe(1)
   })
 
   it('clearQuoteCache forces the next identical request back to the network', async () => {

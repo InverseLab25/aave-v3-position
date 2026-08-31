@@ -106,40 +106,119 @@ export async function limitedFetch(url: string, init?: RequestInit): Promise<Res
   return fetch(url, init)
 }
 
+/**
+ * One request, however many callers are waiting on it.
+ *
+ * `waiters` is what makes an abortable request shareable. A caller that passes a signal counts
+ * itself in, and on abort counts itself back out; the underlying fetch is only cancelled once
+ * the count reaches zero, i.e. once nobody is left who wants the answer. A caller that passes no
+ * signal never counts back out, so its presence alone keeps the request alive — which is the
+ * behaviour those callers already had.
+ */
+interface SharedQuote {
+  at: number
+  json: Promise<unknown>
+  /** Cancels the fetch when the last waiter walks away. */
+  controller: AbortController
+  waiters: number
+}
+
 /** In-flight and recently-completed GETs, keyed by URL. */
-const quoteCache = new Map<string, { at: number; json: Promise<unknown> }>()
+const quoteCache = new Map<string, SharedQuote>()
+
+/** What a caller's own signal rejects with. Named so adapters can tell it from a real failure. */
+function abortError(): Error {
+  const e = new Error('The operation was aborted')
+  e.name = 'AbortError'
+  return e
+}
+
+/** Drops one waiter, and cancels the request itself once none are left. */
+function releaseWaiter(url: string, entry: SharedQuote): void {
+  entry.waiters -= 1
+  if (entry.waiters > 0) return
+  entry.controller.abort()
+  // Only evict if this entry is still the installed one — a later call may have replaced it.
+  if (quoteCache.get(url) === entry) quoteCache.delete(url)
+}
 
 /**
  * Rate-limited GET returning parsed JSON, with in-flight de-duplication and a short reuse
  * window. Two callers asking for the same URL at the same time share one request; a caller
  * repeating a URL within `QUOTE_TTL_MS` gets the previous response.
  *
+ * Passing a signal no longer opts out of that sharing. It used to: cancelling a shared promise
+ * would have cancelled it for everyone holding it, so an abortable caller was given its own
+ * request. The close flow passes a signal on every quote, which meant its sizing rounds — which
+ * ask the same URLs a preview just asked — paid full price for answers already in hand. What a
+ * signal cancels now is the CALLER's wait; the request behind it only stops once every waiter
+ * has gone.
+ *
  * A rejected request is evicted immediately so a transient failure isn't cached.
  */
-export async function fetchQuoteJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
-  // An abortable request cannot be shared: cancelling it would cancel it for every other
-  // caller holding the same promise. Callers that pass a signal want to be able to stop
-  // consuming the aggregator when their result stops mattering, so they opt out of sharing.
-  if (init?.signal) {
-    await acquireSlot(url)
-    return okJson<T>(await fetch(url, init), url)
+export function fetchQuoteJson<T = unknown>(url: string, init?: RequestInit): Promise<T> {
+  const signal = init?.signal
+  // Nothing to spend a rate-limit slot on: the caller stopped caring before it asked.
+  if (signal?.aborted) return Promise.reject(abortError())
+
+  const now = Date.now()
+  const hit = quoteCache.get(url)
+  let entry: SharedQuote
+  if (hit && now - hit.at < QUOTE_TTL_MS) {
+    entry = hit
+    entry.waiters += 1
+  } else {
+    // Nothing past the TTL can be reused — `hit` above already refuses it — so anything still in
+    // the map at this point is dead weight. Swept on insert rather than on a timer: a KyberSwap
+    // route response runs to tens of kilobytes and the solver asks for a different size every
+    // few seconds, so a map that only ever grew held megabytes of quotes nobody could read.
+    for (const [key, stale] of quoteCache) {
+      if (now - stale.at >= QUOTE_TTL_MS) quoteCache.delete(key)
+    }
+    const controller = new AbortController()
+    const json: Promise<unknown> = (async () => {
+      await acquireSlot(url)
+      // An entry every waiter has already abandoned is aborted by now, and fetch rejects on an
+      // aborted signal without opening a connection — so a queued request nobody wants costs
+      // nothing but the slot it had already reserved.
+      return okJson<T>(await fetch(url, { ...init, signal: controller.signal }), url)
+    })()
+    entry = { at: now, json, controller, waiters: 1 }
+    quoteCache.set(url, entry)
+    json.catch(() => {
+      // Only evict if this entry is still the one we installed — a later call may have
+      // replaced it after the TTL expired, and that one is still good.
+      if (quoteCache.get(url) === entry) quoteCache.delete(url)
+    })
   }
 
-  const hit = quoteCache.get(url)
-  if (hit && Date.now() - hit.at < QUOTE_TTL_MS) return hit.json as Promise<T>
+  if (!signal) return entry.json as Promise<T>
 
-  const json: Promise<T> = (async () => {
-    await acquireSlot(url)
-    return okJson<T>(await fetch(url, init), url)
-  })()
-
-  quoteCache.set(url, { at: Date.now(), json })
-  json.catch(() => {
-    // Only evict if this entry is still the one we installed — a later call may have
-    // replaced it after the TTL expired, and that one is still good.
-    if (quoteCache.get(url)?.json === json) quoteCache.delete(url)
+  // The caller's own wait, which its signal ends. The shared request carries on unless this was
+  // the last waiter, so a superseded preview stops consuming without cancelling a live one.
+  return new Promise<T>((resolve, reject) => {
+    const shared = entry
+    const onAbort = () => {
+      releaseWaiter(url, shared)
+      reject(abortError())
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    shared.json.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v as T)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
   })
-  return json
+}
+
+/** Test support: how many quotes the reuse window is holding. */
+export function cachedQuoteCount(): number {
+  return quoteCache.size
 }
 
 /**

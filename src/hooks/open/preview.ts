@@ -13,7 +13,7 @@ import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import type { Adapter, QuoteResponse } from '../../adapters/types'
 import { getChainConfig, getTxGasCap } from '../../config/chains'
-import { COMPATIBLE_ADAPTERS, selectBuildableRoute } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, applyPin, selectBuildableRoute } from '../../lib/deleverage'
 import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
@@ -40,10 +40,22 @@ interface PreviewRunContext {
   chainId: number
   owner: Address | undefined
   cancelled: () => boolean
+  /**
+   * Stops the quotes behind a superseded run, rather than only ignoring their answers. Shared
+   * with any other run asking the same URL, so aborting here cancels nothing anyone still wants.
+   */
+  signal: AbortSignal
   setIsQuoting: (v: boolean) => void
   setPreviewError: (v: LeverageError | null) => void
   /** Why each candidate was unusable. Cleared per run, so a stale reason cannot outlive it. */
   setRejected: (v: string[]) => void
+  /**
+   * Every aggregator that answered this run, best-first — the list the user pins from.
+   *
+   * Reported before the pin is applied. A list holding only what is already pinned is a list
+   * nobody can leave.
+   */
+  setRoutes: (v: QuoteResponse[]) => void
   setPreview: (v: OpenPreview | null) => void
   setPreviewFor: (v: string) => void
 }
@@ -51,8 +63,8 @@ interface PreviewRunContext {
 /** One debounced quote-and-size pass. Everything the preview shows is decided here. */
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
-    input, pinned, forInput, client, chainId, cancelled,
-    setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
+    input, pinned, forInput, client, chainId, cancelled, signal,
+    setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes,
   } = ctx
 
       /**
@@ -67,6 +79,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
       setIsQuoting(true)
       setPreviewError(null)
       setRejected([])
+      setRoutes([])
       try {
         if (!client) {
           setPreviewError('NO_CLIENT')
@@ -138,13 +151,20 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
          */
         let throttled = false
 
+        /**
+         * Whether the pin, rather than the market, is what left us with nothing to size against.
+         * Sticky like `throttled`, and for the same reason: it changes what the user is told to
+         * do about it, from "no liquidity here" to "that route cannot serve this trade".
+         */
+        let pinnedOut = false
+
         /** Every adapter's quote for a given debt-asset input, best output first. */
         const quoteAll = async (swapIn: bigint): Promise<Candidate[]> => {
           const results = await Promise.all(
             adapters.map(async (a) => {
               try {
                 const q = await a.getQuote(
-                  fromAsset, toAsset, swapIn.toString(), slippagePercent, chainId,
+                  fromAsset, toAsset, swapIn.toString(), slippagePercent, chainId, signal,
                 )
                 return q ? { a, q } : null
               } catch (e) {
@@ -153,17 +173,26 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
               }
             }),
           )
-          return results
+          const all = results
             .filter((r): r is Candidate => r !== null)
             .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
+          // The whole field, losers included, so the picker has something to offer. The last
+          // round wins, which is the one the preview is actually built from.
+          setRoutes(all.map((c) => c.q))
+
+          const usable = applyPin(all, input.preferredAggregator, (c) => c.a.name)
+          if (usable.length === 0 && all.length > 0) pinnedOut = true
+          return usable
         }
 
         /**
          * "Nothing priced" in the user's terms — which is only NO_ROUTE when the aggregators
          * actually answered.
          */
-        const nothingPriced = (): LeverageError =>
-          throttled ? 'AGGREGATOR_UNAVAILABLE' : 'NO_ROUTE'
+        const nothingPriced = (): LeverageError => {
+          if (pinnedOut) return 'ROUTE_UNAVAILABLE'
+          return throttled ? 'AGGREGATOR_UNAVAILABLE' : 'NO_ROUTE'
+        }
 
         // Kept as a list so route selection can fall through a candidate that fails to build or
         // fails `validateSwapTx`, instead of erroring out on the first pick.
@@ -249,7 +278,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         if (cancelled()) return
         if (!selected) {
           setRejected(rejected)
-          setPreviewError(nothingPriced())
+          // With a pin held there was only ever one candidate to walk, so this is that route
+          // failing rather than the pair being unroutable — and `rejected` says how.
+          setPreviewError(input.preferredAggregator ? 'ROUTE_UNAVAILABLE' : nothingPriced())
           return
         }
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }

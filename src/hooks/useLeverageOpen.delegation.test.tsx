@@ -459,6 +459,25 @@ it('still says NO_ROUTE when the aggregator answers and simply has nothing', asy
   expect(hook().previewError).toBe('NO_ROUTE')
 })
 
+it('reports the aggregators that priced the pair, so the user can pin one of them', async () => {
+  await mount()
+
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+})
+
+it('blames the pin, not the pair, when the pinned aggregator did not price it', async () => {
+  // The pair priced fine — the pin is what left nothing to size against, and the remedy is to
+  // unpin rather than to go looking for liquidity.
+  mocks.getAdaptersForChain.mockReturnValue([fakeAdapter()])
+
+  await mount(makeInput({ preferredAggregator: 'Nordstern' }))
+
+  expect(hook().preview).toBeNull()
+  expect(hook().previewError).toBe('ROUTE_UNAVAILABLE')
+  // The losers are still listed, or there is nothing to un-pin onto.
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+})
+
 it('prepare takes the approve and the signature, and sends nothing', async () => {
   // The gate the split exists for: the wallet work is done, the position is not opened, and the
   // user still gets a look at what they are about to submit.

@@ -57,6 +57,15 @@ export interface LeverageOpenInput {
    * skips the check rather than blocking every open on a missing read.
    */
   collateralEnablement?: CollateralEnablement | null
+  /**
+   * Aggregator the user pinned in the route list, overriding the ranking. Undefined lets the
+   * best route win.
+   *
+   * A pin is honoured even when it prices worse — that is the whole point of offering one — but
+   * never silently: a pinned aggregator that cannot build reports `ROUTE_UNAVAILABLE` rather
+   * than falling back to the route the user just rejected.
+   */
+  preferredAggregator?: string
 }
 
 export interface OpenPreview {
@@ -151,6 +160,9 @@ export function inputKey(i: LeverageOpenInput): string {
     i.collateralEnablement === null || i.collateralEnablement === undefined
       ? '-'
       : `${i.collateralEnablement.willCount}:${i.collateralEnablement.reason ?? ''}`,
+    // A pin decides which route the preview is built from, so changing it has to invalidate the
+    // preview exactly like an amount edit does.
+    i.preferredAggregator ?? '-',
   ].join('|')
 }
 

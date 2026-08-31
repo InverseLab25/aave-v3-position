@@ -31,6 +31,15 @@ export interface CloseInput {
   debtIn?: bigint | 'all'
   /** Aborts the quotes behind this plan once its result stops mattering. */
   signal?: AbortSignal
+  /**
+   * Aggregator the user pinned in the route list, overriding the ranking. Undefined lets the
+   * best route win.
+   *
+   * Applied where the quotes are taken, so the sizing pass, the preview and the re-quote at
+   * signing time all judge the SAME route. A pin that cannot serve the swap fails the plan
+   * rather than falling back to the route the user pinned past.
+   */
+  preferredAggregator?: string
 }
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
@@ -75,8 +84,16 @@ export interface ClosePlan {
   /** Guaranteed output clears `needed` → the close cannot revert on swap output. */
   guaranteed: boolean
   best: QuoteResponse
-  /** Every compatible quote at `requiredIn`, best-first. */
+  /** Every compatible quote at `requiredIn`, best-first. Narrowed to the pin when one is held. */
   ranked: QuoteResponse[]
+  /**
+   * The same round BEFORE the pin was applied — every aggregator that answered.
+   *
+   * Kept apart from `ranked` because the two answer different questions: `ranked` is what this
+   * plan may execute, `offers` is what the user may pin instead. Collapsing them would leave the
+   * picker listing only the route already pinned.
+   */
+  offers: QuoteResponse[]
   adapters: Adapter[]
   /** 10000 − slippageBps, for re-deriving a candidate's guaranteed output. */
   slipNum: bigint
@@ -91,6 +108,11 @@ export interface ClosePreview {
   covered: boolean
   guaranteed: boolean
   aggregator: string
+  /**
+   * Every aggregator that priced this swap, best-first, with its output pre-formatted in DEBT
+   * units. The list the user pins from; the winner is `aggregator`.
+   */
+  routes: { aggregator: string; amountOut: string }[]
   collateralSymbol: string
   debtSymbol: string
   debtRepaid: string

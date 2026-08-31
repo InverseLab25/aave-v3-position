@@ -125,14 +125,40 @@ export function quoteRate(
 export const COMPATIBLE_ADAPTERS = ['KyberSwap'] as const
 
 
-/** Compatible quotes, best net USD return first. Empty when none are usable. */
+/**
+ * Compatible quotes, best OUTPUT first. Empty when none are usable.
+ *
+ * Ranked on `amountOut` rather than `netReturnUsd` because every candidate is selling the same
+ * input for the same token, so the raw output is the one figure that means the same thing for
+ * all of them. `netReturnUsd` does not: each aggregator fills it from its own pricing, and one
+ * that reports no USD at all (Nordstern) carries `gasUsd: '0'`, so it would be ranked on a gross
+ * figure against Kyber's net one and win trades it had lost. This also puts the close path on
+ * the same key the open path already sorts by, so the two cannot pick different winners from
+ * the same quotes.
+ */
 export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
   return quotes
     .filter(
       (q): q is QuoteResponse =>
         q != null && (COMPATIBLE_ADAPTERS as readonly string[]).includes(q.aggregator),
     )
-    .sort((a, b) => b.netReturnUsd - a.netReturnUsd)
+    .sort((a, b) => (BigInt(b.amountOut) > BigInt(a.amountOut) ? 1 : -1))
+}
+
+/**
+ * The candidates a run may use once the user has pinned an aggregator in the route list.
+ *
+ * A pin overrides the ranking, so it is a filter and not a reorder: the point of pinning is to
+ * refuse the route that won, and moving the pick to the front would quietly hand the trade back
+ * to that route the moment the pinned one failed to build. An empty result against a non-empty
+ * input is what each flow turns into "that route cannot serve this trade".
+ */
+export function applyPin<T>(
+  routes: T[],
+  pinned: string | undefined,
+  nameOf: (r: T) => string,
+): T[] {
+  return pinned ? routes.filter((r) => nameOf(r) === pinned) : routes
 }
 
 /**

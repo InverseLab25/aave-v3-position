@@ -20,6 +20,7 @@ import {
 } from '../lib/delegationCache'
 import type { TxOutcome } from '../lib/txOutcome'
 import { clearQuoteCache } from '../adapters/http'
+import type { QuoteResponse } from '../adapters/types'
 import type { StrategiesRemedy } from '../lib/strategiesErrors'
 import {
   DEBOUNCE_MS,
@@ -62,6 +63,8 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   const [tick, setTick] = useState(0)
   /** Why the last run found no usable route. Empty unless `previewError` is NO_ROUTE. */
   const [rejected, setRejected] = useState<string[]>([])
+  /** Every aggregator that priced the last run, best-first. What the route picker lists. */
+  const [routes, setRoutes] = useState<QuoteResponse[]>([])
   const [step, setStep] = useState<OpenStep>('idle')
   const [txHash, setTxHash] = useState<Hex | undefined>()
   const [execError, setExecError] = useState<string | null>(null)
@@ -262,17 +265,24 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
 
     let cancelled = false
     const forInput = key
+    // Superseded quotes are stopped, not merely ignored. `cancelled` already keeps a stale run
+    // from writing state, but the requests behind it carried on to the end — spending the
+    // aggregator's rate limit on prices for a form the user has already typed past. The close
+    // flow has always aborted for this reason; this is the same thing on the open side.
+    const controller = new AbortController()
 
     const timer = setTimeout(async () => {
       await runPreview({
         input, pinned, forInput, client, chainId, owner,
         cancelled: () => cancelled,
-        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
+        signal: controller.signal,
+        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes,
       })
     }, DEBOUNCE_MS)
 
     return () => {
       cancelled = true
+      controller.abort()
       clearTimeout(timer)
     }
   }, [key, client, chainId, owner, tick])
@@ -353,6 +363,11 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     previewError: effectivePreviewError,
     /** Why each candidate route was unusable — feeds the NO_ROUTE message. */
     rejected,
+    /**
+     * The aggregators that answered, best-first. Masked with the preview: a list belonging to
+     * inputs the user has already edited past would invite them to pin a price that is gone.
+     */
+    routes: stale ? [] : routes,
     isQuoting: effectiveIsQuoting,
     refresh,
     /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */

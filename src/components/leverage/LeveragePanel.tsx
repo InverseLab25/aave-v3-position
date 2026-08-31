@@ -32,6 +32,7 @@ import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
 import { RouteDetails } from './RouteDetails'
+import { RoutePicker } from '../RoutePicker'
 import { DEFAULT_SLIPPAGE_PERCENT, toSlippageBps } from './slippage'
 import { T } from '../../styles/theme'
 
@@ -120,6 +121,14 @@ export function LeveragePanel({
    * round trip. `toSlippageBps` is the only thing that reads it, and it clamps.
    */
   const [slippagePercent, setSlippagePercent] = useState(DEFAULT_SLIPPAGE_PERCENT)
+  /**
+   * The aggregator the user pinned in the route list, or null while the ranking decides.
+   *
+   * Deliberately not cleared when the pair or the amounts change: a pin says which aggregator
+   * this user trusts, which does not stop being true because they typed a different number. If
+   * the pinned one cannot price the new pair the preview says so and offers "Use best".
+   */
+  const [pinnedRoute, setPinnedRoute] = useState<string | null>(null)
   const slippageBps = toSlippageBps(slippagePercent)
 
   const reserveFor = (asset: string) =>
@@ -426,6 +435,7 @@ export function LeveragePanel({
       existingLtvBps,
       existingLiquidationThresholdBps,
       collateralEnablement: enablement,
+      preferredAggregator: pinnedRoute ?? undefined,
       reserves: {
         collateral: {
           address: collateralReserve.underlyingAsset, symbol: collateralReserve.symbol,
@@ -440,7 +450,7 @@ export function LeveragePanel({
   })()
 
   const {
-    preview, previewError, rejected, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
+    preview, previewError, rejected, routes, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
   } = useLeverageOpen(input)
 
@@ -551,6 +561,7 @@ export function LeveragePanel({
         : display(dangerMax, collateralReserve.raw.decimals, 4),
       marginWorth,
       rejected,
+      pinnedAggregator: pinnedRoute ?? undefined,
       collateral: enablement,
     })
     : null
@@ -740,6 +751,22 @@ export function LeveragePanel({
                 {isQuoting ? 'Pricing…' : '↻ Refresh'}
               </button>
             </div>
+          )}
+
+          {/* Offered whenever more than one aggregator priced the pair. The pin survives edits to
+              the form on purpose — it is the user overriding the ranking, not a per-quote choice
+              — and "Use best" hands the decision back. */}
+          {collateralReserve && (
+            <RoutePicker
+              routes={routes.map((q) => ({
+                aggregator: q.aggregator,
+                amountOut: display(BigInt(q.amountOut), collateralReserve.raw.decimals, 4),
+              }))}
+              symbol={collateralReserve.symbol}
+              pinned={pinnedRoute}
+              onPin={setPinnedRoute}
+              disabled={isQuoting || busy}
+            />
           )}
 
           {/* Only once a route has answered: every figure here comes from the BUILT transaction,

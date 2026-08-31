@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import { parseUnits } from 'viem'
-import { quoteRate, validateSwapTx, selectBuildableRoute, TX_GAS_CAP_2_24 } from './deleverage'
+import {
+  quoteRate,
+  validateSwapTx,
+  selectBuildableRoute,
+  rankRoutes,
+  applyPin,
+  COMPATIBLE_ADAPTERS,
+  TX_GAS_CAP_2_24,
+} from './deleverage'
+import type { QuoteResponse } from '../adapters/types'
 
 const WETH = 18
 const USDC = 6
@@ -123,5 +132,51 @@ describe('selectBuildableRoute — gas cap fallthrough', () => {
     expect(selected?.candidate).toBe('small')
     expect(rejected[0]).toContain('big')
     expect(rejected[0]).toMatch(/gas/i)
+  })
+})
+
+
+describe('rankRoutes', () => {
+  /** Only the fields the ranking reads; the rest of a quote does not enter into it. */
+  const quote = (aggregator: string, amountOut: string, netReturnUsd: number): QuoteResponse =>
+    ({ aggregator, amountOut, netReturnUsd } as QuoteResponse)
+
+  // Named off the roster rather than written in, so this suite does not have to be edited every
+  // time an aggregator is allowlisted or dropped.
+  const [compatible] = COMPATIBLE_ADAPTERS
+
+  it('ranks on output, not on the USD figure each aggregator prices itself with', () => {
+    // The shape an aggregator with no USD of its own arrives in (Nordstern): `gasUsd` is '0', so
+    // `netReturnUsd` is gross and outranks a net figure from a route that actually returns more.
+    // Ranking on output is what stops that quote winning a trade it lost.
+    const ranked = rankRoutes([
+      quote(compatible, '2119900000', 2120),
+      quote(compatible, '2120362157', 2115),
+    ])
+    expect(ranked.map((q) => q.amountOut)).toEqual(['2120362157', '2119900000'])
+  })
+
+  it('drops an aggregator the contracts cannot route through', () => {
+    const ranked = rankRoutes([quote('NotAllowlisted', '9999999999', 0), quote(compatible, '1', 0)])
+    expect(ranked.map((q) => q.aggregator)).toEqual([compatible])
+  })
+})
+
+describe('applyPin', () => {
+  const routes = [{ name: 'KyberSwap' }, { name: 'Nordstern' }]
+  const nameOf = (r: { name: string }) => r.name
+
+  it('passes everything through when nothing is pinned', () => {
+    expect(applyPin(routes, undefined, nameOf)).toEqual(routes)
+  })
+
+  it('drops the others rather than reordering them', () => {
+    // The distinction that matters: a reorder would hand the trade back to KyberSwap the moment
+    // the pinned route failed to build, which is the route the user just refused.
+    expect(applyPin(routes, 'Nordstern', nameOf)).toEqual([{ name: 'Nordstern' }])
+  })
+
+  it('returns nothing for a pin that did not price, so the caller can say which one failed', () => {
+    expect(applyPin(routes, 'OpenOcean', nameOf)).toEqual([])
   })
 })
