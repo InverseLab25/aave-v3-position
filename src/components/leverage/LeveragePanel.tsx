@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { erc20Abi, formatUnits, parseUnits } from 'viem'
 import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../../hooks/useAavePositions'
 import { useLeverageOpen } from '../../hooks/useLeverageOpen'
+import { useTabVisible } from '../../hooks/useTabVisible'
 import {
   deriveOpen,
   collateralEnablement,
@@ -49,12 +50,6 @@ const toTokenSource = (r: AvailableReserve | undefined): TokenMetaSource | null 
       variableDebtTokenAddress: r.variableDebtTokenAddress,
     }
     : null
-
-const subscribeVisibility = (onChange: () => void) => {
-  document.addEventListener('visibilitychange', onChange)
-  return () => document.removeEventListener('visibilitychange', onChange)
-}
-const isTabVisible = () => document.visibilityState === 'visible'
 
 interface LeveragePanelProps {
   suppliedAssets: SuppliedAsset[]
@@ -113,9 +108,8 @@ export function LeveragePanel({
   eModeExcludedReserves, viewAddress, active,
   existingCollateralUsd, existingDebtUsd, existingLtvBps, existingLiquidationThresholdBps,
 }: LeveragePanelProps) {
-  // The browser tab's own visibility, alongside the in-app one. A backgrounded window is just as
-  // unwatched as a hidden tab, and `visibilitychange` is the only thing that moves this.
-  const tabVisible = useSyncExternalStore(subscribeVisibility, isTabVisible, () => true)
+  // The browser window's visibility, alongside the in-app one below.
+  const tabVisible = useTabVisible()
   const chainId = useChainId()
   const { address } = useConnection()
   const contract = getStrategiesAddress(chainId)

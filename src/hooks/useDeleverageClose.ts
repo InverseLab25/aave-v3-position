@@ -9,7 +9,6 @@ import {
   PRICE_IMPACT_BLOCK_PERCENT,
   planWithdrawal,
   routeCostPercent,
-  selectRoute,
   type HeldSignature,
 } from '../lib/closePlan'
 import type { TxOutcome } from '../lib/txOutcome'
@@ -230,32 +229,11 @@ export function useDeleverageClose() {
 
         const withdrawal = planWithdrawal(p)
 
-        // Prove an allowlisted, buildable route exists BEFORE asking for signatures. This
-        // calldata is discarded — failing here costs nothing, failing after the prompts costs
-        // two signatures that stay live for the rest of their deadline.
-        const preflight = await selectRoute({
-          candidates: p.ranked,
-          adapters: p.adapters,
-          strategies: p.strategies,
-          allowedRouters: p.allowedRouters,
-          slippagePercent: input.slippagePercent,
-          chainId,
-          // No floor in derived mode: a route that returns less does not fail, it repays less.
-          debt: p.deriveRepay ? 0n : p.debt,
-          slipNum: p.slipNum,
-          tokenIn: p.collateralAddr,
-          tokenOut: p.debtAddr,
-          // No `simulate` on purpose. This proves a buildable route EXISTS before asking for
-          // signatures and then throws the calldata away; `buildFreshRoute` re-selects and
-          // measures the route that is actually submitted. Measuring here would spend a call
-          // on a result nothing reads.
-        })
-        if (!preflight.router) {
-          throw new CloseError(
-            'pair',
-            `No usable swap route for the close. Tried: ${preflight.rejected.join('; ') || 'none'}`,
-          )
-        }
+        // No preflight here. `buildPlan` above builds and measures the whole field itself and
+        // throws with this same "no usable swap route" message when none of it is usable, so a
+        // second selection was paying a round of router calldata to re-answer a settled
+        // question. The guarantee it existed for is unchanged: nothing is signed until a
+        // buildable, allowlisted route has been proved.
 
         const permits = await obtainPermits(p, withdrawal, {
           address, chainId, walletClient, signatures, log, setStep,

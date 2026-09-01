@@ -552,3 +552,94 @@ it('flips both rate rows together', async () => {
   expect(screen.getByText(/1 USDC = 0.000333/)).toBeTruthy()
   expect(screen.getByText(/1 USDC = 0.000335/)).toBeTruthy()
 })
+
+it('quotes nothing while its tab is not the one on screen', async () => {
+  // AavePosition is hidden with `display: none` rather than unmounted when the user switches
+  // tabs, so an open close modal stays alive and kept re-quoting at something nobody could see.
+  // A close quote is the slowest call in the app — several seconds at size — and it repeats on a
+  // three-second cadence.
+  render(
+    <ClosePositionModal
+      borrowedAsset={USDC_BORROWED}
+      suppliedAssets={[WETH_SUPPLIED]}
+      active={false}
+      onClose={vi.fn()}
+    />,
+  )
+
+  await new Promise((r) => setTimeout(r, 400)) // past the 300ms debounce
+  expect(previewFn).not.toHaveBeenCalled()
+})
+
+it('quotes as soon as its tab comes back', async () => {
+  // The mirror. Pausing that never resumes leaves a price taken before the user looked away,
+  // which is worse than none because it looks current.
+  const view = render(
+    <ClosePositionModal
+      borrowedAsset={USDC_BORROWED}
+      suppliedAssets={[WETH_SUPPLIED]}
+      active={false}
+      onClose={vi.fn()}
+    />,
+  )
+  await new Promise((r) => setTimeout(r, 400))
+  expect(previewFn).not.toHaveBeenCalled()
+
+  view.rerender(
+    <ClosePositionModal
+      borrowedAsset={USDC_BORROWED}
+      suppliedAssets={[WETH_SUPPLIED]}
+      active
+      onClose={vi.fn()}
+    />,
+  )
+
+  await waitFor(() => expect(previewFn).toHaveBeenCalled())
+})
+
+it('stays pressable while it re-prices a route already on screen', async () => {
+  // Same loop-death the open confirmation had. The modal re-quotes every three seconds, and
+  // gating the action on `isQuoting` killed the button for the duration of each one — a press
+  // landing in one of those windows did nothing at all. There is a priced route on screen and it
+  // is what a press would act on, so the press is honest.
+  mount()
+  await waitFor(() => expect(previewFn).toHaveBeenCalled())
+  await screen.findByText(/1 WETH = 3,000/)
+
+  // A re-quote in flight, with the previous answer still displayed.
+  previewFn.mockImplementation(() => new Promise(() => {}))
+  fireEvent.click(screen.getByRole('button', { name: /Refresh/i }))
+
+  // Wait until the re-quote is genuinely in flight — the ↻ control says so — or this asserts on
+  // the window before the 300ms debounce has even fired. Queried by its own label rather than
+  // through `actionButton`, whose regex now also matches that control.
+  await screen.findByRole('button', { name: /↻ Pricing…/ })
+  const action = screen.getByRole('button', { name: 'Sign 2 approvals' }) as HTMLButtonElement
+  expect(action.disabled).toBe(false)
+})
+
+it('keeps the route picker when no route builds', async () => {
+  // The error this renders says which routes were rejected and why — and until now it took the
+  // picker down with it, so the user was told to pick another route with nothing to pick from.
+  // The roster was priced for this same pair moments ago; a failed re-quote does not unprice it.
+  previewFn.mockResolvedValue({
+    preview: okPreview({
+      routes: [
+        { aggregator: 'KyberSwap', amountOut: '21000' },
+        { aggregator: 'Nordstern', amountOut: '20950' },
+      ],
+    }),
+    error: null,
+  })
+  mount()
+  await screen.findByRole('button', { name: /Nordstern/i })
+
+  previewFn.mockResolvedValue({
+    preview: null,
+    error: { kind: 'pair', message: 'No usable swap route for the close. Tried: KyberSwap: route needs 20307933 gas' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: /Refresh/i }))
+
+  await screen.findByText(/20307933 gas/)
+  expect(screen.getByRole('button', { name: /Nordstern/i })).toBeTruthy()
+})

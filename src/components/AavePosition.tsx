@@ -889,6 +889,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
 
       {closeTarget && (
         <ClosePositionModal
+          active={active}
           borrowedAsset={closeTarget}
           suppliedAssets={suppliedAssets}
           collateralUsd={collateralUsd}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
+import { useTabVisible } from '../hooks/useTabVisible'
 import { FlipRateButton } from './FlipRateButton'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256 } from 'viem'
@@ -14,7 +15,7 @@ import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePla
 import { simulateAndWrite } from '../utils/contract'
 import { Modal } from './Modal'
 import { TxReport } from './TxReport'
-import { RoutePicker } from './RoutePicker'
+import { RoutePicker, type RouteOffer } from './RoutePicker'
 import { SlippageField } from './leverage/SlippageField'
 import { T, MODAL_WIDTH } from '../styles/theme'
 import { buildTokenMap, positionTokens } from '../lib/tokenMeta'
@@ -82,6 +83,14 @@ interface ClosePositionModalProps {
   borrowedAsset: BorrowedAsset
   suppliedAssets: SuppliedAsset[]
   /**
+   * Whether the tab holding this modal is the one on screen. False stops quoting.
+   *
+   * AavePosition is hidden with `display: none` rather than unmounted when the user leaves it, so
+   * without this an open modal keeps re-pricing behind another tab — and a close quote is the
+   * slowest call in the app, repeating every three seconds.
+   */
+  active?: boolean
+  /**
    * The whole account, not just this pair — Aave's health factor is account-wide, and a partial
    * close is the only path here that can leave one behind. Default 0 so a caller that has not
    * threaded them through gets no projection rather than a wrong one; `evaluateHf` reads the
@@ -97,6 +106,7 @@ interface ClosePositionModalProps {
 export function ClosePositionModal({
   borrowedAsset,
   suppliedAssets,
+  active,
   collateralUsd = 0,
   debtUsd = 0,
   liquidationThreshold = 0,
@@ -146,6 +156,29 @@ export function ClosePositionModal({
   /** Last close failed because the tolerance was too tight — offer a wider one. */
   const [slippageTooTight, setSlippageTooTight] = useState<boolean>(false)
   /** Advanced by the countdown below; `secondsLeft` is derived from it during render. */
+  // Quoting stops when nobody is looking: the in-app tab from `active`, the browser window from
+  // `useTabVisible`. Either one pauses it; coming back re-quotes, because a price taken before
+  // the user looked away is worse than none — it looks current.
+  // Called unconditionally, then combined. Folding it into the `||` short-circuits the hook away
+  // whenever `active` is false, which changes the hook order between renders.
+  const tabVisible = useTabVisible()
+  const paused = active === false || !tabVisible
+
+  /**
+   * The priced field, stored WITH the pair it was priced for.
+   *
+   * Kept out of `preview` deliberately. A run that finds nothing buildable returns no preview at
+   * all, and the roster used to go down with it — leaving the user reading "pick another route"
+   * with nothing to pick from. The list was priced for this same pair seconds ago and a failed
+   * re-quote does not unprice it, so it stands until the pair itself moves.
+   *
+   * The pin and the slippage are deliberately NOT in the key: neither changes who priced the
+   * pair, and the aggregators' `amountOut` is pre-slippage.
+   */
+  const [quotedRoutes, setQuotedRoutes] = useState<{ pair: string; list: RouteOffer[] }>(
+    { pair: '', list: [] },
+  )
+
   /** Which end of the pair is quoted as 1. Shared by both rate rows — see the note there. */
   const [rateFlipped, setRateFlipped] = useState(false)
   const [nowSeconds, setNowSeconds] = useState<number>(() => Math.floor(Date.now() / 1000))
@@ -218,6 +251,17 @@ export function ClosePositionModal({
     outcome: settled, tokens: outcomeTokens, hash: txHash, chainId, wallet: address, kind: 'close',
   })
 
+  /**
+   * What the ROUTE ROSTER depends on: the pair and the size, and nothing else.
+   *
+   * The pin and the slippage are left out deliberately. Neither changes who priced the pair, and
+   * an aggregator's `amountOut` is pre-slippage — so keying on them would blank the picker the
+   * moment someone clicked a row in it.
+   */
+  const routesPairKey = [
+    selectedCollateral?.underlyingAsset, borrowedAsset.underlyingAsset, collateralIn, debtIn,
+  ].join('|')
+
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
   const closeAvailable = getStrategiesAddress(chainId) !== null
@@ -227,6 +271,10 @@ export function ClosePositionModal({
   // in the effect (avoids cascading renders).
   useEffect(() => {
     const shouldQuote = !isSameAsset && closeAvailable && !!selectedCollateral
+    // Returned BEFORE anything is scheduled or cleared. `shouldQuote` false means there is
+    // nothing to price and the stale preview must go; paused means the same question is still
+    // live and its last answer is worth keeping on screen until we can ask again.
+    if (paused) return
 
     let isMounted = true
     // Superseded quotes are aborted, not merely ignored. A route at size takes several seconds
@@ -252,7 +300,13 @@ export function ClosePositionModal({
           preferredAggregator: pinnedRoute ?? undefined,
           signal: controller.signal,
         })
-        if (isMounted) { setPreview(p.preview); setPreviewError(p.error) }
+        if (isMounted) {
+          setPreview(p.preview)
+          setPreviewError(p.error)
+          // Only when this run actually priced something. A failed one leaves the last roster
+          // standing rather than replacing it with nothing.
+          if (p.preview) setQuotedRoutes({ pair: routesPairKey, list: p.preview.routes })
+        }
       } finally {
         if (isMounted) setIsQuoting(false)
       }
@@ -265,7 +319,7 @@ export function ClosePositionModal({
       clearTimeout(timeout)
       controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, pinnedRoute, isSameAsset, closeAvailable, quotePreview, refreshTick])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, pinnedRoute, isSameAsset, closeAvailable, quotePreview, refreshTick, paused, routesPairKey])
 
   // Ticks only while an approval is held. Everything it writes happens inside the interval
   // callback, so the countdown never sets state as a render side effect.
@@ -442,7 +496,7 @@ export function ClosePositionModal({
       clearQuoteCache()
       setRefreshTick((t) => t + 1)
     }
-    const visible = () => document.visibilityState === 'visible'
+    const visible = () => !paused && document.visibilityState === 'visible'
     const id = visible() ? setTimeout(requote, QUOTE_REFRESH_MS) : undefined
     const onVisibilityChange = () => {
       if (visible()) requote()
@@ -453,7 +507,7 @@ export function ClosePositionModal({
       clearTimeout(id)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
-  }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick])
+  }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick, paused])
   /**
    * Where a partial close leaves the account's health factor.
    *
@@ -485,7 +539,12 @@ export function ClosePositionModal({
     ? !!amountStr && parseFloat(amountStr) > 0
     // `guaranteed` gates execution too: close() refuses a route whose guaranteed
     // output falls below the debt, so the button must not invite the click.
-    : closeAvailable && !isQuoting && preview?.covered === true && preview?.guaranteed === true
+    // NOT gated on `isQuoting`. The modal re-prices every three seconds, so gating on it killed
+    // the button for the duration of each one and a press landing in that window did nothing.
+    // What a press acts on is the preview currently on screen, and `preview` being non-null is
+    // exactly the condition for one existing. The first quote is covered anyway — there is no
+    // preview until it lands.
+    : closeAvailable && preview?.covered === true && preview?.guaranteed === true
       && hfGuard.level !== 'block'
 
   return (
@@ -523,7 +582,9 @@ export function ClosePositionModal({
               >
                 {isProcessing
                   ? 'Processing…'
-                  : isQuoting
+                  // Only while nothing has been priced yet. A re-quote over an existing preview
+                  // shows itself in the ↻ control above, not by taking the action away.
+                  : !preview && isQuoting
                     ? 'Pricing…'
                     : isSameAsset || signedUntil !== null
                       ? // The word the open uses for the press that sends.
@@ -827,11 +888,11 @@ export function ClosePositionModal({
               </div>
               {/* Above the numbers, because pinning re-prices every one of them. Renders nothing
                   until more than one aggregator has answered. */}
-              {preview && (
+              {quotedRoutes.pair === routesPairKey && (
                 <div style={{ marginBottom: T.space[3] }}>
                   <RoutePicker
-                    routes={preview.routes}
-                    symbol={preview.debtSymbol}
+                    routes={quotedRoutes.list}
+                    symbol={borrowedAsset.symbol}
                     pinned={pinnedRoute}
                     onPin={setPinnedRoute}
                     disabled={isQuoting}

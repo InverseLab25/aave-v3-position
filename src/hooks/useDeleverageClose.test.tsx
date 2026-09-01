@@ -68,6 +68,7 @@ vi.mock('../lib/closePlan', async (orig) => ({
 }))
 
 import { AggregatorHttpError } from '../adapters/http'
+import { selectRoute } from '../lib/closePlan'
 import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
 import { GAS_LIMIT_BUFFER_PERCENT } from '../utils/gas'
 
@@ -155,7 +156,39 @@ beforeEach(() => {
   mocks.getAdaptersForChain.mockReturnValue([{ name: 'KyberSwap', getQuote: vi.fn() }])
   mocks.oracleSeed.mockReturnValue(parseUnits('7', 18))
   mocks.sizeSwap.mockResolvedValue(SIZED)
+  // The preview builds and measures the field now, so every path through it goes through
+  // `selectRoute`. Default: the sized quote, unsimulated — which `effectiveOut` falls back to,
+  // leaving these suites reading exactly the numbers they were written against.
+  vi.mocked(selectRoute).mockResolvedValue({
+    router: ROUTER,
+    swapData: '0xdeadbeef',
+    chosen: SIZED.best,
+    tx: {
+      to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER,
+      amountOut: SIZED.expectedOut.toString(),
+    },
+    sim: null,
+    rejected: [],
+  } as never)
 })
+
+/**
+ * What the preview's own build-and-measure pass found.
+ *
+ * A test that overrides `sizeSwap` has to say this too: the preview reports the MEASURED figure,
+ * so leaving the default in place would have the measurement contradict the size under test.
+ */
+const measures = (out: bigint) =>
+  vi.mocked(selectRoute).mockResolvedValue({
+    router: ROUTER,
+    swapData: '0xdeadbeef',
+    chosen: quote(out),
+    tx: {
+      to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString(),
+    },
+    sim: null,
+    rejected: [],
+  } as never)
 
 const previewWith = async (overrides: Record<string, unknown> = {}) => {
   const { result } = renderHook(() => useDeleverageClose())
@@ -443,6 +476,18 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
   })
 
   const mount = () => renderHook(() => useDeleverageClose()).result
+
+  it('builds calldata once on the first press, not twice', async () => {
+    // `buildPlan` builds and measures the field itself now, and throws with this very message
+    // when nothing is usable — so the separate preflight that followed it was asking a question
+    // already answered, and paying a round of router calldata to ask it. Removing it does not
+    // weaken the guarantee it existed for: nothing is signed until `buildPlan` has proved a
+    // buildable, allowlisted route.
+    const r = mount()
+    await r.current.close(baseInput)
+
+    expect(selectRoute).toHaveBeenCalledTimes(1)
+  })
 
   it('first press banks the signatures and submits nothing', async () => {
     // The whole point of stopping here: the user gets the numbers back to review, and the
@@ -760,6 +805,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     // planning quote could exceed what the swap actually delivers — and the flash loan is the
     // repay amount, so that reverts. It has to be re-derived from the calldata being submitted.
     const OUT = parseUnits('6000', 6)
+    measures(OUT)
     mocks.sizeSwap.mockResolvedValue({
       ...SIZED,
       expectedOut: OUT,
@@ -871,6 +917,7 @@ describe('buildPlan — repay derived from the collateral amount', () => {
 
   it('repays what the guaranteed output buys, not the whole debt', async () => {
     mocks.sizeSwap.mockResolvedValue(SMALL)
+    measures(SMALL.expectedOut)
 
     const { preview } = await previewWith({ collateralIn: parseUnits('2', 18) })
 
@@ -904,6 +951,7 @@ describe('buildPlan — repay derived from the collateral amount', () => {
     // The cap bit — 20,050 guaranteed against a 20,000 debt — so this is a full close again,
     // and a full close flashes the balance read on chain, which will have grown past 20,050.
     // The self-funding shortcut must NOT reach this case.
+    measures(parseUnits('20150', 6))
     mocks.sizeSwap.mockResolvedValue({
       ...SIZED,
       expectedOut: parseUnits('20150', 6),
@@ -931,10 +979,64 @@ describe('buildPlan — repay derived from the collateral amount', () => {
 
   it('refuses collateral that buys too little to repay anything', async () => {
     mocks.sizeSwap.mockResolvedValue({ ...SMALL, expectedOut: 0n, minDebtOut: 0n })
+    measures(0n)
 
     const { preview, error } = await previewWith({ collateralIn: 1n })
 
     expect(preview).toBeNull()
     expect(error?.kind).toBe('pair')
+  })
+})
+
+describe('buildPlan — the preview measures what it shows', () => {
+  /** The mocked selection, as it is when a real simulation came back. */
+  const measured = (out: bigint) => ({
+    router: ROUTER,
+    swapData: '0xdeadbeef',
+    chosen: quote(out),
+    tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString() },
+    sim: { ok: true, amountOut: out, gasUsed: 4_000_000 },
+    rejected: [],
+  })
+
+  it('reports the measured output, not the quoted one', async () => {
+    // The open flow has done this since simulation landed: what the user reviews is the number
+    // minOut is derived from. The close reviewed a QUOTE and only simulated later, at signing —
+    // so the figure being approved was never the figure the contract ended up enforcing.
+    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    selectRoute.mockResolvedValue(measured(parseUnits('20800', 6)) as never)
+
+    const { preview } = await previewWith()
+
+    expect(preview?.expectedDebtOut).toBe('20800')
+    // And the floor follows it: 20800 × (1 − 0.5%).
+    expect(preview?.minDebtOut).toBe('20696')
+  })
+
+  it('turns the verdicts on the measurement too', async () => {
+    // covered/guaranteed decide whether the button is even offered. Deriving them from the quote
+    // while showing a measured number would invite a press the contract then reverts.
+    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    selectRoute.mockResolvedValue(measured(parseUnits('19000', 6)) as never)
+
+    const { preview } = await previewWith()
+
+    // 19,000 cannot repay the 20,000 debt, whatever the quote claimed.
+    expect(preview?.covered).toBe(false)
+  })
+
+  it('says which routes it could not use when none of them builds', async () => {
+    // The picker is rendered off this same preview, so a failure that returns nothing at all
+    // leaves the user told to pick another route with nothing to pick from.
+    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    selectRoute.mockResolvedValue({
+      router: null, swapData: null, chosen: null, tx: null, sim: null,
+      rejected: ['KyberSwap: route needs 20307933 gas; this chain caps a transaction at 16777216'],
+    } as never)
+
+    const { preview, error } = await previewWith()
+
+    expect(preview).toBeNull()
+    expect(error?.message).toMatch(/20307933 gas/)
   })
 })

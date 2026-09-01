@@ -3,7 +3,9 @@ import { getChainConfig, getStrategiesAddress } from '../../config/chains'
 import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { COMPATIBLE_ADAPTERS, CloseError, applyPin, rankRoutes } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, CloseError, applyPin, effectiveOut, rankRoutes } from '../../lib/deleverage'
+import { selectRoute } from '../../lib/closePlan'
+import { simulateSwap } from '../../adapters/simulate'
 import { deriveDebtRepay } from '../../lib/closePlan'
 import { aaveV3StrategiesAbi, FULL_CLOSE } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
@@ -230,10 +232,48 @@ export async function buildPlan(
         }),
       })
 
+      /**
+       * Build and MEASURE the field at the size sizing settled on, then re-derive every figure
+       * the preview reports from what came back.
+       *
+       * Sizing works off quotes, because it has to — it asks several times at different sizes and
+       * building each probe would cost a round of calldata for a size that is about to be thrown
+       * away. But the figure the user reviews, and the floor `minOut` is derived from, should be
+       * the one that was actually measured against live state. The open flow has done this since
+       * simulation landed; the close reviewed a quote and only simulated later, at signing, so
+       * what was approved was never what the contract went on to enforce.
+       *
+       * `debt: 0n` on purpose — this selection MEASURES, it does not gate. Whether the result
+       * covers the debt is the verdict below, computed from the measurement.
+       */
+      const measured = await selectRoute({
+        candidates: sized.ranked,
+        adapters,
+        strategies,
+        allowedRouters,
+        slippagePercent,
+        chainId,
+        debt: 0n,
+        slipNum,
+        tokenIn: collateralAddr,
+        tokenOut: debtAddr,
+        simulate: simulateSwap,
+      })
+      if (!measured.chosen || !measured.tx) {
+        throw new CloseError(
+          'pair',
+          `No usable swap route for the close. Tried: ${measured.rejected.join('; ') || 'none'}`,
+        )
+      }
+      const measuredOut = effectiveOut(measured.tx, measured.sim)
+      const expectedOut = measuredOut > 0n ? measuredOut : sized.expectedOut
+      const minDebtOut = (expectedOut * slipNum) / 10000n
+      const covered = expectedOut >= debt
+
       // In derived mode the repay comes off the quote that was just taken; otherwise it is
       // whatever the caller asked for, already checked against the live debt above.
       const debtRepaid = deriveRepay
-        ? deriveDebtRepay({ guaranteedOut: sized.minDebtOut, debt })
+        ? deriveDebtRepay({ guaranteedOut: minDebtOut, debt })
         : targetRepay
       if (debtRepaid <= 0n) {
         throw new CloseError(
@@ -271,6 +311,12 @@ export async function buildPlan(
         quoteAt,
         offers,
         ...sized,
+        // After the spread, because these are the MEASURED figures and `sized` carries the
+        // quoted ones. `best` follows too: a simulation is allowed to reorder the field, so the
+        // route reported is the one that measured best rather than the one that quoted best.
+        best: measured.chosen,
+        expectedOut,
+        minDebtOut,
         // After the spread: these are the plan's answers, not the sizing pass's.
         debt: debtRepaid,
         liveDebt: debt,
@@ -278,7 +324,10 @@ export async function buildPlan(
         debtRepay: partial ? debtRepaid : FULL_CLOSE,
         debtRemaining: debt - debtRepaid,
         needed,
-        covered: selfFunding || sized.covered,
-        guaranteed: selfFunding || sized.guaranteed,
+        covered: selfFunding || covered,
+        // Recomputed rather than taken from `sized`: `needed` is only known here, and a verdict
+        // derived from the quote while the numbers on screen are measured would invite a press
+        // the contract then reverts.
+        guaranteed: selfFunding || (covered && minDebtOut >= needed),
       }
 }
