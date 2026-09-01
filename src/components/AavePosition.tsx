@@ -68,6 +68,88 @@ function DetailRow({ label, value, icon }: { label: string; value: React.ReactNo
   )
 }
 
+/** A signed dollar figure, always carrying its sign. */
+const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
+
+/**
+ * Value(USD) cell — the value, and a clickable Avg row that opens the basis editor.
+ *
+ * At module scope on purpose. Declared inside the parent it was a NEW component type on every
+ * render, so React tore down and rebuilt every cell in both tables whenever a price or balance
+ * refetch landed, instead of diffing them. What it used to close over comes in as props.
+ */
+function ValueCell({ a, side, r, chainId, apiNativePrice, onEdit }: {
+  a: SuppliedAsset | BorrowedAsset
+  side: 'supply' | 'borrow'
+  r: RowPnl | null
+  chainId: number
+  apiNativePrice?: number | null
+  onEdit: (rowKey: string, avg: number) => void
+}) {
+  const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
+  const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
+  // Reported by the resolver rather than re-derived from the override map, so the highlight and
+  // the number can never disagree about where the figure came from.
+  const isOverride = r?.source === 'override'
+  const chainConfig = getChainConfig(chainId)
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+  const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
+  const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
+  const valueUsd = a.amount * currentPrice
+
+  return (
+    <td className="number" data-label="Value (USD)">
+      ${valueUsd.toFixed(2)}
+      <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '2px' }}>
+        @ ${currentPrice.toFixed(2)}
+      </div>
+      <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '4px' }}>
+        <button
+          type="button"
+          onClick={() => onEdit(rowKey, effectiveAvgEntry)}
+          title={side === 'supply' ? 'Click to set your own avg buy price' : 'Click to set your own avg borrow price'}
+          className="btn-ghost"
+          style={{
+            padding: '2px 4px',
+            color: isOverride ? T.primary : 'inherit',
+            fontSize: '0.75rem',
+            textDecoration: 'underline dotted',
+            textUnderlineOffset: '2px',
+          }}
+        >
+          Avg: {effectiveAvgEntry > 0 ? `$${effectiveAvgEntry.toFixed(2)}` : '—'}
+        </button>
+      </div>
+    </td>
+  )
+}
+
+/**
+ * P&L cell with breakdown on separate lines. Shared by both tables.
+ *
+ * At module scope for the same reason as {@link ValueCell}.
+ */
+function PnlCell({ r, side }: { r: RowPnl | null; side: 'supply' | 'borrow' }) {
+  if (!r || r.effectiveAvgEntry <= 0) {
+    return <td className="number" data-label="Position P&L"><span style={{ color: T.textMuted }}>—</span></td>
+  }
+  const yieldLabel = side === 'supply' ? 'Yield' : 'Cost'
+  return (
+    <td className="number" data-label="Position P&L">
+      <div className={r.totalPnlUsd >= 0 ? 'text-success' : 'text-danger'}>
+        {fmtSigned(r.totalPnlUsd)}
+      </div>
+      <div style={{ fontSize: '0.75rem', color: T.textMuted, lineHeight: 1.4 }}>
+        <div>Price {fmtSigned(r.priceGainUsd)}</div>
+        <div>{yieldLabel} {fmtSigned(r.interestUsd ?? 0)}</div>
+        {r.realizedPnlUsd !== undefined && r.realizedPnlUsd !== 0 && (
+          <div>Realized {fmtSigned(r.realizedPnlUsd)}</div>
+        )}
+      </div>
+    </td>
+  )
+}
+
 export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active }: AavePositionProps = {}) {
   const {
     isConnected,
@@ -115,7 +197,6 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
   const [isAssetsToSupplyModalOpen, setIsAssetsToSupplyModalOpen] = useState(false)
   const [isAssetsToBorrowModalOpen, setIsAssetsToBorrowModalOpen] = useState(false)
 
-  const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`
 
   // User-supplied avg-buy-price overrides, keyed by lowercased underlying-asset address.
   // Persisted to localStorage so overrides survive reload.
@@ -277,54 +358,18 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
     })
   }
 
+  // Computed ONCE and read by both the headline and the rows, which is what makes the comment
+  // below structurally true rather than a hope — and halves the work, since `pnlFor` used to run
+  // for every asset again on the way into each table.
+  const suppliedPnl = suppliedAssets.map((a) => pnlFor(a, 'supply'))
+  const borrowedPnl = borrowedAssets.map((a) => pnlFor(a, 'borrow'))
+
   // Summed from the same rows the table renders, so the headline cannot disagree with the lines.
   const effectiveTotalPnlUsd = portfolioPnl(
-    [
-      ...suppliedAssets.map((a) => pnlFor(a, 'supply')),
-      ...borrowedAssets.map((a) => pnlFor(a, 'borrow')),
-    ].filter((r): r is RowPnl => r !== null),
+    [...suppliedPnl, ...borrowedPnl].filter((r): r is RowPnl => r !== null),
   )
 
   /** Value(USD) cell — shows just the value + a clickable Avg row that opens the editor modal. */
-  const ValueCell = ({ a, side, r }: { a: SuppliedAsset | BorrowedAsset; side: 'supply' | 'borrow'; r: RowPnl | null }) => {
-    const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
-    const effectiveAvgEntry = r?.effectiveAvgEntry ?? 0
-    // Reported by the resolver rather than re-derived from the override map, so the highlight and
-    // the number can never disagree about where the figure came from.
-    const isOverride = r?.source === 'override'
-    const chainConfig = getChainConfig(chainId)
-    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
-    const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
-    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
-    const valueUsd = a.amount * currentPrice
-
-    return (
-      <td className="number" data-label="Value (USD)">
-        ${valueUsd.toFixed(2)}
-        <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '2px' }}>
-          @ ${currentPrice.toFixed(2)}
-        </div>
-        <div style={{ fontSize: T.fontSize.xs, color: T.textMuted, marginTop: '4px' }}>
-          <button
-            type="button"
-            onClick={() => openEditor(rowKey, effectiveAvgEntry)}
-            title={side === 'supply' ? 'Click to set your own avg buy price' : 'Click to set your own avg borrow price'}
-            className="btn-ghost"
-            style={{
-              padding: '2px 4px',
-              color: isOverride ? T.primary : 'inherit',
-              fontSize: '0.75rem',
-              textDecoration: 'underline dotted',
-              textUnderlineOffset: '2px',
-            }}
-          >
-            Avg: {effectiveAvgEntry > 0 ? `$${effectiveAvgEntry.toFixed(2)}` : '—'}
-          </button>
-        </div>
-      </td>
-    )
-  }
-
   /**
    * Look up the asset behind the currently-open editor key, so the modal can pull
    * on-chain avg, current price, symbol, etc. Returns null if the key doesn't match anything.
@@ -362,27 +407,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
     setEditingKey(null)
   }
 
-  /** P&L cell with breakdown on separate lines. Shared by both tables. */
-  const PnlCell = ({ r, side }: { r: RowPnl | null; side: 'supply' | 'borrow' }) => {
-    if (!r || r.effectiveAvgEntry <= 0) {
-      return <td className="number" data-label="Position P&L"><span style={{ color: T.textMuted }}>—</span></td>
-    }
-    const yieldLabel = side === 'supply' ? 'Yield' : 'Cost'
-    return (
-      <td className="number" data-label="Position P&L">
-        <div className={r.totalPnlUsd >= 0 ? 'text-success' : 'text-danger'}>
-          {fmtSigned(r.totalPnlUsd)}
-        </div>
-        <div style={{ fontSize: '0.75rem', color: T.textMuted, lineHeight: 1.4 }}>
-          <div>Price {fmtSigned(r.priceGainUsd)}</div>
-          <div>{yieldLabel} {fmtSigned(r.interestUsd ?? 0)}</div>
-          {r.realizedPnlUsd !== undefined && r.realizedPnlUsd !== 0 && (
-            <div>Realized {fmtSigned(r.realizedPnlUsd)}</div>
-          )}
-        </div>
-      </td>
-    )
-  }
+
 
   const renderViewModeBanner = () => {
     if (!isViewMode || !viewedAddress) return null;
@@ -622,13 +647,13 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
                 </thead>
                 <tbody>
                   {suppliedAssets.map((a: SuppliedAsset, i: number) => {
-                    const r = pnlFor(a, 'supply');
+                    const r = suppliedPnl[i];
 
                     return (
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                        <ValueCell a={a} side="supply" r={r} />
+                        <ValueCell a={a} side="supply" r={r} chainId={chainId} apiNativePrice={apiNativePrice} onEdit={openEditor} />
                         <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-success" data-label="Interest Earned">
                           {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
@@ -692,12 +717,12 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
                 </thead>
                 <tbody>
                   {borrowedAssets.map((a: BorrowedAsset, i: number) => {
-                    const r = pnlFor(a, 'borrow');
+                    const r = borrowedPnl[i];
                     return (
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                        <ValueCell a={a} side="borrow" r={r} />
+                        <ValueCell a={a} side="borrow" r={r} chainId={chainId} apiNativePrice={apiNativePrice} onEdit={openEditor} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-danger" data-label="Interest Paid">
                           {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />

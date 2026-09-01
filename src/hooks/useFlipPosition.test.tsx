@@ -369,3 +369,20 @@ describe('flip', () => {
     expect(delegation.primaryType).toBe('DelegationWithSig')
   })
 })
+
+it('starts each attempt with an empty log', async () => {
+  // The close flow clears its own for a reason it wrote down: lines from the previous attempt
+  // caption this one. The flip never cleared, so a second press would render the first press's
+  // progress above its own. Latent only because nothing renders the flip yet.
+  mocks.writeContract.mockResolvedValue('0xhash')
+  mocks.waitForTransactionReceipt.mockResolvedValue({ status: 'success', logs: [] })
+  const { result } = renderHook(() => useFlipPosition())
+
+  await act(async () => { await result.current.flip(INPUT) })
+  const first = result.current.logs.length
+  expect(first).toBeGreaterThan(0)
+
+  await act(async () => { await result.current.flip(INPUT) })
+
+  expect(result.current.logs.length).toBe(first)
+})

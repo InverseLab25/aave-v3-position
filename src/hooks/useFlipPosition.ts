@@ -56,11 +56,15 @@ export function useFlipPosition() {
 
   /*────────────────────────── execution ──────────────────────────*/
   const flip = useCallback(
-    (input: FlipInput) =>
-      submitFlip(input, {
+    (input: FlipInput) => {
+      // Belongs to the previous attempt. Leaving it up captions this one with it — the same
+      // reason `useDeleverageClose` clears its own before every close.
+      setLogs([])
+      return submitFlip(input, {
         address, chainId, publicClient, walletClient, signatures,
         preview, log, setStep, setExecError,
-      }),
+      })
+    },
     [address, chainId, log, preview, publicClient, walletClient],
   )
 

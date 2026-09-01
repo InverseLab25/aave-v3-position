@@ -107,9 +107,17 @@ const headers = (): HeadersInit =>
 /** The route with the most output. Socket ranks its own with tags; this app ranks on output. */
 const bestRoute = (routes: SocketRoute[] | undefined): SocketRoute | null => {
   let best: SocketRoute | null = null;
+  // The winner's amount is carried alongside it rather than re-parsed each time round. Socket
+  // returns a route per underlying aggregator, so the list is not short — and holding the value
+  // also retires the non-null assertion that reaching back into `best.output` needed.
+  let bestOut = 0n;
   for (const route of routes ?? []) {
     if (!route.output?.amount) continue;
-    if (!best || BigInt(route.output.amount) > BigInt(best.output!.amount)) best = route;
+    const out = BigInt(route.output.amount);
+    if (best === null || out > bestOut) {
+      best = route;
+      bestOut = out;
+    }
   }
   return best;
 };
