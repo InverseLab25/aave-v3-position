@@ -100,8 +100,8 @@ const okPreview = (over: Record<string, unknown> = {}) => ({
   expectedDebtOut: '21000',
   debtRequired: '20100',
   debtReturned: '1000',
-  rate: '3000',
-  guaranteedRate: '2985',
+  rate: { unit: 'WETH', quote: 'USDC', rate: '3000', inverse: { unit: 'USDC', quote: 'WETH', rate: '0.000333' } },
+  guaranteedRate: { unit: 'WETH', quote: 'USDC', rate: '2985', inverse: { unit: 'USDC', quote: 'WETH', rate: '0.000335' } },
   routeCostPercent: 0.05,
   swapGasEstimate: '450000',
   ...over,
@@ -536,4 +536,19 @@ describe('ClosePositionModal — the health-factor gate on a partial close', () 
 
     await waitFor(() => expect(isEnabled()).toBe(true))
   })
+})
+
+it('flips both rate rows together', async () => {
+  // One control for both, deliberately. Un-inverted a worse fill is a SMALLER number and
+  // inverted it is a LARGER one, so a guaranteed row that flipped on its own would show the
+  // worse of the two rates as the better-looking figure sitting right under the expected one.
+  mount()
+
+  expect(await screen.findByText(/1 WETH = 3,000/)).toBeTruthy()
+  expect(screen.getByText(/1 WETH = 2,985/)).toBeTruthy()
+
+  fireEvent.click(screen.getAllByLabelText('Flip rate direction')[0])
+
+  expect(screen.getByText(/1 USDC = 0.000333/)).toBeTruthy()
+  expect(screen.getByText(/1 USDC = 0.000335/)).toBeTruthy()
 })

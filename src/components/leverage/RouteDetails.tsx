@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { FlipRateButton } from '../FlipRateButton'
 import { formatUnits } from 'viem'
 import { T } from '../../styles/theme'
 
@@ -46,23 +47,6 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <span style={{ color: T.textMuted }}>{label}</span>
       <span style={{ textAlign: 'right' }}>{children}</span>
     </div>
-  )
-}
-
-/** Reads the same rate from the other end of the pair — which side is quoted as 1, nothing more. */
-function FlipButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label="Flip rate direction"
-      style={{
-        background: 'none', border: 'none', padding: 0, marginLeft: T.space[2],
-        cursor: 'pointer', color: T.textMuted, fontSize: T.fontSize.sm, lineHeight: 1,
-      }}
-    >
-      ⇄
-    </button>
   )
 }
 
@@ -131,7 +115,7 @@ export function RouteDetails({
         <Row label="Expected rate">
           <span style={{ color: T.textSubtle }}>
             1 {base} = {rate(expected)} {quoted}
-            <FlipButton onClick={() => setFlipped(f => !f)} />
+            <FlipRateButton onClick={() => setFlipped(f => !f)} />
           </span>
         </Row>
       )}

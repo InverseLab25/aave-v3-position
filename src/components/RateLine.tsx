@@ -8,6 +8,7 @@
  */
 import { useState } from 'react'
 import { quoteRate } from '../lib/deleverage'
+import { preferInverted } from '../lib/swapRoute'
 import { T } from '../styles/theme'
 
 interface RateLineProps {
@@ -20,18 +21,6 @@ interface RateLineProps {
   /** What came back, in `dstSymbol` units. */
   returnAmount: bigint
 }
-
-/**
- * Symbol lists, deliberately, and only to choose a DEFAULT DIRECTION.
- *
- * `isVolatilePrice` classifies on price and is the right tool where a wrong answer costs money —
- * see `utils/liquidation`. Here a wrong answer costs a reader one click on the toggle, and no price
- * is on hand anyway: this component is given two amounts and two symbols, nothing more.
- */
-const STABLES = ['USDC', 'USDT', 'DAI', 'USDS', 'FRAX', 'LUSD', 'USDE']
-const MAJORS = ['WETH', 'ETH', 'WBTC', 'CBBTC', 'WSTETH', 'CBETH', 'RETH', 'WEETH']
-
-const has = (list: readonly string[], symbol: string) => list.includes(symbol.toUpperCase())
 
 /** Rates carry their own precision from `quoteRate`; this only groups the thousands. */
 function format(value: string): string {
@@ -47,7 +36,7 @@ export function RateLine({
 }: RateLineProps) {
   // Quote the volatile leg per stable, or the base asset per whatever bought it — that is the
   // reading people hold prices in. Falls back to the swap's own direction when neither applies.
-  const [inverted, setInverted] = useState(has(STABLES, srcSymbol) || has(MAJORS, dstSymbol))
+  const [inverted, setInverted] = useState(preferInverted(srcSymbol, dstSymbol))
 
   // A leg of zero has no ratio in EITHER direction, so the check cannot be left to `quoteRate` —
   // that only guards its own denominator, and would report the other direction as a flat zero.

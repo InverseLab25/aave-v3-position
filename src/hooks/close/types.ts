@@ -1,4 +1,5 @@
 import type { Address } from 'viem'
+import type { StatedRate } from '../../lib/swapRoute'
 import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'
 
@@ -140,13 +141,13 @@ export interface ClosePreview {
    * Debt token per 1 collateral token on this route. Derived from the quote, not from oracle
    * prices, so it carries the route's price impact at the size being swapped.
    */
-  rate: string | null
+  rate: StatedRate | null
   /**
    * The price implied by the router's guaranteed floor — `minDebtOut / requiredIn`. The
    * worst rate the swap can fill at without reverting, which is the number a floor actually
    * means to someone reading it.
    */
-  guaranteedRate: string | null
+  guaranteedRate: StatedRate | null
   /**
    * What the route gives up, in percent of value in — price impact, DEX fees and spread
    * together, from the aggregator's own USD figures for both sides. Null when unpriced.

@@ -2,7 +2,8 @@ import { useCallback, useRef, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { formatUnits, type Address } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { CloseError, toCloseError, quoteRate } from '../lib/deleverage'
+import { CloseError, toCloseError } from '../lib/deleverage'
+import { statedRate } from '../lib/swapRoute'
 import {
   assertExecutable,
   PRICE_IMPACT_BLOCK_PERCENT,
@@ -169,8 +170,20 @@ export function useDeleverageClose() {
               collateralPrice > 0 ? Number(formatUnits(keptSupplied, cDec)) * collateralPrice : null,
             minDebtOut: formatUnits(p.minDebtOut, dDec),
             expectedDebtOut: formatUnits(p.expectedOut, dDec),
-            rate: quoteRate(p.expectedOut, p.requiredIn, cDec, dDec),
-            guaranteedRate: quoteRate(p.minDebtOut, p.requiredIn, cDec, dDec),
+            // Both stated in ONE direction, decided by the pair rather than by the way the swap
+            // runs. A close selling USDC for WETH read as "1 USDC = 0.000409 WETH", which is
+            // arithmetically fine and unreadable. Same symbols on both calls, so the expected
+            // fill and the floor under it stay comparable.
+            rate: statedRate({
+              srcSymbol: input.collateral.symbol, dstSymbol: input.debtAsset.symbol,
+              srcDecimals: cDec, dstDecimals: dDec,
+              spentAmount: p.requiredIn, returnAmount: p.expectedOut,
+            }),
+            guaranteedRate: statedRate({
+              srcSymbol: input.collateral.symbol, dstSymbol: input.debtAsset.symbol,
+              srcDecimals: cDec, dstDecimals: dDec,
+              spentAmount: p.requiredIn, returnAmount: p.minDebtOut,
+            }),
             routeCostPercent: routeCostPercent(p.best.rawAmountInUsd, p.best.rawAmountOutUsd),
             swapGasEstimate: p.best.gasEstimate ?? null,
           },

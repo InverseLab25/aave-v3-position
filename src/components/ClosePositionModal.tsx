@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
+import { FlipRateButton } from './FlipRateButton'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
 import { parseUnits, maxUint256 } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../config/chains'
@@ -145,6 +146,8 @@ export function ClosePositionModal({
   /** Last close failed because the tolerance was too tight — offer a wider one. */
   const [slippageTooTight, setSlippageTooTight] = useState<boolean>(false)
   /** Advanced by the countdown below; `secondsLeft` is derived from it during render. */
+  /** Which end of the pair is quoted as 1. Shared by both rate rows — see the note there. */
+  const [rateFlipped, setRateFlipped] = useState(false)
   const [nowSeconds, setNowSeconds] = useState<number>(() => Math.floor(Date.now() / 1000))
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
@@ -896,23 +899,34 @@ export function ClosePositionModal({
                       </span>
                     </div>
                   )}
+                  {/* ONE control for both rows. Un-inverted a worse fill is a SMALLER number and
+                      inverted it is a LARGER one, so a guaranteed row that flipped on its own
+                      would show the worse of the two rates as the better-looking figure sitting
+                      directly under the expected one. */}
                   {preview.rate != null && (
                     <div className="info-row">
-                      <span className="info-row-label">Rate</span>
+                      <span className="info-row-label">Expected rate</span>
                       <span className="info-row-value">
-                        1 {preview.collateralSymbol} = {formatAmount(preview.rate)}{' '}
-                        {preview.debtSymbol}
+                        {(() => {
+                          const r = rateFlipped ? preview.rate.inverse : preview.rate
+                          return `1 ${r.unit} = ${formatAmount(r.rate)} ${r.quote}`
+                        })()}
+                        <FlipRateButton onClick={() => setRateFlipped(!rateFlipped)} />
                       </span>
                     </div>
                   )}
                   {preview.guaranteedRate != null && (
                     <div className="info-row">
                       <span className="info-row-label">
-                        Worst rate at {slippage}%
+                        Guaranteed rate ({slippage}%)
                       </span>
                       <span className="info-row-value">
-                        1 {preview.collateralSymbol} = {formatAmount(preview.guaranteedRate)}{' '}
-                        {preview.debtSymbol}
+                        {(() => {
+                          const r = rateFlipped
+                            ? preview.guaranteedRate.inverse
+                            : preview.guaranteedRate
+                          return `1 ${r.unit} = ${formatAmount(r.rate)} ${r.quote}`
+                        })()}
                       </span>
                     </div>
                   )}
