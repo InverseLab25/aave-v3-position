@@ -19,7 +19,7 @@ type PnlSide = 'supply' | 'borrow'
  * the override map a second time, which meant the badge and the number could in principle
  * disagree about where the figure came from.
  */
-type EntrySource = 'override' | 'fills' | 'indexer' | 'none'
+type EntrySource = 'override' | 'measured' | 'none'
 
 interface EntryPrice {
   /** USD per unit. Zero exactly when `source` is `none`. */
@@ -30,26 +30,30 @@ interface EntryPrice {
 interface EntryPriceInput {
   /** What the user typed for this row, if anything. */
   override?: number
-  /** Replayed from this wallet's own fills — see `historyBasis`. */
-  fills?: number | null
-  /** Aave's indexer, priced at each block's oracle read. */
-  indexer?: number
+  /**
+   * Replayed from Aave's own ledger, every lot at what it actually cost — the router's rate where
+   * a swap bought it, the block's oracle read where it was supplied from the wallet. See
+   * `useAaveHistoricalInterest`.
+   */
+  measured?: number
 }
 
 /**
- * Hand-typed beats fills beats indexed.
+ * Hand-typed beats measured.
  *
- * The override is last-written-by-a-person and must never be quietly replaced. The fills are what
- * the wallet actually traded at, so they beat the indexer's oracle price — for a leveraged open
- * those differ, and the fill is the one that matches the transaction on an explorer.
+ * The override is last-written-by-a-person and must never be quietly replaced. There used to be a
+ * third source between them — a second ledger replayed from swap rows alone — and it was removed
+ * rather than fixed: it could only see units that went through a router, so a position exited by
+ * a plain Aave withdrawal left it holding lots the wallet no longer owned, and it averaged those
+ * into every position opened afterwards. The fills belong IN the ledger that sees every movement,
+ * which is where they are now.
  *
- * A non-positive figure is not a price. Zero is what all three sources report for "unknown", and
+ * A non-positive figure is not a price. Zero is what both sources report for "unknown", and
  * accepting it would show a position acquired for nothing, which reads as pure profit.
  */
-export function resolveEntryPrice({ override, fills, indexer }: EntryPriceInput): EntryPrice {
+export function resolveEntryPrice({ override, measured }: EntryPriceInput): EntryPrice {
   if (override !== undefined && override > 0) return { usd: override, source: 'override' }
-  if (fills !== undefined && fills !== null && fills > 0) return { usd: fills, source: 'fills' }
-  if (indexer !== undefined && indexer > 0) return { usd: indexer, source: 'indexer' }
+  if (measured !== undefined && measured > 0) return { usd: measured, source: 'measured' }
   return { usd: 0, source: 'none' }
 }
 

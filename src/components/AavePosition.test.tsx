@@ -348,30 +348,6 @@ const UNPRICED_WETH_SUPPLY = {
   positionPnl: { avgEntryPriceUsd: 0, realizedPnlUsd: 0, interestUsd: 0, totalPnlUsd: 0 },
 }
 
-/** The Arbitrum fill: 67,754.40695 stable for 36.112335215858211266 WETH — $1,876.21 a unit. */
-const LEVERAGED_OPEN = {
-  hash: `0x${'33'.repeat(32)}` as `0x${string}`,
-  chainId: 1,
-  wallet: OWNER,
-  kind: 'open' as const,
-  at: 1_800_000_000_000,
-  swap: {
-    srcToken: USDC.underlyingAsset,
-    dstToken: WETH.underlyingAsset,
-    srcSymbol: 'USDC',
-    srcDecimals: 6,
-    dstSymbol: 'WETH',
-    dstDecimals: 18,
-    spentAmount: 67_754_406_950n,
-    returnAmount: 36_112_335_215_858_211_266n,
-  },
-  rate: null,
-  fill: null,
-  deltas: [],
-  source: 'chain' as const,
-  blockNumber: 100n,
-}
-
 const withSupply = () => ({
   ...EMPTY_PORTFOLIO,
   collateralUsd: 108_337,
@@ -381,49 +357,20 @@ const withSupply = () => ({
   chainName: 'Ethereum',
 })
 
-it('prices a supply from its own fills when the indexer could not', () => {
-  // The whole point: a leveraged open BOUGHT its collateral through a router, and what it paid
-  // is in the receipt. Asking the user to type that in was asking them to read an explorer.
-  installStorage()
-  mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withSupply())
-  appendHistory(localStorage, LEVERAGED_OPEN)
+/**
+ * The entry price is measured in `useAaveHistoricalInterest` now, not here.
+ *
+ * There used to be a second ledger in this component, replayed from swap rows alone, and the
+ * tests for it lived at this spot. It was removed rather than fixed: it could only see units that
+ * went through a router, so a position exited by a plain Aave withdrawal left it holding lots the
+ * wallet no longer owned, and it averaged those into every position opened afterwards. The fills
+ * are folded into Aave's own ledger now, which sees every movement — see
+ * `useAaveHistoricalInterest.test.tsx`. What is left here is what this component still decides:
+ * whether a hand-typed override wins, and whether the editor says which figure is in play.
+ */
 
-  renderPanel(<AavePosition />)
-
-  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
-})
-
-it('shows the fill itself, not the fill re-priced at today\'s peg', () => {
-  // Aave prices USDC at 0.99990104, and multiplying by it turned a 1,876.2123 fill into
-  // 1,876.0269 — a figure that no longer matches the transaction on an explorer.
-  installStorage()
-  mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue({
-    ...withSupply(),
-    availableReserves: [WETH, { ...USDC, priceInUsd: '0.99990104' }],
-  })
-  appendHistory(localStorage, LEVERAGED_OPEN)
-
-  renderPanel(<AavePosition />)
-
-  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
-})
-
-it('keeps a hand-typed avg ahead of the one derived from history', () => {
-  // Deriving must never silently discard something the user set on purpose.
-  installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
-  mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withSupply())
-  appendHistory(localStorage, LEVERAGED_OPEN)
-
-  renderPanel(<AavePosition />)
-
-  expect(screen.getByText('Avg: $2500.00')).toBeTruthy()
-})
-
-/** Same supply, but with an indexer price that is distinguishable from the fill-derived one. */
-const withIndexerPrice = () => ({
+/** The same supply, with a measured average the component can actually render. */
+const withMeasuredPrice = () => ({
   ...withSupply(),
   suppliedAssets: [
     {
@@ -433,117 +380,67 @@ const withIndexerPrice = () => ({
   ],
 })
 
-it('resets a hand-typed avg back to what the swaps paid, not to the indexer', () => {
-  // Three candidate numbers exist at once: 2,500 typed by hand, 1,876.21 from the fills and
-  // 1,873.66 from the indexer. Reset has to land on the fills — that is the honest one.
+it('keeps a hand-typed avg ahead of the measured one', () => {
+  // Deriving must never silently discard something the user set on purpose.
   installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
   mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withIndexerPrice())
-  appendHistory(localStorage, LEVERAGED_OPEN)
+  mocks.useAavePositions.mockReturnValue(withMeasuredPrice())
+
+  renderPanel(<AavePosition />)
+
+  expect(screen.getByText('Avg: $2500.00')).toBeTruthy()
+})
+
+it('resets a hand-typed avg back to the measured one', () => {
+  installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
+  mocks.useConnection.mockReturnValue({ address: OWNER })
+  mocks.useAavePositions.mockReturnValue(withMeasuredPrice())
 
   renderPanel(<AavePosition />)
   fireEvent.click(screen.getByText('Avg: $2500.00'))
   fireEvent.click(screen.getByText(/^Reset to/))
 
-  expect(screen.getByText('Avg: $1876.21')).toBeTruthy()
+  expect(screen.getByText('Avg: $1873.66')).toBeTruthy()
 })
 
-it('hints the fill-derived price in the editor input, not the indexer one', () => {
-  // The placeholder is what the box offers you if you type nothing, so it has to agree with what
-  // Reset would give you. Showing the indexer's figure there contradicts both.
+it('says which figure the P&L is actually using', () => {
+  // An override that looked ignored was the whole confusion here: the editor listed a second
+  // number under its own label and left the reader to guess which one the column was built on.
   installStorage()
   mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withIndexerPrice())
-  appendHistory(localStorage, LEVERAGED_OPEN)
+  mocks.useAavePositions.mockReturnValue(withMeasuredPrice())
 
   renderPanel(<AavePosition />)
-  fireEvent.click(screen.getByText('Avg: $1876.21'))
+  fireEvent.click(screen.getByText('Avg: $1873.66'))
 
-  const input = screen.getByPlaceholderText('1876.2123')
-  expect(input).toBeTruthy()
+  expect(screen.getByText(/Weighted avg buy · in use/)).toBeTruthy()
+  expect(screen.queryByText(/Your override/)).toBeNull()
+  expect(screen.getByPlaceholderText('1873.6600')).toBeTruthy()
 })
 
-it("never prices someone else's position from this browser's fills", () => {
-  // The history in this browser belongs to the connected wallet. Viewing another address and
-  // pricing THEIR collateral at what I paid would be a confidently wrong number, which is worse
-  // than the dash the indexer leaves.
-  installStorage()
+it('moves the "in use" mark onto the override once one is set', () => {
+  installStorage({ overrides: { [`supply:${WETH.underlyingAsset.toLowerCase()}`]: 2500 } })
   mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withSupply())
-  appendHistory(localStorage, LEVERAGED_OPEN)
-
-  renderPanel(<AavePosition viewAddress="0x0000000000000000000000000000000000009999" />)
-
-  expect(screen.queryByText('Avg: $1876.21')).toBeNull()
-})
-
-it('shows the fill-derived price beside the indexer one in the editor', () => {
-  // Two sources that can disagree, so the editor has to name which is which rather than show
-  // one figure under a label that could mean either.
-  installStorage()
-  mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue(withSupply())
-  appendHistory(localStorage, LEVERAGED_OPEN)
+  mocks.useAavePositions.mockReturnValue(withMeasuredPrice())
 
   renderPanel(<AavePosition />)
-  fireEvent.click(screen.getByText('Avg: $1876.21'))
+  fireEvent.click(screen.getByText('Avg: $2500.00'))
 
-  expect(screen.getByText('Paid on your swaps')).toBeTruthy()
-  // In the token that paid for it, not converted to dollars — that is the fill itself.
-  expect(screen.getByText('1876.2123 USDC')).toBeTruthy()
+  expect(screen.getByText('Your override · in use')).toBeTruthy()
+  expect(screen.getByText(/Weighted avg buy$/)).toBeTruthy()
 })
 
-/** A short: WETH borrowed and sold for USDC collateral, 2 WETH for 3,800 USDC. */
-const SHORT_OPEN = {
-  ...LEVERAGED_OPEN,
-  hash: `0x${'44'.repeat(32)}` as `0x${string}`,
-  swap: {
-    srcToken: WETH.underlyingAsset,
-    dstToken: USDC.underlyingAsset,
-    srcSymbol: 'WETH',
-    srcDecimals: 18,
-    dstSymbol: 'USDC',
-    dstDecimals: 6,
-    spentAmount: 2n * 10n ** 18n,
-    returnAmount: 3_800_000_000n,
-  },
-}
-
-const WETH_DEBT = {
-  symbol: 'WETH',
-  underlyingAsset: WETH.underlyingAsset,
-  decimals: 18,
-  amount: 2,
-  amountRaw: 2n * 10n ** 18n,
-  valueUsd: 6000,
-  priceInUsd: '3000',
-  apy: 3,
-  variableDebtTokenAddress: WETH.variableDebtTokenAddress,
-  interestPaidTokens: 0,
-  interestPaidUsd: 0,
-  positionPnl: { avgEntryPriceUsd: 0, realizedPnlUsd: 0, interestUsd: 0, totalPnlUsd: 0 },
-}
-
-it('prices a short from the debt it sold, not the collateral it bought', () => {
-  // The borrow row is where a short's entry price lives. Reading the collateral leg would answer
-  // "WETH per USDC", which tells a shorter nothing about where they got in.
+it('leaves a closed-out position out of the headline entirely', () => {
+  // The headline describes what is open now, and must decompose into rows a reader can find on
+  // the page. A position exited completely has no row, so it contributes nothing here — what each
+  // of its closes made is reported against that transaction in Recent activity instead.
   installStorage()
   mocks.useConnection.mockReturnValue({ address: OWNER })
-  mocks.useAavePositions.mockReturnValue({
-    ...EMPTY_PORTFOLIO,
-    collateralUsd: 3800,
-    debtUsd: 6000,
-    borrowedAssets: [WETH_DEBT],
-    isUnsupportedChain: false,
-    chainName: 'Ethereum',
-  })
-  appendHistory(localStorage, SHORT_OPEN)
+  mocks.useAavePositions.mockReturnValue(withMeasuredPrice())
 
   renderPanel(<AavePosition />)
-  fireEvent.click(screen.getByText('Avg: $1900.00'))
 
-  expect(screen.getByText('Sold on your swaps')).toBeTruthy()
-  expect(screen.getByText('1900.0000 USDC')).toBeTruthy()
+  expect(screen.queryByText('Closed Positions')).toBeNull()
 })
 
 it('still lists recent activity for an account that has closed everything', () => {

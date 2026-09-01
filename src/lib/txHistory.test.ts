@@ -106,7 +106,7 @@ describe('txHistory', () => {
 
   it('keeps the oldest row until the cap is reached', () => {
     // Below the cap nothing is evicted at all, which is the case that matters most:
-    // `historyBasis` replays these rows to price a position, so dropping the first open would
+    // The cost-basis replay reads these rows for fill prices, so dropping the first open would
     // not hide an old line, it would change an average entry price to one just as plausible.
     const storage = memoryStorage()
     for (let i = 0; i < MAX_HISTORY_PER_SCOPE; i++) {

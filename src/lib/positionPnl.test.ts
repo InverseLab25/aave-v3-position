@@ -2,44 +2,36 @@ import { describe, expect, it } from 'vitest'
 import { portfolioPnl, resolveEntryPrice, rowPnl, type RowPnlInput } from './positionPnl'
 
 describe('resolveEntryPrice', () => {
-  it('prefers what a person typed over anything derived', () => {
+  it('prefers what a person typed over what was measured', () => {
     // An override is last-written-by-a-human and must never be quietly replaced.
-    expect(resolveEntryPrice({ override: 2500, fills: 1876, indexer: 1873 })).toEqual({
+    expect(resolveEntryPrice({ override: 2500, measured: 1876 })).toEqual({
       usd: 2500,
       source: 'override',
     })
   })
 
-  it('prefers the fills over the indexer', () => {
-    // The fills are what the wallet actually paid; the indexer reports an oracle read at the
-    // block, which for a leveraged open is a different number — 1,873.66 against 1,876.21.
-    expect(resolveEntryPrice({ fills: 1876.21, indexer: 1873.66 })).toEqual({
+  it('uses the measured ledger when nothing was typed', () => {
+    expect(resolveEntryPrice({ measured: 1876.21 })).toEqual({
       usd: 1876.21,
-      source: 'fills',
+      source: 'measured',
     })
-  })
-
-  it('falls back to the indexer when there are no fills', () => {
-    // A position supplied through Aave directly emits no swap, so there is nothing to derive from.
-    expect(resolveEntryPrice({ indexer: 1873.66 })).toEqual({ usd: 1873.66, source: 'indexer' })
   })
 
   it('reports that nothing could price it, rather than reporting zero as a price', () => {
     expect(resolveEntryPrice({})).toEqual({ usd: 0, source: 'none' })
   })
 
-  it('ignores a non-positive figure from any source', () => {
-    // Zero is what every one of these reports for "unknown", and treating it as a price shows a
+  it('ignores a non-positive figure from either source', () => {
+    // Zero is what both of these report for "unknown", and treating it as a price shows a
     // position as having been acquired for nothing — which reads as pure profit.
-    expect(resolveEntryPrice({ override: 0, fills: 1876 }).source).toBe('fills')
-    expect(resolveEntryPrice({ fills: null, indexer: 1873 }).source).toBe('indexer')
-    expect(resolveEntryPrice({ override: -5, fills: 0, indexer: 0 }).source).toBe('none')
+    expect(resolveEntryPrice({ override: 0, measured: 1876 }).source).toBe('measured')
+    expect(resolveEntryPrice({ override: -5, measured: 0 }).source).toBe('none')
   })
 })
 
 const row = (over: Partial<RowPnlInput> = {}): RowPnlInput => ({
   side: 'supply',
-  entry: { usd: 1800, source: 'fills' },
+  entry: { usd: 1800, source: 'measured' },
   currentPriceUsd: 2000,
   amount: 10,
   interestTokens: 0,
@@ -56,7 +48,7 @@ describe('rowPnl', () => {
   it('gains on a borrow when the price FALLS below what was sold at', () => {
     // A short profits from a fall, so the delta is signed the other way. Getting this backwards
     // would report every profitable short as a loss of the same size.
-    const short = rowPnl(row({ side: 'borrow', entry: { usd: 2000, source: 'fills' }, currentPriceUsd: 1800 }))
+    const short = rowPnl(row({ side: 'borrow', entry: { usd: 2000, source: 'measured' }, currentPriceUsd: 1800 }))
 
     expect(short.priceGainUsd).toBeCloseTo(2000, 6)
   })
@@ -110,7 +102,7 @@ describe('portfolioPnl', () => {
     // disagree with the lines beneath it.
     const rows = [
       rowPnl(row({ realizedPnlUsd: 100 })),
-      rowPnl(row({ side: 'borrow', entry: { usd: 2000, source: 'fills' }, currentPriceUsd: 1900, amount: 5 })),
+      rowPnl(row({ side: 'borrow', entry: { usd: 2000, source: 'measured' }, currentPriceUsd: 1900, amount: 5 })),
     ]
 
     expect(portfolioPnl(rows)).toBeCloseTo(2000 + 100 + 500, 6)

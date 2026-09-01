@@ -50,12 +50,20 @@ function entry(over: Partial<TxHistoryEntry> = {}): TxHistoryEntry {
   }
 }
 
-const show = (over: { wallet?: Address; chainId?: number; sync?: HistorySync } = {}) =>
+const show = (
+  over: {
+    wallet?: Address
+    chainId?: number
+    sync?: HistorySync
+    realizedByTx?: Record<string, number>
+  } = {},
+) =>
   render(
     <TxHistoryList
       wallet={over.wallet ?? WALLET}
       chainId={over.chainId ?? 8453}
       sync={over.sync}
+      realizedByTx={over.realizedByTx}
     />,
   )
 
@@ -313,4 +321,41 @@ describe('TxHistoryList sync status', () => {
 
     expect(screen.getByText(/Recent activity \(1\)/)).toBeTruthy()
   })
+
+  it('reports what a close settled at, next to the close', () => {
+    appendHistory(localStorage, entry({ hash: hash(7), kind: 'close' }))
+    show({ realizedByTx: { [hash(7)]: 39_224.79 } })
+    fireEvent.click(screen.getByText(/Recent activity/))
+
+    expect(screen.getByText('+$39,224.79')).toBeTruthy()
+  })
+
+  it('marks a loss with a minus that lines up under a digit', () => {
+    appendHistory(localStorage, entry({ hash: hash(8), kind: 'close' }))
+    show({ realizedByTx: { [hash(8)]: -476.34 } })
+    fireEvent.click(screen.getByText(/Recent activity/))
+
+    expect(screen.getByText('\u2212$476.34')).toBeTruthy()
+  })
+
+  it('settles nothing on an open, whatever the ledger says about that hash', () => {
+    // An open establishes a cost basis. A figure here would be an opinion about a position that
+    // is still running, which is exactly what the Price column already reports.
+    appendHistory(localStorage, entry({ hash: hash(9), kind: 'open' }))
+    show({ realizedByTx: { [hash(9)]: 1_000 } })
+    fireEvent.click(screen.getByText(/Recent activity/))
+
+    expect(screen.queryByText('+$1,000.00')).toBeNull()
+  })
+
+  it('shows no figure at all for a close the ledger has not priced', () => {
+    // Absent while Aave's indexer is still answering. "Made nothing" and "not worked out yet" are
+    // different statements and a zero would say the first.
+    appendHistory(localStorage, entry({ hash: hash(10), kind: 'close' }))
+    show()
+    fireEvent.click(screen.getByText(/Recent activity/))
+
+    expect(screen.queryByText(/^[+\u2212]\$/)).toBeNull()
+  })
+
 })

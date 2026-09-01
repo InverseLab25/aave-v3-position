@@ -7,7 +7,7 @@
  * browser sent while the app was open — and only if it stayed open long enough for the receipt.
  * This covers the rest, and repairs a row that was written wrong.
  *
- * It also feeds `historyBasis`, which replays these rows to price a position. With no rows there
+ * It also feeds the cost-basis replay, which reads these rows for fill prices. With no rows there
  * is no average entry price, and the panel falls back to the indexer's oracle-priced figure.
  *
  * Once per connect, and nothing after: there used to be a `watchEvent` subscription per event per

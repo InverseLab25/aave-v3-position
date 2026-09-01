@@ -191,7 +191,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
 
   const hasAaveConfig = !!chainConfig?.aave
 
-  const { netPrincipals, costBasis } = useAaveHistoricalInterest(
+  const { netPrincipals, costBasis, realizedByTx } = useAaveHistoricalInterest(
     options?.viewAddress,
     options?.viewChainId
   )
@@ -344,6 +344,7 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     totalInterestEarnedUsd: 0,
     totalInterestPaidUsd: 0,
     totalPositionPnlUsd: 0,
+    realizedByTx: {} as Record<string, number>,
     eModeCategoryId: 0,
     isEModeEnabled: false,
     eModeLabel: 'Disabled',
@@ -608,6 +609,8 @@ export function useAavePositions(options?: UseAavePositionsOptions) {
     eModeLtv: eModeCategory?.ltv ? Number(eModeCategory.ltv) / 100 : 0,
     eModeLiquidationThreshold: eModeCategory?.liquidationThreshold ? Number(eModeCategory.liquidationThreshold) / 10000 : 0,
     eModeExcludedReserves,
+    /** Realized USD P&L per LOWER-CASED transaction hash — what each close settled at. */
+    realizedByTx,
     ...derived
   }
 }

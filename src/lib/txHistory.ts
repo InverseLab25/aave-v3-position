@@ -311,12 +311,11 @@ function byTimeDescending(a: TxHistoryEntry, b: TxHistoryEntry): number {
  * Per scope rather than overall, because one flat array backs every wallet and chain: a single
  * global cap would mean connecting a second wallet evicts the first one's history on sight.
  *
- * KNOWN COST. `historyBasis` REPLAYS these rows to price a position, so evicting an open whose
- * position is still held does not merely hide an old line — it drops units and cost out of the
- * weighted average and leaves a number that looks every bit as plausible as the right one. A
- * position opened more than 50 transactions ago will show a wrong average entry price. That is
- * why there was no cap here; it is back because an unbounded store shares one origin quota with
- * everything else and fails silently when it runs out.
+ * KNOWN COST. The cost-basis replay reads these rows for the RATE a router filled at, so evicting
+ * an open whose position is still held costs that position its fill price — the lot falls back to
+ * the block's oracle read, which for a leveraged open is a different number. It degrades rather
+ * than lies: the quantity comes from Aave's own ledger either way, so nothing goes missing from
+ * the average, only precision. See `swapFills` and `useAaveHistoricalInterest`.
  */
 export const MAX_HISTORY_PER_SCOPE = 50
 

@@ -21,6 +21,19 @@ interface TxHistoryListProps {
    * correct without it — this only reports what the sync is doing and offers to run it again.
    */
   sync?: HistorySync
+  /**
+   * Realized USD P&L per LOWER-CASED transaction hash, from the cost-basis replay.
+   *
+   * Optional, and absent while Aave's indexer is still answering. A close with no figure shows
+   * none rather than a zero — "made nothing" and "not worked out yet" are different statements.
+   */
+  realizedByTx?: Record<string, number>
+}
+
+/** Realized P&L, signed. The minus is U+2212, which lines up under a digit. */
+function pnl(usd: number): string {
+  const sign = usd < 0 ? '\u2212' : '+'
+  return `${sign}$${Math.abs(usd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
 /** Rates carry their own precision from `quoteRate`; this only groups the thousands. */
@@ -73,7 +86,11 @@ function PageButton({ label, disabled, onClick }: { label: string; disabled: boo
   )
 }
 
-function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
+function Row({ entry, chainId, realizedUsd }: {
+  entry: TxHistoryEntry
+  chainId: number
+  realizedUsd?: number
+}) {
   const { swap } = entry
   // Both directions, the toggle and the default orientation all live in RateLine, which the
   // settled panel in the open and close modals shares.
@@ -83,7 +100,7 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: 'minmax(80px, auto) minmax(200px, 2fr) minmax(180px, 1.5fr) minmax(100px, 1fr) auto',
+        gridTemplateColumns: 'minmax(80px, auto) minmax(200px, 2fr) minmax(180px, 1.5fr) minmax(100px, 1fr) minmax(90px, auto) auto',
         alignItems: 'center',
         gap: T.space[4],
         padding: `${T.space[3]} 0`,
@@ -155,7 +172,27 @@ function Row({ entry, chainId }: { entry: TxHistoryEntry; chainId: number }) {
         )}
       </div>
 
-      {/* 5. Explorer Link */}
+      {/* 5. What this trade settled.
+
+          Closes only, and deliberately: an open establishes a cost basis, it does not realize one,
+          so a number here would be an opinion about a position still running. The figure is the
+          whole transaction — a leveraged close settles on both legs, the collateral it sold and
+          the debt it bought back, and both are booked against this hash. */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
+        {entry.kind === 'close' && realizedUsd !== undefined && (
+          <span
+            title="Realized against the average entry price this position had at the time"
+            style={{
+              fontWeight: 600,
+              color: realizedUsd < 0 ? T.danger : T.success,
+            }}
+          >
+            {pnl(realizedUsd)}
+          </span>
+        )}
+      </div>
+
+      {/* 6. Explorer Link */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
         <ExplorerLink hash={entry.hash as `0x${string}`} chainId={chainId} label="Explorer" inline />
       </div>
@@ -215,7 +252,7 @@ function SyncFooter({ sync, expanded, inline }: { sync: HistorySync; expanded: b
   )
 }
 
-export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
+export function TxHistoryList({ wallet, chainId, sync, realizedByTx }: TxHistoryListProps) {
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState(0)
 
@@ -295,7 +332,12 @@ export function TxHistoryList({ wallet, chainId, sync }: TxHistoryListProps) {
       {open && (
         <div style={{ marginTop: T.space[2], overflowX: 'auto' }}>
           {shown.map((e) => (
-            <Row key={`${e.chainId}:${e.hash}`} entry={e} chainId={chainId} />
+            <Row
+              key={`${e.chainId}:${e.hash}`}
+              entry={e}
+              chainId={chainId}
+              realizedUsd={realizedByTx?.[e.hash.toLowerCase()]}
+            />
           ))}
 
           {/* Only when there is somewhere to page TO. One page of history needs no controls. */}

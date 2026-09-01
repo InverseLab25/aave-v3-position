@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useSyncExternalStore, lazy, Suspense, type ComponentType } from 'react'
+import { useState, useEffect, lazy, Suspense, type ComponentType } from 'react'
 import { useConnection } from 'wagmi'
 import { useAavePositions } from '../hooks/useAavePositions'
 import { exitViewMode } from '../hooks/useViewMode'
@@ -30,10 +30,7 @@ import { getChainConfig } from '../config/chains'
 import { LiquidationPriceBlock } from './LiquidationPriceBlock'
 import { TxHistoryList } from './TxHistoryList'
 import { useHistorySync } from '../hooks/useHistorySync'
-import { computeLiquidationView, hasLiquidationRowsToShow, isVolatilePrice, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
-import { browserStorage } from '../lib/delegationCache'
-import { historyVersion, isScopeTruncated, loadHistory, subscribeHistory } from '../lib/txHistory'
-import { avgEntryFromHistory } from '../lib/historyBasis'
+import { computeLiquidationView, hasLiquidationRowsToShow, toCollateralInputs, toDebtInputs } from '../utils/liquidation'
 import { portfolioPnl, resolveEntryPrice, rowPnl, type RowPnl } from '../lib/positionPnl'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
@@ -176,7 +173,8 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
     hasAnyCollateralEnabled,
     eModeExcludedReserves,
     hasReadError,
-    chainId
+    chainId,
+    realizedByTx
   } = useAavePositions({ viewAddress, viewChainId })
 
   /** Local history belongs to the wallet in this browser, never to an address being viewed. */
@@ -215,75 +213,6 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
       /* ignore quota */
     }
   }, [overrides])
-
-  /**
-   * What each leg of the position was actually traded at, read off this wallet's own fills.
-   *
-   * Aave's indexer prices a supply at its block's oracle price, which for a leveraged open is not
-   * what was paid — the asset went through a router. `avgEntryFromHistory` recovers the real figure
-   * from the `Swapped` amounts the sync already stores, so the override below stops being the only
-   * way to get an honest basis on screen.
-   *
-   * BOTH sides, keyed `side:address` like the overrides. A long's fill prices the collateral it
-   * bought; a short's prices the debt it sold, which is the only number that says where a short got
-   * in. Leaving the borrow side on the indexer while the supply side used fills would make one
-   * table disagree with the other.
-   *
-   * `perUnit` is denominated in the token on the other side of the fill, never in USD — see
-   * `historyBasis`. `usd` is that figure converted for the P&L column, and is null when the
-   * conversion would not be honest: `isVolatilePrice` keeps a WBTC-quoted basis from being
-   * multiplied by TODAY's BTC price to value a trade made last week. Such a row still SHOWS its
-   * token-denominated price; it just does not drive a dollar P&L.
-   */
-  const historyVersionSnapshot = useSyncExternalStore(subscribeHistory, historyVersion, historyVersion)
-  const derivedBasis = useMemo(() => {
-    type Derived = { perUnit: number; quoteSymbol: string | null; usd: number | null }
-    const empty = {} as Record<string, Derived>
-    void historyVersionSnapshot
-    // Never while viewing another address, on the same reasoning as the history list itself
-    // (`wallet={viewAddress ? undefined : connectedAddress}`): these fills are this browser's, and
-    // pricing a stranger's position with them would be confidently wrong rather than merely absent.
-    if (viewAddress || !connectedAddress) return empty
-    const entries = loadHistory(browserStorage(), { wallet: connectedAddress, chainId })
-    if (entries.length === 0) return empty
-    // Once the cap has evicted anything, these rows may be a fraction of the fills that built a
-    // position — and a fraction averages to a plausible wrong number rather than to nothing.
-    const truncated = isScopeTruncated(browserStorage(), { wallet: connectedAddress, chainId })
-
-    // Every reserve the market lists, so the quote leg can be named and priced even when the wallet
-    // holds none of it. Held rows are folded in for anything the reserve list misses.
-    const meta = new Map<string, { symbol: string; priceUsd: number }>()
-    for (const r of availableReserves) {
-      meta.set(r.underlyingAsset.toLowerCase(), { symbol: r.symbol, priceUsd: Number(r.priceInUsd) })
-    }
-    for (const a of [...suppliedAssets, ...borrowedAssets]) {
-      meta.set(a.underlyingAsset.toLowerCase(), { symbol: a.symbol, priceUsd: Number(a.priceInUsd) })
-    }
-
-    const derived: Record<string, Derived> = {}
-    for (const [side, list] of [['supply', suppliedAssets], ['borrow', borrowedAssets]] as const) {
-      for (const asset of list) {
-        const basis = avgEntryFromHistory(entries, asset.underlyingAsset, side, { truncated })
-        if (!basis || !(basis.perUnit > 0)) continue
-        const quote = meta.get(basis.quoteToken.toLowerCase())
-        const canValue = quote !== undefined && quote.priceUsd > 0 && !isVolatilePrice(quote.priceUsd)
-        derived[`${side}:${asset.underlyingAsset.toLowerCase()}`] = {
-          perUnit: basis.perUnit,
-          quoteSymbol: quote?.symbol ?? null,
-          // A dollar to the dollar, deliberately — NOT `perUnit * quote.priceUsd`.
-          //
-          // Aave prices USDC at 0.99990104 today, so multiplying turned a fill of 1,875.7568 USDC
-          // per WETH into $1,875.5712 and the figure stopped matching the transaction it came
-          // from. It was also today's peg applied to last week's trade, which is not a correction
-          // so much as a different kind of error. `isVolatilePrice` already bounds the quote token
-          // to within two percent of a dollar, so what this gives up is at most that — against a
-          // number a user can check on an explorer, which is worth more.
-          usd: canValue ? basis.perUnit : null,
-        }
-      }
-    }
-    return derived
-  }, [historyVersionSnapshot, viewAddress, connectedAddress, chainId, availableReserves, suppliedAssets, borrowedAssets])
 
   // Track which row currently has its override input open.
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -343,12 +272,9 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
 
     return rowPnl({
       side,
-      // `usd` rather than `perUnit`: this column is in dollars, and a basis quoted in a volatile
-      // token has no honest dollar value — those fall through to the indexer.
       entry: resolveEntryPrice({
         override: overrides[rowKey],
-        fills: derivedBasis[rowKey]?.usd,
-        indexer: pnl.avgEntryPriceUsd,
+        measured: pnl.avgEntryPriceUsd,
       }),
       currentPriceUsd: priceOf(a),
       amount: a.amount,
@@ -365,6 +291,8 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
   const borrowedPnl = borrowedAssets.map((a) => pnlFor(a, 'borrow'))
 
   // Summed from the same rows the table renders, so the headline cannot disagree with the lines.
+  // Positions that are over contribute nothing: they have no row, and what each of their closes
+  // made is reported per transaction in Recent activity instead.
   const effectiveTotalPnlUsd = portfolioPnl(
     [...suppliedPnl, ...borrowedPnl].filter((r): r is RowPnl => r !== null),
   )
@@ -389,9 +317,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
       side,
       asset,
       rowKey: editingKey,
-      onChainAvg: asset.positionPnl?.avgEntryPriceUsd ?? 0,
-      /** The fill-derived basis for this exact row, or null when the history has none. */
-      derived: derivedBasis[editingKey] ?? null,
+      measuredAvg: asset.positionPnl?.avgEntryPriceUsd ?? 0,
       currentPrice,
       isOverride: editingKey in overrides,
     }
@@ -523,7 +449,12 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
 
         {/* Reachable from here too: the account that just closed its last position lands on this
             screen, and it is the one most likely to be looking for what that close settled at. */}
-        <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} sync={historySync} />
+        <TxHistoryList
+        wallet={viewAddress ? undefined : connectedAddress}
+        chainId={chainId}
+        sync={historySync}
+        realizedByTx={realizedByTx}
+      />
       </div>
     )
   }
@@ -559,7 +490,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
               label="Position P&amp;L"
               value={fmtSigned(effectiveTotalPnlUsd)}
               valueClass={effectiveTotalPnlUsd >= 0 ? 'text-success' : 'text-danger'}
-              title="Unrealized price P&L on open positions + realized P&L from partial exits + net interest. Uses your override avg price where set."
+              title="Unrealized price P&L + realized P&L from partial exits + net interest, on the positions open now. A position closed out entirely is reported per transaction in Recent activity. Uses your override avg price where set."
             />
             <StatBox label="Health Factor" value={formattedHealthFactor === '∞' ? '∞' : Number(formattedHealthFactor).toFixed(2)} />
             <StatBox label="Total Supplied" value={`$${collateralUsd.toFixed(2)}`} />
@@ -764,7 +695,12 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
       {/* Account-level, not flow-level: an open is recorded by the leverage panel and a close by
           the close modal, and someone looking for either goes to their position rather than to
           whichever form produced it. */}
-      <TxHistoryList wallet={viewAddress ? undefined : connectedAddress} chainId={chainId} sync={historySync} />
+      <TxHistoryList
+        wallet={viewAddress ? undefined : connectedAddress}
+        chainId={chainId}
+        sync={historySync}
+        realizedByTx={realizedByTx}
+      />
 
       {editCtx && (
         <div className="modal-overlay" onClick={cancelDraft}>
@@ -781,27 +717,22 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
                 <span className="info-row-label">Current price</span>
                 <span className="info-row-value">${editCtx.currentPrice.toFixed(4)}</span>
               </div>
-              <div className="info-row">
-                <span className="info-row-label">Aave indexer avg</span>
-                <span className="info-row-value">${editCtx.onChainAvg.toFixed(4)}</span>
+              {/* Every lot at what it actually cost: the router's rate where a swap bought it,
+                  the oracle price where it was supplied from the wallet. Both rows say which one
+                  the P&L is using, because an override that looked ignored was the whole
+                  confusion this replaced. */}
+              <div className="info-row" style={editCtx.isOverride ? undefined : { color: T.primary }}>
+                <span className="info-row-label">
+                  Weighted avg {editCtx.side === 'supply' ? 'buy' : 'borrow'}
+                  {editCtx.isOverride ? '' : ' · in use'}
+                </span>
+                <span className="info-row-value" style={{ fontWeight: editCtx.isOverride ? 400 : 600 }}>
+                  ${editCtx.measuredAvg.toFixed(4)}
+                </span>
               </div>
-              {/* What the router actually filled at, which for a leveraged open is the number the
-                  indexer's oracle price is standing in for. Quoted in the token that paid for it
-                  rather than in dollars — that is the fill, with nothing converted. */}
-              {editCtx.derived && (
-                <div className="info-row">
-                  <span className="info-row-label">
-                    {editCtx.side === 'supply' ? 'Paid on your swaps' : 'Sold on your swaps'}
-                  </span>
-                  <span className="info-row-value">
-                    {editCtx.derived.perUnit.toFixed(4)}
-                    {editCtx.derived.quoteSymbol ? ` ${editCtx.derived.quoteSymbol}` : ''}
-                  </span>
-                </div>
-              )}
               {editCtx.isOverride && (
                 <div className="info-row" style={{ color: T.primary }}>
-                  <span>Your current override</span>
+                  <span>Your override · in use</span>
                   <span style={{ fontWeight: 600 }}>${(overrides[editCtx.rowKey] ?? 0).toFixed(4)}</span>
                 </div>
               )}
@@ -819,13 +750,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
               }}
               // What the box gives you if you type nothing, so it has to agree with what Reset
               // restores: the fills first, the indexer only when there are none.
-              placeholder={
-                editCtx.derived?.usd
-                  ? editCtx.derived.usd.toFixed(4)
-                  : editCtx.onChainAvg > 0
-                    ? editCtx.onChainAvg.toFixed(4)
-                    : '0.00'
-              }
+              placeholder={editCtx.measuredAvg > 0 ? editCtx.measuredAvg.toFixed(4) : '0.00'}
               style={inputStyle}
             />
 
@@ -835,9 +760,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active 
                   onClick={() => resetOverride(editCtx.rowKey)}
                   style={{ marginRight: 'auto', padding: '8px 14px', fontSize: T.fontSize.sm, background: T.dangerBg, color: T.danger, border: `1px solid ${T.dangerBorder}`, borderRadius: T.radius.md, cursor: 'pointer' }}
                 >
-                  {/* Two different numbers are "on-chain" once fills are read back, so the button
-                      names the one it will actually restore. */}
-                  {editCtx.derived?.usd ? 'Reset to swap price' : 'Reset to on-chain'}
+                  Reset to measured
                 </button>
               )}
               <button
