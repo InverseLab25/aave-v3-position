@@ -825,3 +825,16 @@ it('keeps the route list on screen when the user pins one of them', async () => 
   release?.()
   await settle()
 })
+
+it('reports what each route measured, not only what it quoted', async () => {
+  // The picker lists the field. Listing quoted figures there while the winner is chosen on
+  // measured ones lets the row tagged "best" be a route that lost — and a quote is the
+  // aggregator's own claim about its own route, which nothing on this path can check.
+  const kyber = fakeAdapter()
+  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern' }
+  mocks.getAdaptersForChain.mockReturnValue([kyber, nordstern])
+
+  await mount()
+
+  expect(Object.keys(hook().measuredOut).sort()).toEqual(['KyberSwap', 'Nordstern'])
+})

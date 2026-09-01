@@ -1,6 +1,6 @@
 import { maxUint256, type Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
-import { CloseError, selectBuildableRoute } from './deleverage'
+import { CloseError, effectiveOut, selectBuildableRoute } from './deleverage'
 import { swapSimulationInput } from '../adapters/simulate'
 import type { SimulationInput, SimulationResult } from '../adapters/simulate'
 import { getTxGasCap } from '../config/chains'
@@ -264,6 +264,13 @@ interface RouteSelection {
    * the output `minOut` derives from is chosen, so the two must keep reading it the same way.
    */
   sim: SimulationResult | null
+  /**
+   * What each candidate that got as far as being measured actually returned, by aggregator.
+   *
+   * The picker lists the whole field. Listing quoted figures there while the winner is chosen on
+   * measured ones lets the row marked "best" be a route that lost.
+   */
+  measuredOut: Record<string, bigint>
   /** Why each rejected candidate was unusable, for the error the user eventually sees. */
   rejected: string[]
 }
@@ -308,7 +315,7 @@ export async function selectRoute({
   // identical between them. What is specific here is the bar each candidate has to clear:
   // every quote has a different output, so its guarantee is re-derived rather than inherited
   // from whichever one sizing settled on.
-  const { selected, rejected } = await selectBuildableRoute(candidates, {
+  const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
     build: (c) => {
       const adapter = adapters.find((a) => a.name === c.aggregator)
       if (!adapter) throw new Error('no adapter for this quote')
@@ -337,8 +344,12 @@ export async function selectRoute({
       : undefined,
   })
 
+  const measuredOut: Record<string, bigint> = {}
+  for (const m of measurements) measuredOut[m.candidate.aggregator] = effectiveOut(m.tx, m.sim)
+
   if (selected) {
     return {
+      measuredOut,
       router: selected.tx.to as Address,
       swapData: selected.tx.data as `0x${string}`,
       chosen: selected.candidate,
@@ -348,7 +359,7 @@ export async function selectRoute({
     }
   }
 
-  return { router: null, swapData: null, chosen: null, tx: null, sim: null, rejected }
+  return { router: null, swapData: null, chosen: null, tx: null, sim: null, measuredOut, rejected }
 }
 
 /** Throws unless the sized plan is worth asking the user to sign for. */

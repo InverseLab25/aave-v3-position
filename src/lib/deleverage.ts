@@ -228,24 +228,22 @@ export function validateSwapTx(
 /**
  * The output figure to trust for a built route.
  *
- * A successful simulation wins, because it is the only figure here that was measured rather
- * than claimed — a real balance delta at the recipient, so transfer taxes and router fees are
- * already in it. Everything else falls back to what the aggregator said it would deliver.
+ * A simulation wins whenever there is one. It is the only figure here that was MEASURED — a
+ * real balance delta at the recipient against live state, so transfer taxes and router fees are
+ * already in it. The alternative is the aggregator's own claim about its own route, which is
+ * self-reported and can be shaded, and which nothing on this path can check.
  *
- * Both fallbacks are deliberate and they are NOT the same thing. A null simulation means the
- * simulator could not be asked, which says nothing about the route, so penalising it would let
- * an outage silently re-rank every trade. A reverted simulation is real evidence and is still
- * fallen back on anyway, which is the weakest point in this design: the route stays on offer
- * carrying a number the simulator has already contradicted. It is not a regression — before
- * simulation existed that route was offered with no check at all — but the simulation cannot
- * protect the user there. Dropping reverting routes instead means telling an outage and a bad
- * route apart at the call site, which is a decision, not a detail.
+ * The one fallback is a null simulation, and it is not a verdict: it means the simulator could
+ * not be ASKED — down, rate-limited, unreachable. Penalising that would let an outage silently
+ * re-rank every trade, or block them all. A simulation that ran and reverted is different, and
+ * does not reach here at all: {@link selectBuildableRoute} rejects the route outright, with the
+ * revert reason, rather than offering a trade already shown to fail.
  */
 export function effectiveOut(
   tx: TransactionPayload,
   sim: SimulationResult | null | undefined,
 ): bigint {
-  if (sim?.ok) return sim.amountOut
+  if (sim) return sim.amountOut
   return BigInt(tx.amountOut ?? 0)
 }
 
@@ -293,14 +291,23 @@ export async function selectBuildableRoute<C>(
   },
 ): Promise<{
   selected: { candidate: C; tx: TransactionPayload; sim: SimulationResult | null } | null
+  /**
+   * Every candidate that got as far as being measured, in the order they were given.
+   *
+   * Reported because the caller lists the whole field to the user. Showing quoted figures there
+   * while the winner is picked on measured ones lets the row marked "best" be a route that lost.
+   * Candidates rejected before the build are absent — nothing was measured for them.
+   */
+  measurements: { candidate: C; tx: TransactionPayload; sim: SimulationResult | null }[]
   rejected: string[]
 }> {
   const rejected: string[] = []
   const name = (c: C) => (opts.label ? opts.label(c) : 'route')
   const viable: { candidate: C; tx: TransactionPayload }[] = []
+  const nothing = { selected: null, measurements: [], rejected }
 
   for (const candidate of candidates) {
-    if (opts.cancelled?.()) return { selected: null, rejected }
+    if (opts.cancelled?.()) return nothing
 
     const bar = opts.reject?.(candidate)
     if (bar) {
@@ -315,7 +322,7 @@ export async function selectBuildableRoute<C>(
       rejected.push(`${name(candidate)}: build failed (${(e as Error).message})`)
       continue
     }
-    if (opts.cancelled?.()) return { selected: null, rejected }
+    if (opts.cancelled?.()) return nothing
 
     const problem = validateSwapTx(tx, opts.isAllowlisted(tx.to), opts.txGasCap)
     if (problem) {
@@ -326,23 +333,40 @@ export async function selectBuildableRoute<C>(
     viable.push({ candidate, tx })
   }
 
-  if (viable.length === 0) return { selected: null, rejected }
+  if (viable.length === 0) return { selected: null, measurements: [], rejected }
 
   // Concurrently: these are independent reads of the same block, and the shared HTTP gate caps
   // the origin anyway, so serialising them would only add latency to a preview that refreshes.
   const sims = opts.simulate
     ? await Promise.all(viable.map((v) => opts.simulate!(v.candidate, v.tx)))
     : viable.map(() => null)
-  if (opts.cancelled?.()) return { selected: null, rejected }
+  if (opts.cancelled?.()) return nothing
+
+  // A simulation that RAN and reverted is evidence, not an outage: this route fails against live
+  // state. Offering it anyway on the aggregator's own figure is offering a trade already shown
+  // to fail, so it is dropped here and the reason travels with it.
+  const measurements: { candidate: C; tx: TransactionPayload; sim: SimulationResult | null }[] = []
+  viable.forEach((v, i) => {
+    const sim = sims[i]
+    if (sim && !sim.ok) {
+      rejected.push(`${name(v.candidate)}: ${sim.revertReason ?? 'reverts in simulation'}`)
+      return
+    }
+    measurements.push({ ...v, sim })
+  })
+  if (measurements.length === 0) return { selected: null, measurements: [], rejected }
 
   // Strictly-greater, so a tie keeps the earlier candidate — which is the better QUOTE, and the
   // one the caller sized against.
   let best = 0
-  for (let i = 1; i < viable.length; i++) {
-    if (effectiveOut(viable[i].tx, sims[i]) > effectiveOut(viable[best].tx, sims[best])) best = i
+  for (let i = 1; i < measurements.length; i++) {
+    const m = measurements[i]
+    if (effectiveOut(m.tx, m.sim) > effectiveOut(measurements[best].tx, measurements[best].sim)) {
+      best = i
+    }
   }
 
-  return { selected: { ...viable[best], sim: sims[best] }, rejected }
+  return { selected: measurements[best], measurements, rejected }
 }
 
 /** EIP-2612 typed data for an Aave V3 aToken permit (spender = deleverager). */

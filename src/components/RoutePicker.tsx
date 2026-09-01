@@ -2,8 +2,16 @@ import { T } from '../styles/theme'
 
 export interface RouteOffer {
   aggregator: string
-  /** The route's output, pre-formatted in the token `symbol` names. */
+  /** The route's output as the aggregator QUOTED it, pre-formatted in the token `symbol` names. */
   amountOut: string
+  /**
+   * What the route was MEASURED to return, simulated against live state. Absent when nothing
+   * measured it.
+   *
+   * Shown alongside the quote rather than in place of it: the gap between the two is the only
+   * thing on screen that says whether an aggregator's own number can be taken at face value.
+   */
+  measuredOut?: string
 }
 
 interface RoutePickerProps {
@@ -82,7 +90,11 @@ export function RoutePicker({ routes, symbol, pinned, onPin, disabled }: RoutePi
         // With nothing pinned the ranking's own winner is the one being used, which is the first
         // row by construction.
         const active = pinned === null ? i === 0 : pinned === r.aggregator
-        const behind = i === 0 ? null : shortfall(best.amountOut, r.amountOut)
+        // Compared on the MEASURED figures wherever both have one. Measuring a winner against a
+        // runner-up's quote compares the aggregators' honesty rather than the routes, and the
+        // percentage would move when nobody's price had.
+        const shown = r.measuredOut ?? r.amountOut
+        const behind = i === 0 ? null : shortfall(best.measuredOut ?? best.amountOut, shown)
         return (
           <button
             key={r.aggregator}
@@ -110,10 +122,25 @@ export function RoutePicker({ routes, symbol, pinned, onPin, disabled }: RoutePi
               )}
             </span>
             <span style={{ color: T.textSubtle, textAlign: 'right' }}>
-              {r.amountOut} {symbol}
+              {shown} {symbol}
               {behind !== null && behind > 0 && (
                 <span style={{ marginLeft: T.space[2], color: T.textMuted }}>
                   −{behind.toFixed(2)}%
+                </span>
+              )}
+              {/* The aggregator's own claim, kept next to the measurement rather than replaced by
+                  it. The gap is the only thing here that says whether that claim can be taken at
+                  face value. Absent when nothing measured the route — the quote is then already
+                  the figure above, and repeating it would read as agreement between two sources
+                  when there is only one. */}
+              {r.measuredOut !== undefined && (
+                <span
+                  style={{
+                    display: 'block', color: T.textMuted, fontSize: T.fontSize.xs,
+                  }}
+                  title="What the aggregator quoted, before simulation"
+                >
+                  quoted {r.amountOut}
                 </span>
               )}
             </span>

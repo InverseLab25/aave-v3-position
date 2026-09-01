@@ -88,9 +88,12 @@ export function useLeverageOpen(
    * re-quote of the same pair leaves the last list standing until the new one lands, rather than
    * blanking the picker on every three-second refresh.
    */
-  const [quotedRoutes, setQuotedRoutes] = useState<{ pair: string; routes: QuoteResponse[] }>(
-    { pair: '', routes: [] },
-  )
+  const [quotedRoutes, setQuotedRoutes] = useState<{
+    pair: string
+    routes: QuoteResponse[]
+    /** What each route MEASURED, once a size has been settled on and the field built. */
+    measured: Record<string, bigint>
+  }>({ pair: '', routes: [], measured: {} })
   const [step, setStep] = useState<OpenStep>('idle')
   const [txHash, setTxHash] = useState<Hex | undefined>()
   const [execError, setExecError] = useState<string | null>(null)
@@ -314,7 +317,12 @@ export function useLeverageOpen(
         cancelled: () => cancelled,
         signal: controller.signal,
         setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
-        setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v }),
+        // A new list is a new question: the measurements belong to the field it replaces.
+        setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v, measured: {} }),
+        setMeasured: (m, forPair) =>
+          setQuotedRoutes((prev) =>
+            prev.pair === forPair ? { ...prev, measured: m } : prev,
+          ),
       })
     }, DEBOUNCE_MS)
 
@@ -419,6 +427,7 @@ export function useLeverageOpen(
     // Derived, not stored: a list from another pair stops being returned the instant the form
     // moves, without a state write from render.
     routes: quotedRoutes.pair === pairKey ? quotedRoutes.routes : [],
+    measuredOut: quotedRoutes.pair === pairKey ? quotedRoutes.measured : {},
     isQuoting: effectiveIsQuoting,
     refresh,
     /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */

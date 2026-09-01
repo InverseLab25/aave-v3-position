@@ -479,7 +479,7 @@ export function LeveragePanel({
   } | null>(null)
 
   const {
-    preview, previewError, rejected, routes, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
+    preview, previewError, rejected, routes, measuredOut, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
     approve,
   } = useLeverageOpen(input, undefined, {
@@ -789,10 +789,19 @@ export function LeveragePanel({
       {confirming && (
         <ConfirmLeverageModal
           title={actionLabel}
-          routes={routes.map((q) => ({
-            aggregator: q.aggregator,
-            amountOut: display(BigInt(q.amountOut), confirming.collateral.raw.decimals, 4),
-          }))}
+          // Ranked on what was MEASURED where there is a measurement, so the row the picker tags
+          // "best" is the route that actually won. A quote is the aggregator's own claim about
+          // its own route and nothing here can check it.
+          routes={routes
+            .map((q) => ({
+              aggregator: q.aggregator,
+              amountOut: display(BigInt(q.amountOut), confirming.collateral.raw.decimals, 4),
+              measuredOut:
+                measuredOut[q.aggregator] !== undefined
+                  ? display(measuredOut[q.aggregator], confirming.collateral.raw.decimals, 4)
+                  : undefined,
+            }))
+            .sort((a, b) => Number(b.measuredOut ?? b.amountOut) - Number(a.measuredOut ?? a.amountOut))}
           pinnedRoute={pinnedRoute}
           onPinRoute={setPinnedRoute}
           marginLine={boosting || !marginReserve

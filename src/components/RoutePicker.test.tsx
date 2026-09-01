@@ -62,3 +62,61 @@ describe('RoutePicker', () => {
     expect(onPin).not.toHaveBeenCalled()
   })
 })
+
+describe('RoutePicker — measured against quoted', () => {
+  it('shows what a route was measured to return alongside what it claimed', () => {
+    // The gap between the two is the only thing on screen saying whether an aggregator's own
+    // number can be taken at face value. A quote is self-reported and nothing on this path can
+    // check it; the measurement is a balance delta against live state.
+    render(
+      <RoutePicker
+        routes={[
+          { aggregator: 'KyberSwap', amountOut: '364.1774', measuredOut: '364.0219' },
+          { aggregator: 'Nordstern', amountOut: '364.0140', measuredOut: '364.0101' },
+        ]}
+        symbol="WETH"
+        pinned={null}
+        onPin={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/364\.0219/)).toBeTruthy()
+    expect(screen.getByText(/364\.1774/)).toBeTruthy()
+  })
+
+  it('shows the quote alone for a route nothing measured', () => {
+    // Rejected before the build, so there is no measurement — and inventing one, or hiding the
+    // row, would both say more than is known.
+    render(
+      <RoutePicker
+        routes={[
+          { aggregator: 'KyberSwap', amountOut: '364.1774', measuredOut: '364.0219' },
+          { aggregator: 'Nordstern', amountOut: '364.0140' },
+        ]}
+        symbol="WETH"
+        pinned={null}
+        onPin={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/364\.0140 WETH/)).toBeTruthy()
+  })
+
+  it('measures the shortfall between rows on the measured figures', () => {
+    // Comparing a measured winner against a quoted runner-up measures the aggregators' honesty,
+    // not the routes — and the percentage would move when nobody's price had.
+    render(
+      <RoutePicker
+        routes={[
+          { aggregator: 'KyberSwap', amountOut: '400', measuredOut: '200' },
+          { aggregator: 'Nordstern', amountOut: '399', measuredOut: '100' },
+        ]}
+        symbol="WETH"
+        pinned={null}
+        onPin={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText(/−50\.00%/)).toBeTruthy()
+  })
+})

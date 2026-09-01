@@ -72,6 +72,13 @@ export interface ClosePlan {
    * the one planning saw, and the flash loan is the repay amount.
    */
   deriveRepay: boolean
+  /**
+   * What each candidate that reached the simulator actually returned, by aggregator name.
+   *
+   * Absent for a route rejected before the build — nothing was measured for it, and its quoted
+   * figure is all that can honestly be shown.
+   */
+  measuredOut: Record<string, bigint>
   collAmount: bigint
   /** Collateral fed to the swap. Always equal to `best.amountIn`. */
   requiredIn: bigint

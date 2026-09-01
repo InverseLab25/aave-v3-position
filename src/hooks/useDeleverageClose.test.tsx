@@ -168,6 +168,7 @@ beforeEach(() => {
       amountOut: SIZED.expectedOut.toString(),
     },
     sim: null,
+    measuredOut: { KyberSwap: SIZED.expectedOut },
     rejected: [],
   } as never)
 })
@@ -187,6 +188,7 @@ const measures = (out: bigint) =>
       to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString(),
     },
     sim: null,
+    measuredOut: { KyberSwap: out },
     rejected: [],
   } as never)
 
@@ -424,6 +426,8 @@ const route = (builtOut: bigint) => ({
   swapData: '0xdeadbeef',
   chosen: quote(builtOut),
   tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: builtOut.toString() },
+  sim: null,
+  measuredOut: { KyberSwap: builtOut },
   rejected: [],
 })
 
@@ -996,6 +1000,7 @@ describe('buildPlan — the preview measures what it shows', () => {
     chosen: quote(out),
     tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString() },
     sim: { ok: true, amountOut: out, gasUsed: 4_000_000 },
+    measuredOut: { KyberSwap: out },
     rejected: [],
   })
 
@@ -1030,7 +1035,7 @@ describe('buildPlan — the preview measures what it shows', () => {
     // leaves the user told to pick another route with nothing to pick from.
     const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
     selectRoute.mockResolvedValue({
-      router: null, swapData: null, chosen: null, tx: null, sim: null,
+      router: null, swapData: null, chosen: null, tx: null, sim: null, measuredOut: {},
       rejected: ['KyberSwap: route needs 20307933 gas; this chain caps a transaction at 16777216'],
     } as never)
 

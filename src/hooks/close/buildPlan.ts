@@ -310,6 +310,7 @@ export async function buildPlan(
         allowedRouters,
         quoteAt,
         offers,
+        measuredOut: measured.measuredOut,
         ...sized,
         // After the spread, because these are the MEASURED figures and `sized` carries the
         // quoted ones. `best` follows too: a simulation is allowed to reorder the field, so the

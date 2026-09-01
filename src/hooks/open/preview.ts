@@ -64,6 +64,13 @@ interface PreviewRunContext {
    * nobody can leave.
    */
   setRoutes: (v: QuoteResponse[], forPair: string) => void
+  /**
+   * What each candidate that reached the simulator returned, by aggregator name.
+   *
+   * Arrives after {@link setRoutes} rather than with it: the list is priced during sizing, and
+   * nothing is built or measured until a size has been settled on.
+   */
+  setMeasured: (m: Record<string, bigint>, forPair: string) => void
   setPreview: (v: OpenPreview | null) => void
   setPreviewFor: (v: string) => void
 }
@@ -72,7 +79,7 @@ interface PreviewRunContext {
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
     input, pinned, forInput, client, chainId, cancelled, signal, forPair,
-    setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes,
+    setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes, setMeasured,
   } = ctx
 
       /**
@@ -277,7 +284,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // Build FIRST, then validate what was actually built. The list is best-output-first, so
         // a fallback prices strictly worse than the route the borrow was solved against. The
         // walk is shared with the close flow so the allowlist and calldata checks cannot drift.
-        const { selected, rejected } = await selectBuildableRoute(candidates, {
+        const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
           build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
           isAllowlisted: (router) => allowed.has(router.toLowerCase()),
           label: (c) => c.a.name,
@@ -308,6 +315,16 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           setPreviewError(input.preferredAggregator ? 'ROUTE_UNAVAILABLE' : nothingPriced())
           return
         }
+        // Reported before anything else uses the selection: the picker lists the whole field, and
+        // a row showing a quote next to a winner chosen on a measurement is two different
+        // questions answered on one line.
+        setMeasured(
+          Object.fromEntries(
+            measurements.map((m) => [m.candidate.a.name, effectiveOut(m.tx, m.sim)]),
+          ),
+          forPair,
+        )
+
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
 
         // What this route was MEASURED to return, against live state, for this exact calldata.

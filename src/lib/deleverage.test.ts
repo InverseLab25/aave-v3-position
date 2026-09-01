@@ -196,11 +196,12 @@ describe('effectiveOut', () => {
     expect(effectiveOut(tx, null)).toBe(100n)
   })
 
-  it('falls back to the built figure when the simulation reverted', () => {
-    // Deliberate, and the weakest point in the design: the route is still offered on a number
-    // the simulator has already contradicted. Kept because dropping it would make a simulator
-    // outage and a bad route indistinguishable to the user.
-    expect(effectiveOut(tx, { ok: false, amountOut: 0n, gasUsed: 1, revertReason: 'x' })).toBe(100n)
+  it('never sees a reverted simulation, because the route is dropped before ranking', () => {
+    // A simulation that RAN and reverted is evidence, and the route is rejected on it rather
+    // than reaching here — see the rejection in `selectBuildableRoute`. This asserts the shape
+    // anyway: if one ever did arrive, trusting its zero would be right, not falling back to a
+    // claim the simulator has already contradicted.
+    expect(effectiveOut(tx, { ok: false, amountOut: 0n, gasUsed: 1, revertReason: 'x' })).toBe(0n)
   })
 })
 
@@ -274,5 +275,83 @@ describe('selectBuildableRoute — ranking on measured output', () => {
     })
 
     expect(selected?.candidate).toBe('b')
+  })
+})
+
+describe('selectBuildableRoute — reporting every measurement', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload =>
+    ({ to: '0xR', spender: '0xR', data, value: '0', amountOut })
+
+  it('hands back what EVERY candidate measured, not just the winner', async () => {
+    // The picker lists the whole field, and until now it listed quoted figures while the winner
+    // was chosen on measured ones — so the row tagged "best" could be a route that lost. The
+    // measurements already exist by this point; discarding all but one is what made them
+    // disagree.
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+    const measured: Record<string, bigint> = { a: 90n, b: 98n }
+
+    const { selected, measurements } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) => ({ ok: true, amountOut: measured[c], gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('b')
+    expect(measurements.map((m) => [m.candidate, effectiveOut(m.tx, m.sim)])).toEqual([
+      ['a', 90n],
+      ['b', 98n],
+    ])
+  })
+
+  it('leaves out a candidate that never got as far as being measured', async () => {
+    // Rejected before the build, so there is no measurement to report and no row to update. Its
+    // quoted figure is all anyone can honestly show for it.
+    const { measurements } = await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => ({ ...tx('100'), gasEstimate: c === 'big' ? '20000000' : '9000000' }),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+    })
+
+    expect(measurements.map((m) => m.candidate)).toEqual(['small'])
+  })
+})
+
+describe('selectBuildableRoute — a route that reverts in simulation', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload =>
+    ({ to: '0xR', spender: '0xR', data, value: '0', amountOut })
+
+  it('drops it and says why, rather than offering it on its own claim', async () => {
+    // The simulation ran. It is not an outage and not a guess — the route reverts against live
+    // state. Offering it anyway, on the aggregator's figure, is offering a trade already shown
+    // to fail.
+    const built: Record<string, TransactionPayload> = { bad: tx('100', '0xaa'), ok: tx('99', '0xbb') }
+
+    const { selected, rejected } = await selectBuildableRoute(['bad', 'ok'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) =>
+        c === 'bad'
+          ? { ok: false, amountOut: 0n, gasUsed: 54210, revertReason: 'Insufficient output' }
+          : { ok: true, amountOut: 98n, gasUsed: 1 },
+    })
+
+    expect(selected?.candidate).toBe('ok')
+    expect(rejected.join()).toMatch(/bad.*Insufficient output/)
+  })
+
+  it('still uses a route the simulator could not reach', async () => {
+    // Null is an outage, not a verdict. Penalising it would let the simulator being down
+    // silently re-rank every trade — or block them all.
+    const { selected } = await selectBuildableRoute(['only'], {
+      build: async () => tx('100'),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async () => null,
+    })
+
+    expect(selected?.candidate).toBe('only')
   })
 })

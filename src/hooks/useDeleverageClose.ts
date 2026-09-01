@@ -153,10 +153,21 @@ export function useDeleverageClose() {
             aggregator: p.best.aggregator,
             // Pre-formatted here rather than in the modal: the plan is the only place that knows
             // the debt asset's decimals without the UI having to look them up again.
-            routes: p.offers.map((q) => ({
-              aggregator: q.aggregator,
-              amountOut: formatUnits(BigInt(q.amountOut), dDec),
-            })),
+            // Ranked on what was MEASURED, so the row the picker tags "best" is the route that
+            // actually won. A quote is the aggregator's claim about its own route and nothing on
+            // this path can check it; a measurement is a balance delta against live state. Rows
+            // with no measurement — rejected before the build — keep their quoted figure alone,
+            // which is all anyone can honestly show for them.
+            routes: p.offers
+              .map((q) => ({
+                aggregator: q.aggregator,
+                amountOut: formatUnits(BigInt(q.amountOut), dDec),
+                measuredOut:
+                  p.measuredOut[q.aggregator] !== undefined
+                    ? formatUnits(p.measuredOut[q.aggregator], dDec)
+                    : undefined,
+              }))
+              .sort((a, b) => Number(b.measuredOut ?? b.amountOut) - Number(a.measuredOut ?? a.amountOut)),
             collateralSymbol: input.collateral.symbol,
             debtSymbol: input.debtAsset.symbol,
             debtRepaid: formatUnits(p.debt, dDec),

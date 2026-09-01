@@ -83,6 +83,7 @@ function setHook(over: Record<string, unknown> = {}) {
     preview: null,
     previewError: null,
     routes: [],
+    measuredOut: {},
     isQuoting: false,
     step: 'idle',
     txHash: undefined,
