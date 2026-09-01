@@ -105,12 +105,16 @@ export async function buildPlan(
       ])
       const { aToken } = collTokens
       const { vDebt } = debtTokens
-      const aTokenName = await getATokenName(publicClient, chainId, aToken)
 
       // 2. Everything live, in a single batch. None of these depends on the others, and the
       //    nonce riding along here is what leaves close() with nothing to read before it can
       //    open the wallet prompt.
-      const [isPaused, allowedRouterList, debt, collAmount, nonce] = await Promise.all([
+      //
+      //    The aToken's NAME rides along too. It is memoised and only the permit's EIP-712
+      //    domain needs it, but it depends on `aToken` — so awaiting it on its own put a serial
+      //    hop between the two parallel groups, costing a whole round-trip on a cold cache to
+      //    fetch one string nothing else was waiting for.
+      const [isPaused, allowedRouterList, debt, collAmount, nonce, aTokenName] = await Promise.all([
         publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'paused' }),
         // The whole allowlist in one read: the contract stores it in an enumerable set
         // precisely so integrators can filter routes up front rather than probing per route.
@@ -118,6 +122,7 @@ export async function buildPlan(
         publicClient.readContract({ address: vDebt, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: NONCES_ABI, functionName: 'nonces', args: [address] }),
+        getATokenName(publicClient, chainId, aToken),
       ])
 
       if (isPaused !== 0n) {

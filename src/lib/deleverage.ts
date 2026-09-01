@@ -153,7 +153,14 @@ export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
       (q): q is QuoteResponse =>
         q != null && (COMPATIBLE_ADAPTERS as readonly string[]).includes(q.aggregator),
     )
-    .sort((a, b) => (BigInt(b.amountOut) > BigInt(a.amountOut) ? 1 : -1))
+    // Ties return 0. Answering -1 for equal values is an inconsistent comparator, which sort is
+    // entitled to do anything with — it happens to be harmless at two or three candidates, and
+    // this list decides which route a close executes.
+    .sort((a, b) => {
+      const x = BigInt(a.amountOut)
+      const y = BigInt(b.amountOut)
+      return y > x ? 1 : y < x ? -1 : 0
+    })
 }
 
 /**
@@ -306,30 +313,41 @@ export async function selectBuildableRoute<C>(
   const viable: { candidate: C; tx: TransactionPayload }[] = []
   const nothing = { selected: null, measurements: [], rejected }
 
+  // The caller's own bar first, and synchronously: it costs nothing and a candidate that fails
+  // it should not cost a build.
+  const toBuild: C[] = []
   for (const candidate of candidates) {
-    if (opts.cancelled?.()) return nothing
-
     const bar = opts.reject?.(candidate)
-    if (bar) {
-      rejected.push(`${name(candidate)}: ${bar}`)
+    if (bar) rejected.push(`${name(candidate)}: ${bar}`)
+    else toBuild.push(candidate)
+  }
+  if (opts.cancelled?.()) return nothing
+
+  // Concurrently. This used to walk and stop at the first success, so building in sequence cost
+  // nothing — it builds the WHOLE field now, and each build is a round-trip to a different
+  // aggregator, so in sequence they add up on a preview that repeats every three seconds.
+  // Failures are captured rather than thrown so one bad aggregator cannot take the batch down.
+  const builds = await Promise.all(
+    toBuild.map((candidate) =>
+      opts
+        .build(candidate)
+        .then((tx) => ({ candidate, tx, error: null as Error | null }))
+        .catch((e: Error) => ({ candidate, tx: null, error: e })),
+    ),
+  )
+  if (opts.cancelled?.()) return nothing
+
+  // Validated in candidate order, so what `rejected` reads back is the order the caller gave.
+  for (const { candidate, tx, error } of builds) {
+    if (!tx) {
+      rejected.push(`${name(candidate)}: build failed (${error?.message})`)
       continue
     }
-
-    let tx: TransactionPayload
-    try {
-      tx = await opts.build(candidate)
-    } catch (e) {
-      rejected.push(`${name(candidate)}: build failed (${(e as Error).message})`)
-      continue
-    }
-    if (opts.cancelled?.()) return nothing
-
     const problem = validateSwapTx(tx, opts.isAllowlisted(tx.to), opts.txGasCap)
     if (problem) {
       rejected.push(`${name(candidate)}: ${problem}`)
       continue
     }
-
     viable.push({ candidate, tx })
   }
 

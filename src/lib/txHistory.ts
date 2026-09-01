@@ -11,6 +11,7 @@
  */
 import type { Address, Hex } from 'viem'
 import type { DelegationStorage } from './delegationCache'
+import { clearScreened } from './screenCache'
 
 export const HISTORY_KEY = 'defi-route.txhistory.v1'
 
@@ -100,16 +101,106 @@ export function historyVersion(): number {
  * those strings to decide whether anything actually changed, and would otherwise announce a write
  * on every sync that found no news.
  */
-const encode = (entry: TxHistoryEntry): unknown =>
-  JSON.parse(
-    JSON.stringify(entry, (_key, value) => {
-      if (typeof value === 'bigint') return value.toString()
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        return Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)))
-      }
-      return value
-    }),
-  )
+/**
+ * Bigints as decimal strings, and object keys in a fixed order.
+ *
+ * The key sort is what lets `mergeHistory` decide whether anything changed by comparing two
+ * strings: without it, two identical stores written in different key orders compare unequal and
+ * every sync rewrites storage and re-renders the panel.
+ */
+const rowReplacer = (_key: string, value: unknown): unknown => {
+  if (typeof value === 'bigint') return value.toString()
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)),
+    )
+  }
+  return value
+}
+
+/**
+ * A token as it was recorded, keyed on ALL THREE fields rather than the address alone.
+ *
+ * The same address can appear with a symbol and without one — recorded before anything on
+ * screen could name it, and again after. Folding those together would rewrite history: the
+ * older row would gain a symbol it never had.
+ */
+const tokenKey = (t: { token: string; symbol: string | null; decimals: number | null }): string =>
+  `${t.token}|${t.symbol ?? ''}|${t.decimals ?? ''}`
+
+/** Collects tokens and wallets as rows are walked, handing back the index each one landed at. */
+function newTables() {
+  const tokens: [string, string | null, number | null][] = []
+  const wallets: string[] = []
+  const tokenAt = new Map<string, number>()
+  const walletAt = new Map<string, number>()
+  return {
+    tokens,
+    wallets,
+    token(t: { token: string; symbol: string | null; decimals: number | null }): number {
+      const key = tokenKey(t)
+      const found = tokenAt.get(key)
+      if (found !== undefined) return found
+      const at = tokens.push([t.token, t.symbol, t.decimals]) - 1
+      tokenAt.set(key, at)
+      return at
+    },
+    wallet(address: string): number {
+      const found = walletAt.get(address)
+      if (found !== undefined) return found
+      const at = wallets.push(address) - 1
+      walletAt.set(address, at)
+      return at
+    },
+  }
+}
+
+
+/**
+ * The stored form of a whole list, in one pass.
+ *
+ * Every row used to carry the full address, symbol and decimals of every token it touched, plus
+ * the wallet — 42 characters an address, repeated across the store. Tokens and wallets are
+ * hoisted into tables at the document root and referenced by index, which measured 46% off a
+ * full 250-row store: 158 KB down to 85 KB.
+ *
+ * It also used to run `JSON.parse(JSON.stringify(row))` per row and then stringify the array on
+ * top — three serialisations of every row to produce one string. `JSON.stringify` applies a
+ * replacer recursively, so the document is written directly.
+ *
+ * Table order follows first encounter, which is deterministic because `sortAndCap` hands rows
+ * over in a fixed order. That matters: `mergeHistory` decides whether anything changed by
+ * comparing two of these strings.
+ */
+const serialise = (entries: readonly TxHistoryEntry[]): string => {
+  const t = newTables()
+  const rows = entries.map((e) => ({
+    at: e.at,
+    blockNumber: e.blockNumber,
+    chainId: e.chainId,
+    deltas: e.deltas.map((d) => [t.token(d), d.delta]),
+    fill: e.fill,
+    hash: e.hash,
+    kind: e.kind,
+    rate: e.rate,
+    source: e.source,
+    swap:
+      e.swap === null
+        ? null
+        : {
+            dst: t.token({
+              token: e.swap.dstToken, symbol: e.swap.dstSymbol, decimals: e.swap.dstDecimals,
+            }),
+            returnAmount: e.swap.returnAmount,
+            spentAmount: e.swap.spentAmount,
+            src: t.token({
+              token: e.swap.srcToken, symbol: e.swap.srcSymbol, decimals: e.swap.srcDecimals,
+            }),
+          },
+    wallet: t.wallet(e.wallet),
+  }))
+  return JSON.stringify({ rows, tokens: t.tokens, wallets: t.wallets }, rowReplacer)
+}
 
 const asBigInt = (value: unknown): bigint | null => {
   if (typeof value !== 'string') return null
@@ -121,46 +212,53 @@ const asBigInt = (value: unknown): bigint | null => {
 }
 
 const asNullableNumber = (value: unknown): number | null =>
-  typeof value === 'number' && Number.isFinite(value) ? value : null
+  typeof value === 'number' ? value : null
 
-const asNullableString = (value: unknown): string | null => (typeof value === 'string' ? value : null)
+const asNullableString = (value: unknown): string | null =>
+  typeof value === 'string' ? value : null
 
-function decodeSwap(raw: unknown): HistorySwap | null {
+/** A token resolved out of the document's table, or null when the index points nowhere. */
+type TokenLookup = (index: unknown) => { token: Address; symbol: string | null; decimals: number | null } | null
+/** The wallet at an index in the document's table, or null when the index points nowhere. */
+type WalletLookup = (index: unknown) => Address | null
+
+function decodeEntry(raw: unknown, lookup: TokenLookup, walletOf: WalletLookup): TxHistoryEntry | null {
   if (raw === null || typeof raw !== 'object') return null
   const r = raw as Record<string, unknown>
-  const spentAmount = asBigInt(r.spentAmount)
-  const returnAmount = asBigInt(r.returnAmount)
-  if (spentAmount === null || returnAmount === null) return null
-  if (typeof r.srcToken !== 'string' || typeof r.dstToken !== 'string') return null
-  return {
-    srcToken: r.srcToken as Address,
-    dstToken: r.dstToken as Address,
-    srcSymbol: asNullableString(r.srcSymbol),
-    srcDecimals: asNullableNumber(r.srcDecimals),
-    dstSymbol: asNullableString(r.dstSymbol),
-    dstDecimals: asNullableNumber(r.dstDecimals),
-    spentAmount,
-    returnAmount,
-  }
-}
-
-function decodeEntry(raw: unknown): TxHistoryEntry | null {
-  if (raw === null || typeof raw !== 'object') return null
-  const r = raw as Record<string, unknown>
-  if (typeof r.hash !== 'string' || typeof r.wallet !== 'string') return null
+  if (typeof r.hash !== 'string') return null
   if (typeof r.chainId !== 'number' || typeof r.at !== 'number') return null
   if (r.kind !== 'open' && r.kind !== 'close') return null
 
   const fillRaw = r.fill as Record<string, unknown> | null | undefined
   const fillDelta = fillRaw ? asBigInt(fillRaw.delta) : null
+  const wallet = walletOf(r.wallet)
+  if (wallet === null) return null
+
+  // A swap naming a token the table does not hold is a half-written document. The row keeps
+  // everything else it can still account for rather than being thrown away whole — except when
+  // it claimed a swap and cannot produce one, which would read as a transfer that never swapped.
+  const swapRaw = r.swap as Record<string, unknown> | null | undefined
+  const src = swapRaw ? lookup(swapRaw.src) : null
+  const dst = swapRaw ? lookup(swapRaw.dst) : null
+  const spent = swapRaw ? asBigInt(swapRaw.spentAmount) : null
+  const returned = swapRaw ? asBigInt(swapRaw.returnAmount) : null
+  if (swapRaw && (!src || !dst || spent === null || returned === null)) return null
 
   return {
     hash: r.hash as Hex,
     chainId: r.chainId,
-    wallet: r.wallet as Address,
+    wallet,
     kind: r.kind,
     at: r.at,
-    swap: decodeSwap(r.swap),
+    swap:
+      src && dst && spent !== null && returned !== null
+        ? {
+            srcToken: src.token, srcSymbol: src.symbol, srcDecimals: src.decimals,
+            dstToken: dst.token, dstSymbol: dst.symbol, dstDecimals: dst.decimals,
+            spentAmount: spent,
+            returnAmount: returned,
+          }
+        : null,
     rate: asNullableString(r.rate),
     fill:
       fillRaw && fillDelta !== null
@@ -173,15 +271,10 @@ function decodeEntry(raw: unknown): TxHistoryEntry | null {
     deltas: Array.isArray(r.deltas)
       ? r.deltas
           .map((d): HistoryDelta | null => {
-            const row = d as Record<string, unknown>
-            const delta = asBigInt(row?.delta)
-            if (delta === null || typeof row.token !== 'string') return null
-            return {
-              token: row.token as Address,
-              symbol: asNullableString(row.symbol),
-              decimals: asNullableNumber(row.decimals),
-              delta,
-            }
+            if (!Array.isArray(d)) return null
+            const token = lookup(d[0])
+            const delta = asBigInt(d[1])
+            return token && delta !== null ? { ...token, delta } : null
           })
           .filter((d): d is HistoryDelta => d !== null)
       : [],
@@ -318,11 +411,45 @@ function readAll(storage: DelegationStorage | null): TxHistoryEntry[] {
   try {
     const raw = storage.getItem(HISTORY_KEY)
     if (!raw) return []
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    // Row by row: an entry written by an older shape, or half-written, costs itself and not the
-    // whole list. History is a convenience, and losing all of it to one bad row is not one.
-    const rows = parsed.map(decodeEntry).filter((e): e is TxHistoryEntry => e !== null)
+    const parsed = JSON.parse(raw) as {
+      rows?: unknown
+      tokens?: unknown
+      wallets?: unknown
+    } | null
+    // An array here is the old flat format, which this deliberately does not read: the store
+    // carries no compatibility shim, and the rows are rebuilt from the chain instead.
+    //
+    // The SCREENING cache has to go with it, or they never are. `hashSync` skips every hash it
+    // already holds a verdict for, so with the history gone and the verdicts kept it fetches no
+    // receipts, writes no rows, and returns before doing anything — leaving Recent activity
+    // blank for good rather than for one sync.
+    if (!parsed || Array.isArray(parsed) || !Array.isArray(parsed.rows)) {
+      storage.removeItem(HISTORY_KEY)
+      clearScreened(storage)
+      return []
+    }
+
+    const tokens = Array.isArray(parsed.tokens) ? parsed.tokens : []
+    const wallets = Array.isArray(parsed.wallets) ? parsed.wallets : []
+    const lookup = (index: unknown) => {
+      const row = typeof index === 'number' ? tokens[index] : undefined
+      if (!Array.isArray(row) || typeof row[0] !== 'string') return null
+      return {
+        token: row[0] as Address,
+        symbol: asNullableString(row[1]),
+        decimals: asNullableNumber(row[2]),
+      }
+    }
+    const walletOf = (index: unknown) => {
+      const found = typeof index === 'number' ? wallets[index] : undefined
+      return typeof found === 'string' ? (found as Address) : null
+    }
+
+    // Row by row: a half-written document costs the row it broke and not the whole list. History
+    // is a convenience, and losing all of it to one bad row is not one.
+    const rows = parsed.rows
+      .map((r) => decodeEntry(r, lookup, walletOf))
+      .filter((e): e is TxHistoryEntry => e !== null)
     // Sorted on the way out rather than trusted from disk, so a store written before ordering
     // moved to `at` still reads back in the right order without having to be rewritten first.
     return rows.sort(byTimeDescending)
@@ -395,7 +522,7 @@ function mergeSwap(authoritative: HistorySwap | null, other: HistorySwap | null)
 
 function write(storage: DelegationStorage, entries: readonly TxHistoryEntry[]): void {
   const { kept, evicted } = sortAndCap(entries)
-  storage.setItem(HISTORY_KEY, JSON.stringify(kept.map(encode)))
+  storage.setItem(HISTORY_KEY, serialise(kept))
   markTruncated(storage, evicted)
 }
 
@@ -459,12 +586,13 @@ export function mergeHistory(storage: DelegationStorage | null, input: MergeHist
     const { wallet, chainId, entries, range } = input
     const owner = wallet.toLowerCase()
     const existing = readAll(storage)
-    const before = JSON.stringify(existing.map(encode))
+    const before = serialise(existing)
 
     const byKey = new Map(existing.map((e) => [txKey(e), e]))
     for (const entry of entries) {
-      const local = byKey.get(txKey(entry))
-      byKey.set(txKey(entry), local ? reconcile(local, entry) : entry)
+      const key = txKey(entry)
+      const local = byKey.get(key)
+      byKey.set(key, local ? reconcile(local, entry) : entry)
     }
 
     const confirmed = new Set(entries.map(txKey))
@@ -479,7 +607,7 @@ export function mergeHistory(storage: DelegationStorage | null, input: MergeHist
     // Compared rather than assumed: a sync that finds no news runs on every connect, and the
     // panel re-renders on every announcement.
     const { kept, evicted } = sortAndCap(next)
-    const after = JSON.stringify(kept.map(encode))
+    const after = serialise(kept)
     if (after === before) return
 
     storage.setItem(HISTORY_KEY, after)

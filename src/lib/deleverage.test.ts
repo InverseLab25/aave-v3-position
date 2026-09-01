@@ -355,3 +355,42 @@ describe('selectBuildableRoute — a route that reverts in simulation', () => {
     expect(selected?.candidate).toBe('only')
   })
 })
+
+describe('rankRoutes — ties', () => {
+  it('reports two equal quotes as equal rather than in an arbitrary order', () => {
+    // A comparator that answers -1 for equal values is inconsistent, and sort is entitled to do
+    // anything with one. Harmless at two candidates and wrong the moment there are more — and
+    // this list decides which route a close executes.
+    const [compatible, other] = COMPATIBLE_ADAPTERS
+    const same = (aggregator: string) => ({ aggregator, amountOut: '1000' }) as QuoteResponse
+
+    const ranked = rankRoutes([same(compatible), same(other), same(compatible)])
+
+    expect(ranked.map((q) => q.aggregator)).toEqual([compatible, other, compatible])
+  })
+})
+
+describe('selectBuildableRoute — build concurrency', () => {
+  it('builds every candidate at once, not one after another', async () => {
+    // The walk used to stop at the first success, so building in sequence cost nothing. It
+    // builds the whole field now, and each build is a round-trip to a different aggregator —
+    // so in sequence they add up on a preview that repeats every three seconds.
+    let started = 0
+    let bothStarted: () => void
+    const gate = new Promise<void>((r) => { bothStarted = r })
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => {
+        if (++started === 2) bothStarted()
+        // Neither build can finish until both have STARTED. In sequence this deadlocks.
+        await gate
+        return { to: '0xR', spender: '0xR', data: `0x${c}`, value: '0', amountOut: '100' }
+      },
+      isAllowlisted: () => true,
+      label: (c) => c,
+    })
+
+    expect(started).toBe(2)
+    expect(selected).not.toBeNull()
+  })
+})

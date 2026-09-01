@@ -91,6 +91,19 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
        * (say) a slippage edit would send calldata built for the tolerance before the edit.
        */
       let produced = false
+      /**
+       * The last round's field, reported ONCE at the end of the run — hence declared out here,
+       * where `finally` can reach it.
+       *
+       * `solveBorrow` calls `quoteAll` up to three times, and only the final round's list is the
+       * one the preview is built from. Reporting each round as it landed re-rendered the panel
+       * and the modal twice over to show numbers that were about to be replaced. Null until a
+       * round has actually happened, so a run that fails before quoting leaves the previous list
+       * alone rather than blanking it.
+       */
+      let field: QuoteResponse[] | null = null
+      /** What each candidate measured, reported alongside the field it belongs to. */
+      let measuredField: Record<string, bigint> = {}
       setIsQuoting(true)
       setPreviewError(null)
       setRejected([])
@@ -193,10 +206,17 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           )
           const all = results
             .filter((r): r is Candidate => r !== null)
-            .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
-          // The whole field, losers included, so the picker has something to offer. The last
-          // round wins, which is the one the preview is actually built from.
-          setRoutes(all.map((c) => c.q), forPair)
+            // Ties return 0. A comparator that answers -1 for equal values is inconsistent, and
+            // sort is entitled to do anything with one — harmless at two candidates, wrong the
+            // moment there are more.
+            .sort((x, y) => {
+              const a = BigInt(x.q.amountOut)
+              const b = BigInt(y.q.amountOut)
+              return b > a ? 1 : b < a ? -1 : 0
+            })
+          // The whole field, losers included, so the picker has something to offer. Handed to
+          // the caller in `finally`, once, rather than on every round.
+          field = all.map((c) => c.q)
 
           const usable = applyPin(all, input.preferredAggregator, (c) => c.a.name)
           if (usable.length === 0 && all.length > 0) pinnedOut = true
@@ -315,14 +335,11 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           setPreviewError(input.preferredAggregator ? 'ROUTE_UNAVAILABLE' : nothingPriced())
           return
         }
-        // Reported before anything else uses the selection: the picker lists the whole field, and
-        // a row showing a quote next to a winner chosen on a measurement is two different
-        // questions answered on one line.
-        setMeasured(
-          Object.fromEntries(
-            measurements.map((m) => [m.candidate.a.name, effectiveOut(m.tx, m.sim)]),
-          ),
-          forPair,
+        // Kept for the report in `finally`, where it goes out WITH the field it belongs to. The
+        // measurements have to arrive after the list, not before: the list is what stamps the
+        // pair they are matched against.
+        measuredField = Object.fromEntries(
+          measurements.map((m) => [m.candidate.a.name, effectiveOut(m.tx, m.sim)]),
         )
 
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
@@ -418,6 +435,13 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         if (!cancelled()) setPreviewError('QUOTE_FAILED')
       } finally {
         if (!cancelled()) {
+          // One report per run, whatever happened in it. A failed solve still leaves the field
+          // standing — that is precisely when someone reaches for another route. Routes first:
+          // that call stamps the pair the measurements are matched against.
+          if (field !== null) {
+            setRoutes(field, forPair)
+            setMeasured(measuredField, forPair)
+          }
           setIsQuoting(false)
           // No route for these inputs is an answer too — and it is NOT the last one's route.
           if (!produced) setPreview(null)

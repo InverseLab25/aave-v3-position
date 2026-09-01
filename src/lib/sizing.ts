@@ -1,6 +1,6 @@
 import type { QuoteResponse } from '../adapters/types'
 import { CloseError } from './deleverage'
-import { ceilDiv } from './strategies-sdk/sizing'
+import { ceilDiv, nextSwapIn, type SwapObservation } from './strategies-sdk/sizing'
 
 
 /**
@@ -200,6 +200,10 @@ export async function sizeSwap({
 
   let best = bestFull
   let ranked = rankedFull
+  /** The previous round's sample, so the step can read a slope rather than assume one. */
+  let prev: SwapObservation | null = null
+  /** Output the swap has to reach for its guarantee to clear `needed`. */
+  const targetOut = ceilDiv(needed * 10000n, slipNum)
   for (let round = 0; round < rounds && requiredIn !== collAmount; round++) {
     const rankedAt = await quoteAt(requiredIn)
     const quote = rankedAt[0]
@@ -217,9 +221,11 @@ export async function sizeSwap({
     const quotedOut = BigInt(quote.amountOut)
     if (guaranteedOut(quotedOut) >= needed) break // this size is enough — stop here
 
-    // Short. Scale the input up by the shortfall ratio and re-measure.
-    const scaled =
-      quotedOut > 0n ? ceilDiv(requiredIn * needed * 10000n, quotedOut * slipNum) : collAmount
+    // Short. Step to where the two samples say the curve reaches `targetOut` — see `nextSwapIn`
+    // for why scaling by the shortfall ratio lands short every round once price impact is real.
+    const cur: SwapObservation = { in: requiredIn, out: quotedOut }
+    const scaled = quotedOut > 0n ? nextSwapIn(targetOut, cur, prev) : collAmount
+    prev = cur
     // Needs more than there is — drain instead.
     if (scaled >= collAmount) {
       best = bestFull

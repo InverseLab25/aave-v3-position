@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import {
+import { describe, expect, it } from "vitest";
+import { nextSwapIn,
   BPS,
   LTV_CEILING_FACTOR_BPS,
   maxLeverageForHealthFactorBps,
@@ -216,3 +216,65 @@ it("applies the same guardrails as the collateral-margin flow", () => {
   expect(sizeOpen({ ...debtMargin, leverageBps: 39_200n }).ok).toBe(false);
   expect(sizeOpen({ ...debtMargin, debtPriceUsd: 0n }).ok).toBe(false);
 });
+
+describe('nextSwapIn', () => {
+  /**
+   * A concave curve, which is what price impact makes of `out(in)`: doubling the input returns
+   * less than double. Measured against live Kyber quotes on Base, a 1,000 WETH open needed five
+   * proportional rounds against a budget of three — so the user got "could not price this
+   * position" on a trade that was perfectly routable.
+   */
+  const out = (input: bigint) => (input * 1_000_000n) / (1_000_000n + input / 10_000_000n)
+
+  /** Rounds a step rule takes to reach `target`, starting from a seed that is short. */
+  const rounds = (
+    step: (target: bigint, cur: { in: bigint; out: bigint }, prev: { in: bigint; out: bigint } | null) => bigint,
+    target: bigint,
+  ) => {
+    let input = 976_000_000_000n
+    let prev: { in: bigint; out: bigint } | null = null
+    for (let r = 1; r <= 10; r++) {
+      const cur = { in: input, out: out(input) }
+      if (cur.out >= target) return r
+      const next = step(target, cur, prev)
+      if (next <= input) return null
+      prev = cur
+      input = next
+    }
+    return null
+  }
+
+  /** What both solvers do today: assume `out` is linear through the origin. */
+  const proportional = (target: bigint, cur: { in: bigint; out: bigint }) =>
+    (cur.in * target + cur.out - 1n) / cur.out
+
+  it('converges in fewer rounds than assuming the curve is a straight line', () => {
+    // The proportional step lands short EVERY time by construction: it solves as though there
+    // were no price impact, so on a concave curve it always undershoots and needs another round.
+    const target = 1_000_000_000_000n
+    expect(rounds(nextSwapIn, target)).toBeLessThan(rounds(proportional, target)!)
+  })
+
+  it('falls back to the proportional step with only one observation', () => {
+    // Nothing to take a slope from on the first round. The proportional guess is the honest one.
+    const cur = { in: 100n, out: 50n }
+    expect(nextSwapIn(100n, cur, null)).toBe(200n)
+  })
+
+  it('falls back when the aggregator re-routed and returned LESS for more input', () => {
+    // `out(in)` is not smooth: a different size can pick a different route, so it is sampled
+    // rather than evaluated. A slope through a non-increasing pair points the wrong way, and
+    // stepping along it would walk away from the answer.
+    const prev = { in: 90n, out: 60n }
+    const cur = { in: 100n, out: 50n }
+    expect(nextSwapIn(100n, cur, prev)).toBe(200n)
+  })
+
+  it('never proposes a smaller input than the one it just measured', () => {
+    // Both callers treat a non-increasing proposal as "not converging" and give up, so a step
+    // that goes backwards is a failed preview rather than a wasted round.
+    const prev = { in: 90n, out: 40n }
+    const cur = { in: 100n, out: 50n }
+    expect(nextSwapIn(200n, cur, prev)).toBeGreaterThan(100n)
+  })
+})

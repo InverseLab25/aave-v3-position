@@ -1,5 +1,5 @@
 import type { QuoteResponse } from '../adapters/types'
-import { BPS, ceilDiv } from './strategies-sdk/sizing'
+import { BPS, ceilDiv, nextSwapIn, type SwapObservation } from './strategies-sdk/sizing'
 
 /**
  * Extra headroom on the oracle seed (0.3%).
@@ -117,6 +117,10 @@ export async function solveBorrow(p: SolveBorrowInput): Promise<SolveBorrowOutco
   let swapIn = seededBorrow + p.debtMargin
   let best: QuoteResponse | null = null
   let ranked: QuoteResponse[] = []
+  /** The previous round's sample, so the step can read a slope rather than assume one. */
+  let prev: SwapObservation | null = null
+  /** Output the swap has to reach for its guarantee to repay the flash. */
+  const targetOut = ceilDiv(p.flashAmount * BPS, p.slipNum)
 
   for (let round = 0; round <= p.rounds; round++) {
     const rankedAt = await p.quoteAt(swapIn)
@@ -131,13 +135,14 @@ export async function solveBorrow(p: SolveBorrowInput): Promise<SolveBorrowOutco
     const quotedOut = BigInt(quote.amountOut)
     if (guaranteedOut(quotedOut) >= p.flashAmount) break // this size repays the flash — done
 
-    // Short. Scale the input up by the shortfall ratio and re-measure. Pricing is non-linear
-    // and the aggregator may route differently at a different size, so one back-out is an
-    // estimate rather than an answer.
-    const scaled =
-      quotedOut > 0n ? ceilDiv(swapIn * p.flashAmount * BPS, quotedOut * p.slipNum) : 0n
+    // Short. Step to where the two samples say the curve reaches `targetOut` — see `nextSwapIn`
+    // for why scaling by the shortfall ratio undershoots every round on a curve with real price
+    // impact, and why a 1,000 WETH open failed against this budget because of it.
+    const cur: SwapObservation = { in: swapIn, out: quotedOut }
+    const scaled = nextSwapIn(targetOut, cur, prev)
     if (scaled <= swapIn) return { ok: false, error: 'NOT_CONVERGING' }
     if (round === p.rounds) return { ok: false, error: 'NOT_CONVERGING' }
+    prev = cur
     swapIn = scaled
   }
 

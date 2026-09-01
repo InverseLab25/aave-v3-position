@@ -838,3 +838,29 @@ it('reports what each route measured, not only what it quoted', async () => {
 
   expect(Object.keys(hook().measuredOut).sort()).toEqual(['KyberSwap', 'Nordstern'])
 })
+
+it('still lists the field when sizing never converges', async () => {
+  // The list is what the user pins FROM, so a run that fails to find a size has to leave it
+  // standing — that is exactly when someone reaches for another route. It is reported once per
+  // run rather than once per sizing round: only the last round's field is the one the preview
+  // was built from, and the earlier ones were re-rendering the panel to show numbers that were
+  // about to be replaced.
+  const stubborn: Adapter = {
+    ...fakeAdapter(),
+    // Always returns far too little, so every refinement round comes back short.
+    getQuote: vi.fn(async (_f, _t, amountIn) => ({
+      aggregator: 'KyberSwap',
+      amountIn,
+      amountOut: '1',
+      amountOutUsd: '0', gasUsd: '0', netReturnUsd: 0,
+      routeDetails: { protocol: 'KyberSwap', path: [] } as unknown as QuoteResponse['routeDetails'],
+      rawQuote: {},
+    })) as unknown as Adapter['getQuote'],
+  }
+  mocks.getAdaptersForChain.mockReturnValue([stubborn])
+
+  await mount()
+
+  expect(hook().preview).toBeNull()
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+})

@@ -199,3 +199,51 @@ function finish(
     expectedHealthFactorBps: debtUsd > 0n ? (collUsd * p.liquidationThresholdBps) / debtUsd : 0n,
   };
 }
+
+/** One (input, output) pair actually observed from an aggregator. */
+export interface SwapObservation {
+  in: bigint;
+  out: bigint;
+}
+
+/**
+ * The next swap input to try, given what the last two sizes actually returned.
+ *
+ * Both solvers are answering the same question: aggregators quote exact-INPUT only, so the input
+ * that yields a wanted output cannot be asked for and has to be found by sampling. What differs
+ * is how the next sample is chosen.
+ *
+ * The obvious rule — scale the input by the shortfall ratio, `in × target / out` — solves as
+ * though `out(in)` were a straight line through the origin. Price impact makes it concave, so
+ * that guess lands SHORT every single time, by construction, and each round only recovers part
+ * of the gap. Measured against live KyberSwap quotes on Base: a 400 WETH open took three rounds,
+ * exactly the whole budget; a 1,000 WETH open took five, so the solver gave up and told the user
+ * "could not price this position — try a smaller supply" about a trade that was perfectly
+ * routable.
+ *
+ * A secant step instead reads the slope between the two points already measured and follows it.
+ * The same two trades take two and three rounds. No extra requests: it uses samples the loop had
+ * already paid for and was throwing away.
+ *
+ * Two cases fall back to the proportional guess, because a slope needs two usable points:
+ *  - the first round, where there is no previous observation;
+ *  - a pair where more input did not return more output. `out(in)` is sampled, not evaluated —
+ *    a different size can pick a different route — so that pair really happens, and a slope
+ *    through it points the wrong way.
+ */
+export function nextSwapIn(
+  target: bigint,
+  cur: SwapObservation,
+  prev: SwapObservation | null,
+): bigint {
+  if (cur.out <= 0n) return 0n;
+  const proportional = ceilDiv(cur.in * target, cur.out);
+  if (!prev || cur.out <= prev.out || cur.in <= prev.in) return proportional;
+
+  const step = ceilDiv((target - cur.out) * (cur.in - prev.in), cur.out - prev.out);
+  const secant = cur.in + step;
+  // Never below the proportional guess. The secant is the better estimate of where the curve
+  // reaches `target`, but both callers read a non-increasing proposal as "not converging" and
+  // abandon the preview — so a step that undershoots the naive one buys a failure, not a round.
+  return secant > proportional ? secant : proportional;
+}

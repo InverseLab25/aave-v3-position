@@ -154,13 +154,18 @@ describe('txHistory', () => {
   it('keeps the readable rows when one of them is malformed', () => {
     // A shape that changed, or a half-written entry. Losing the whole list to one bad row would
     // be a worse outcome than losing the row.
-    const good = JSON.parse(
-      JSON.stringify({ ...entry(), swap: null, fill: null, deltas: [] }, (_k, v) =>
-        typeof v === 'bigint' ? v.toString() : v,
-      ),
-    )
     const storage = memoryStorage({
-      [HISTORY_KEY]: JSON.stringify([{ hash: '0xdead' }, good]),
+      [HISTORY_KEY]: JSON.stringify({
+        tokens: [], wallets: [WALLET],
+        rows: [
+          { hash: '0xdead' },
+          {
+            at: 1_800_000_000_000, blockNumber: null, chainId: 8453, deltas: [], fill: null,
+            hash: `0x${'11'.repeat(32)}`, kind: 'open', rate: null, source: 'live',
+            swap: null, wallet: 0,
+          },
+        ],
+      }),
     })
 
     expect(loadHistory(storage)).toHaveLength(1)
@@ -227,14 +232,17 @@ describe('txHistory', () => {
   })
 
   it('reads a row written before provenance was recorded as a live one of unknown block', () => {
-    // Every entry in a user's storage today predates both fields. Refusing to decode them would
-    // throw away the exact history this feature exists to preserve.
-    const v1 = JSON.parse(
-      JSON.stringify({ ...entry(), source: undefined, blockNumber: undefined }, (_k, v) =>
-        typeof v === 'bigint' ? v.toString() : v,
-      ),
-    )
-    const storage = memoryStorage({ [HISTORY_KEY]: JSON.stringify([v1]) })
+    // Both fields arrived after the sync did, and a row can still be written without them —
+    // defaulting rather than rejecting keeps the row instead of discarding it.
+    const storage = memoryStorage({
+      [HISTORY_KEY]: JSON.stringify({
+        tokens: [], wallets: [WALLET],
+        rows: [{
+          at: 1_800_000_000_000, chainId: 8453, deltas: [], fill: null,
+          hash: `0x${'11'.repeat(32)}`, kind: 'open', rate: null, swap: null, wallet: 0,
+        }],
+      }),
+    })
 
     const [row] = loadHistory(storage)
 
@@ -586,5 +594,95 @@ describe('the truncation mark', () => {
     clearHistory(storage)
 
     expect(isScopeTruncated(storage, { wallet: WALLET, chainId: 8453 })).toBe(false)
+  })
+})
+
+describe('storage format — hoisted tables', () => {
+  it('round-trips every field through the compacted document', () => {
+    // The shape changed underneath; nothing the caller sees may.
+    const storage = memoryStorage()
+    const original = entry()
+
+    appendHistory(storage, original)
+
+    expect(loadHistory(storage)).toEqual([original])
+  })
+
+  it('records a token once however many rows mention it', () => {
+    // The whole point. Every row used to carry the address, symbol and decimals of every token
+    // it touched — 42 characters per address, repeated across the store.
+    const storage = memoryStorage()
+    for (let i = 0; i < 10; i++) {
+      // Hex that cannot contain the wallet as a substring — the default hash is 64 ones and the
+      // wallet is 40 of them, which would count itself.
+      const hash = `0x${i.toString(16).padStart(2, '0').repeat(32)}` as `0x${string}`
+      appendHistory(storage, entry({ hash, at: 1_800_000_000_000 + i }))
+    }
+
+    const raw = storage.getItem(HISTORY_KEY)!
+    expect(raw.split(USDC).length - 1).toBe(1)
+    expect(raw.split(WALLET).length - 1).toBe(1)
+  })
+
+  it('keeps the same address twice when it was recorded under different names', () => {
+    // A token seen before anything could name it, and again after. Folding those into one entry
+    // would rewrite history: the older row would gain a symbol it never had.
+    const storage = memoryStorage()
+    appendHistory(storage, entry({
+      hash: `0x${'aa'.repeat(32)}`,
+      deltas: [{ token: WETH, symbol: null, decimals: null, delta: 1n }],
+    }))
+    appendHistory(storage, entry({
+      hash: `0x${'bb'.repeat(32)}`,
+      at: 1_800_000_000_001,
+      deltas: [{ token: WETH, symbol: 'WETH', decimals: 18, delta: 2n }],
+    }))
+
+    const rows = loadHistory(storage)
+    expect(rows.map((r) => r.deltas[0].symbol).sort()).toEqual(['WETH', null])
+  })
+
+  it('drops a row pointing at a token that is not in the table', () => {
+    // Row-by-row tolerance, as before: a half-written document costs the row it broke and not
+    // the whole list.
+    const storage = memoryStorage({
+      [HISTORY_KEY]: JSON.stringify({
+        tokens: [], wallets: [WALLET],
+        rows: [{
+          at: 1_800_000_000_000, blockNumber: null, chainId: 8453, deltas: [], fill: null,
+          hash: `0x${'cc'.repeat(32)}`, kind: 'open', rate: null, source: 'live',
+          swap: { src: 7, dst: 7, spentAmount: '1', returnAmount: '2' }, wallet: 0,
+        }],
+      }),
+    })
+
+    expect(loadHistory(storage)).toEqual([])
+  })
+
+  it('reads nothing from a store written in the old flat format', () => {
+    // Deliberate: the format carries no compatibility shim. History is a convenience, and one
+    // resync rebuilds it from the chain.
+    const flat = JSON.stringify([entry()], (_k, v) => (typeof v === 'bigint' ? v.toString() : v))
+    const storage = memoryStorage({ [HISTORY_KEY]: flat })
+
+    expect(loadHistory(storage)).toEqual([])
+  })
+})
+
+describe('storage format — leaving the old format behind', () => {
+  it('drops the screening cache with it, so the next sync rebuilds the rows', () => {
+    // Without this the history reads empty and STAYS empty: `hashSync` skips every hash it has
+    // a cached verdict for, so it never fetches the receipts the rows are rebuilt from and
+    // returns before writing anything. The user sees Recent activity go blank for good.
+    const flat = JSON.stringify([entry()], (_k, v) => (typeof v === 'bigint' ? v.toString() : v))
+    const storage = memoryStorage({
+      [HISTORY_KEY]: flat,
+      'defi-route.txscreen.v1': JSON.stringify({ '8453:0x11': { '0xabc': 'other' } }),
+    })
+
+    loadHistory(storage)
+
+    expect(storage.getItem('defi-route.txscreen.v1')).toBeNull()
+    expect(storage.getItem(HISTORY_KEY)).toBeNull()
   })
 })
