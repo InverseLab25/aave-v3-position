@@ -1,7 +1,10 @@
 import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types';
 import { formatUnits } from 'viem';
 
-const PARASWAP_TOKEN_TRANSFER_PROXY = '0x216B4B4Ba9F3e719726886d34a177484278Bfcae';
+/** Attribution. Velora keys its free-tier quota (1 RPS, 5k req/day) on this string, so sending
+ *  our own puts us in our own bucket instead of sharing `anon` with every other integrator.
+ *  It does not by itself collect a partner fee — that needs a registered ID, see Monetization. */
+const PARTNER = (import.meta.env.VITE_VELORA_PARTNER as string | undefined) ?? 'defi-route';
 
 /** The fields this adapter reads back out of ParaSwap's priceRoute payload. */
 interface ParaSwapPriceRoute {
@@ -15,10 +18,13 @@ interface ParaSwapPriceRoute {
 export const paraSwapAdapter: Adapter = {
   name: 'ParaSwap',
   supportsExecution: true,
+  // Velora's free tier is 1 RPS and 5,000 requests/day counted against PARTNER across every
+  // user we have, not per browser. The 2s refresh burns that in under an hour of real traffic,
+  // so hold the floor here. Raising it only helps so far — the cap is global, this is not.
+  minQuoteIntervalMs: 5_000,
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, _slippage: number, chainId: number): Promise<QuoteResponse | null> => {
     try {
-      const partner = 'llamaswap';
-      const url = `https://apiv5.paraswap.io/prices/?srcToken=${fromAsset.underlyingAsset}&destToken=${toAsset.underlyingAsset}&amount=${amountIn}&srcDecimals=${fromAsset.decimals}&destDecimals=${toAsset.decimals}&partner=${partner}&side=SELL&network=${chainId}&excludeDEXS=ParaSwapPool,ParaSwapLimitOrders`;
+      const url = `https://api.velora.xyz/prices/?srcToken=${fromAsset.underlyingAsset}&destToken=${toAsset.underlyingAsset}&amount=${amountIn}&srcDecimals=${fromAsset.decimals}&destDecimals=${toAsset.decimals}&partner=${PARTNER}&version=6.2&side=SELL&network=${chainId}&excludeDEXS=ParaSwapPool,ParaSwapLimitOrders`;
       
       const res = await fetch(url);
       const data = await res.json();
@@ -47,7 +53,7 @@ export const paraSwapAdapter: Adapter = {
         rawQuote: data.priceRoute,
         routeDetails: {
           type: 'paraswap',
-          info: 'Aggregated via ParaSwap v5'
+          info: 'Aggregated via ParaSwap (Velora) v6.2'
         }
       };
     } catch (e) {
@@ -57,10 +63,9 @@ export const paraSwapAdapter: Adapter = {
   },
 
   buildTransaction: async (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number): Promise<TransactionPayload> => {
-    const partner = 'llamaswap';
     const priceRoute = quote.rawQuote as ParaSwapPriceRoute;
     
-    const url = `https://apiv5.paraswap.io/transactions/${chainId}?ignoreChecks=true`;
+    const url = `https://api.velora.xyz/transactions/${chainId}?ignoreChecks=true`;
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -71,7 +76,7 @@ export const paraSwapAdapter: Adapter = {
         destDecimals: priceRoute.destDecimals,
         slippage: slippage * 100,
         userAddress: walletAddress,
-        partner: partner,
+        partner: PARTNER,
         positiveSlippageToUser: false,
         priceRoute: priceRoute,
         srcAmount: priceRoute.srcAmount
@@ -85,7 +90,8 @@ export const paraSwapAdapter: Adapter = {
       to: json.to,
       data: json.data,
       value: json.value || "0",
-      spender: PARASWAP_TOKEN_TRANSFER_PROXY
+      // Augustus v6.2 has no separate TokenTransferProxy: the call target is the spender.
+      spender: json.to
     };
   }
 };

@@ -105,9 +105,10 @@ export function quoteRate(
  *
  *  1. Its ERC20 approval-spender equals its call target, it needs no per-swap signature,
  *     and it can direct output to an arbitrary recipient — both contracts approve `router`,
- *     call `router`, and expect the output on themselves. This rules out ParaSwap
- *     (separate TokenTransferProxy), CowSwap (off-chain intent), and any Permit2-signature
- *     flow (1inch/0x) a contract can't sign. OpenOcean and Odos both satisfy it.
+ *     call `router`, and expect the output on themselves. This rules out CowSwap (off-chain
+ *     intent) and any Permit2-signature flow (1inch/0x) a contract can't sign. OpenOcean,
+ *     Odos and ParaSwap all satisfy it — ParaSwap only since Augustus v6.2, where the
+ *     approval spender is the router itself rather than a separate TokenTransferProxy.
  *
  *  2. Its router is on the deleverager's on-chain allowlist. Only KyberSwap's mainnet
  *     router is — see script/RouterSetup.s.sol — so it is the only entry here.
