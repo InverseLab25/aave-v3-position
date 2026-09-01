@@ -153,7 +153,7 @@ export const CHAIN_CONFIGS: Record<number, ChainConfig> = {
       // because deployment goes through CREATE2.
       strategiesFromBlock: blockFromEnv(import.meta.env.VITE_STRATEGIES_BLOCK_42161, 493_443_506n),
     },
-    adapters: ['KyberSwap', 'Socket', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
+    adapters: ['KyberSwap', 'Nordstern', 'Socket', 'OpenOcean', 'ParaSwap', 'CowSwap', 'Odos', 'Matcha'],
     defaultTokens: [
       { underlyingAsset: '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1', symbol: 'WETH', decimals: 18 },
       { underlyingAsset: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831', symbol: 'USDC', decimals: 6 },

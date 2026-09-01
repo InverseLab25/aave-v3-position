@@ -26,6 +26,10 @@ import { fetchQuoteJson, limitedFetch } from './http';
  */
 const GUARDS: Record<number, string> = {
   8453: '0xC87De04e2EC1F4282dFF2933A2D58199f688fC3d',
+  // Byte-identical runtime code to Base's, checked with `eth_getCode` on both — 1852 bytes,
+  // same hash — so the review above covers it without re-reading the source. Taken from a live
+  // quote on Arbitrum, and allowlisted on the Strategies contract there.
+  42161: '0x57f96440f1b1cAD53B40A8924BD540b1279A491c',
 };
 
 /**
@@ -91,8 +95,16 @@ interface NordsternQuote {
  * page's own origin is sent automatically, and `Referer` is a forbidden header name there, so
  * this object is dropped rather than applied. It is here for a caller outside the browser —
  * a test, a script, anything on Node — where nothing sets it for us.
+ *
+ * Nothing gates on it. Measured against the live API, sending no Referer, someone else's origin
+ * and a string that is not a URL all return the same route, so a wrong value costs attribution
+ * rather than access. Taken from the page it is running on so a preview or a rename attributes
+ * itself, with the deployed origin standing in off-browser where there is no page to ask.
  */
-const ATTRIBUTION = { Referer: 'https://defi-route.siddhnathbrass.in' };
+const ATTRIBUTION = {
+  Referer:
+    typeof location !== 'undefined' ? location.origin : 'https://defi-route.siddhnathbrass.in',
+};
 
 const routeUrl = (chainId: number, q: NordsternQuote, slippage: number, from: string) =>
   `https://api.nordstern.finance/aggregator/${chainId}` +

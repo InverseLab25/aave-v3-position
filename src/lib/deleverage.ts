@@ -110,8 +110,17 @@ export function quoteRate(
  *     Odos and ParaSwap all satisfy it — ParaSwap only since Augustus v6.2, where the
  *     approval spender is the router itself rather than a separate TokenTransferProxy.
  *
- *  2. Its router is on the deleverager's on-chain allowlist. Only KyberSwap's mainnet
- *     router is — see script/RouterSetup.s.sol — so it is the only entry here.
+ *  2. Its router is on the deleverager's on-chain allowlist. KyberSwap's router is, on all
+ *     three chains; Nordstern's Guard is on Base and Arbitrum only — see
+ *     script/RouterSetup.s.sol.
+ *
+ *     This list has no chain dimension, so condition 2 holding on SOME chain is what gets a
+ *     name in. What keeps Nordstern away from mainnet, where its Guard is not allowlisted, is
+ *     the adapter itself: GUARDS in adapters/nordstern.ts has no entry for chain 1, so
+ *     `getQuote` returns null there and the route is never ranked. Mainnet's `adapters` list
+ *     in config/chains.ts does not name it either. Both have to keep agreeing with the
+ *     allowlist — a Guard added to GUARDS before it is allowlisted on that chain reintroduces
+ *     exactly the sized-then-rejected failure this comment exists to prevent.
  *
  * A router's address is only known after `buildTransaction`, i.e. after a quote has been
  * paid for, so condition 2 cannot be checked during sizing. Quoting an aggregator that fails
@@ -123,7 +132,7 @@ export function quoteRate(
  * To widen this: allowlist the router on-chain FIRST (RouterSetup.s.sol, owner-signed),
  * then add the name here. Never the other way round.
  */
-export const COMPATIBLE_ADAPTERS = ['KyberSwap'] as const
+export const COMPATIBLE_ADAPTERS = ['KyberSwap', 'Nordstern'] as const
 
 
 /**
