@@ -1,6 +1,8 @@
 import { maxUint256, type Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
 import { CloseError, selectBuildableRoute } from './deleverage'
+import { swapSimulationInput } from '../adapters/simulate'
+import type { SimulationInput, SimulationResult } from '../adapters/simulate'
 import { getTxGasCap } from '../config/chains'
 
 // Moved to swapRoute.ts so the open flow can share them. Re-exported here so every existing
@@ -255,6 +257,13 @@ interface RouteSelection {
   chosen: QuoteResponse | null
   /** The built payload, carrying the aggregator's authoritative amountOut and outputChange. */
   tx: TransactionPayload | null
+  /**
+   * What the chosen route was measured to return, or null when nothing measured it.
+   *
+   * Null is not a verdict on the route — see {@link effectiveOut}. It reaches `signing`, where
+   * the output `minOut` derives from is chosen, so the two must keep reading it the same way.
+   */
+  sim: SimulationResult | null
   /** Why each rejected candidate was unusable, for the error the user eventually sees. */
   rejected: string[]
 }
@@ -275,6 +284,9 @@ export async function selectRoute({
   chainId,
   debt,
   slipNum,
+  tokenIn,
+  tokenOut,
+  simulate,
 }: {
   candidates: QuoteResponse[]
   adapters: Adapter[]
@@ -285,6 +297,12 @@ export async function selectRoute({
   chainId: number
   debt: bigint
   slipNum: bigint
+  /** Sold by the swap. Collateral on a close, the old long on a flip. */
+  tokenIn: string
+  /** Bought by the swap. The debt asset on a close, the new long on a flip. */
+  tokenOut: string
+  /** Injected so the selection stays testable without a live simulator. */
+  simulate?: (input: SimulationInput) => Promise<SimulationResult | null>
 }): Promise<RouteSelection> {
   // The walk itself is shared with the open flow, so the allowlist and calldata checks stay
   // identical between them. What is specific here is the bar each candidate has to clear:
@@ -301,6 +319,22 @@ export async function selectRoute({
       (BigInt(c.amountOut) * slipNum) / 10000n < debt ? 'guaranteed output below the debt' : null,
     label: (c) => c.aggregator,
     txGasCap: getTxGasCap(chainId),
+    // Deliberately the swap's OWN sender, tokens and size rather than the user's wallet: the
+    // swap happens inside the contract mid-flash-loan, and measuring it anywhere else answers
+    // a question nobody asked while still returning a plausible-looking number.
+    simulate: simulate
+      ? (c, tx) =>
+          simulate(
+            swapSimulationInput({
+              chainId,
+              caller: strategies,
+              tokenIn,
+              tokenOut,
+              amountIn: c.amountIn,
+              tx,
+            }),
+          )
+      : undefined,
   })
 
   if (selected) {
@@ -309,11 +343,12 @@ export async function selectRoute({
       swapData: selected.tx.data as `0x${string}`,
       chosen: selected.candidate,
       tx: selected.tx,
+      sim: selected.sim,
       rejected,
     }
   }
 
-  return { router: null, swapData: null, chosen: null, tx: null, rejected }
+  return { router: null, swapData: null, chosen: null, tx: null, sim: null, rejected }
 }
 
 /** Throws unless the sized plan is worth asking the user to sign for. */

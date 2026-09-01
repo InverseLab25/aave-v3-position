@@ -7,6 +7,7 @@ import {
   canReuseSignature,
   reuseBlocker,
   routeCostPercent,
+  selectRoute,
   isSlippageShapedFailure,
   suggestWiderSlippage,
   MAX_OUTPUT_DEGRADATION_PERCENT,
@@ -361,5 +362,84 @@ describe('deriveDebtRepay', () => {
 
   it('reports a swap that buys nothing as zero rather than as a tiny repay', () => {
     expect(deriveDebtRepay({ guaranteedOut: 0n, debt: 20000n })).toBe(0n)
+  })
+})
+
+
+describe('selectRoute — simulation wiring', () => {
+  const STRATEGIES = '0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c' as Address
+  const COLLATERAL = '0x4200000000000000000000000000000000000006'
+  const DEBT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+
+  const quote = (aggregator: string, amountIn: string, amountOut: string) =>
+    ({ aggregator, amountIn, amountOut, rawQuote: {} }) as never
+
+  const adapter = (name: string, amountOut: string) =>
+    ({
+      name,
+      buildTransaction: async () => ({
+        to: '0xR', spender: '0xR', data: '0xdead', value: '0', amountOut,
+      }),
+    }) as never
+
+  const base = {
+    strategies: STRATEGIES,
+    allowedRouters: new Set(['0xr']),
+    slippagePercent: 0.5,
+    chainId: 8453,
+    debt: 1n,
+    slipNum: 9950n,
+    tokenIn: COLLATERAL,
+    tokenOut: DEBT,
+  }
+
+  it('measures the swap the contract will actually make, not the user wallet', async () => {
+    // Everything here has been wrong in a way that still returns a plausible number: simulating
+    // from the wrong sender, on the wrong token pair, or at the wrong size all yield an output
+    // that looks fine and is not this trade. Pin each one.
+    const seen: unknown[] = []
+
+    await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '400000000000', '160000000000000000000')],
+      adapters: [adapter('KyberSwap', '160000000000000000000')],
+      simulate: async (input) => {
+        seen.push(input)
+        return { ok: true, amountOut: 159n, gasUsed: 1 }
+      },
+    })
+
+    expect(seen[0]).toMatchObject({
+      chainId: 8453,
+      from: STRATEGIES,
+      to: '0xR',
+      spender: '0xR',
+      data: '0xdead',
+      tokenIn: COLLATERAL,
+      tokenOut: DEBT,
+      amountIn: '400000000000',
+    })
+  })
+
+  it('hands the measurement back so minOut can be derived from it', async () => {
+    const selection = await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '1', '100')],
+      adapters: [adapter('KyberSwap', '100')],
+      simulate: async () => ({ ok: true, amountOut: 97n, gasUsed: 4200 }),
+    })
+
+    expect(selection.sim).toEqual({ ok: true, amountOut: 97n, gasUsed: 4200 })
+  })
+
+  it('still returns a route when nothing simulated it', async () => {
+    const selection = await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '1', '100')],
+      adapters: [adapter('KyberSwap', '100')],
+    })
+
+    expect(selection.router).toBe('0xR')
+    expect(selection.sim).toBeNull()
   })
 })

@@ -1,5 +1,6 @@
 import { formatUnits, type Address } from 'viem'
 import type { QuoteResponse, TransactionPayload } from '../adapters/types'
+import type { SimulationResult } from '../adapters/simulate'
 
 /**
  * Why a close could not be planned. The three cases need different responses, and prose
@@ -225,7 +226,32 @@ export function validateSwapTx(
 }
 
 /**
- * Walk ranked candidates and return the first that BUILDS and passes {@link validateSwapTx}.
+ * The output figure to trust for a built route.
+ *
+ * A successful simulation wins, because it is the only figure here that was measured rather
+ * than claimed — a real balance delta at the recipient, so transfer taxes and router fees are
+ * already in it. Everything else falls back to what the aggregator said it would deliver.
+ *
+ * Both fallbacks are deliberate and they are NOT the same thing. A null simulation means the
+ * simulator could not be asked, which says nothing about the route, so penalising it would let
+ * an outage silently re-rank every trade. A reverted simulation is real evidence and is still
+ * fallen back on anyway, which is the weakest point in this design: the route stays on offer
+ * carrying a number the simulator has already contradicted. It is not a regression — before
+ * simulation existed that route was offered with no check at all — but the simulation cannot
+ * protect the user there. Dropping reverting routes instead means telling an outage and a bad
+ * route apart at the call site, which is a decision, not a detail.
+ */
+export function effectiveOut(
+  tx: TransactionPayload,
+  sim: SimulationResult | null | undefined,
+): bigint {
+  if (sim?.ok) return sim.amountOut
+  return BigInt(tx.amountOut ?? 0)
+}
+
+/**
+ * Build every candidate that clears the bars, measure what each would really return, and pick
+ * the best of them.
  *
  * Both flows do this and must keep doing it identically: a candidate that fails to build, or
  * builds into calldata the contract cannot execute, has to be fallen through rather than
@@ -234,11 +260,19 @@ export function validateSwapTx(
  * calldata checks from drifting apart between the open path and the close path, which is the
  * part that is security-relevant rather than merely tidy.
  *
- * Candidates must arrive best-first: the first acceptable one wins, so any fallback prices
- * strictly worse than the route the caller sized against.
+ * Candidates arrive best-first by QUOTE, and that order only decides ties. A quote is the
+ * aggregator's claim about its own route; the ranking here is on {@link effectiveOut}, which
+ * prefers what a simulation measured. Letting the measurement reorder them is the entire point
+ * — a quote that does not survive contact with live state should not win the trade.
+ *
+ * The bars are checked BEFORE anything is simulated, so a route rejected for gas or for the
+ * allowlist never costs a simulation.
  *
  * `reject` is an optional extra bar for the caller's own invariant — the close flow needs each
  * candidate's guaranteed output to clear the debt, which is not something this can know.
+ *
+ * With no `simulate` the ranking falls back to the built figures, which is still better than
+ * taking the first that builds: a build can come back worse than the quote it was based on.
  */
 export async function selectBuildableRoute<C>(
   candidates: C[],
@@ -251,10 +285,19 @@ export async function selectBuildableRoute<C>(
     txGasCap?: bigint
     /** Aborts the walk between candidates when the caller's request is superseded. */
     cancelled?: () => boolean
+    /**
+     * What this route would really return, measured against live state. Null when the question
+     * could not be asked — see {@link effectiveOut} for why that is not the same as a failure.
+     */
+    simulate?: (candidate: C, tx: TransactionPayload) => Promise<SimulationResult | null>
   },
-): Promise<{ selected: { candidate: C; tx: TransactionPayload } | null; rejected: string[] }> {
+): Promise<{
+  selected: { candidate: C; tx: TransactionPayload; sim: SimulationResult | null } | null
+  rejected: string[]
+}> {
   const rejected: string[] = []
   const name = (c: C) => (opts.label ? opts.label(c) : 'route')
+  const viable: { candidate: C; tx: TransactionPayload }[] = []
 
   for (const candidate of candidates) {
     if (opts.cancelled?.()) return { selected: null, rejected }
@@ -280,10 +323,26 @@ export async function selectBuildableRoute<C>(
       continue
     }
 
-    return { selected: { candidate, tx }, rejected }
+    viable.push({ candidate, tx })
   }
 
-  return { selected: null, rejected }
+  if (viable.length === 0) return { selected: null, rejected }
+
+  // Concurrently: these are independent reads of the same block, and the shared HTTP gate caps
+  // the origin anyway, so serialising them would only add latency to a preview that refreshes.
+  const sims = opts.simulate
+    ? await Promise.all(viable.map((v) => opts.simulate!(v.candidate, v.tx)))
+    : viable.map(() => null)
+  if (opts.cancelled?.()) return { selected: null, rejected }
+
+  // Strictly-greater, so a tie keeps the earlier candidate — which is the better QUOTE, and the
+  // one the caller sized against.
+  let best = 0
+  for (let i = 1; i < viable.length; i++) {
+    if (effectiveOut(viable[i].tx, sims[i]) > effectiveOut(viable[best].tx, sims[best])) best = i
+  }
+
+  return { selected: { ...viable[best], sim: sims[best] }, rejected }
 }
 
 /** EIP-2612 typed data for an Aave V3 aToken permit (spender = deleverager). */

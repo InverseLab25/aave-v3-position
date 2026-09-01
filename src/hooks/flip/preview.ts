@@ -3,6 +3,7 @@ import { getChainConfig, getFlipperAddress } from '../../config/chains'
 import { getAdaptersForChain } from '../../adapters'
 import type { QuoteResponse } from '../../adapters/types'
 import { selectRoute } from '../../lib/closePlan'
+import { simulateSwap } from '../../adapters/simulate'
 import { aaveV3FlipperAbi, sizeFlip, WAD, type FlipSize } from '../../lib/strategies-sdk'
 import { QUOTE_ROUNDS, RATE_BUFFER_BPS } from '../flip/constants'
 import { FlipError, type FlipInput, type FlipPreview, type Position } from '../flip/types'
@@ -127,6 +128,9 @@ export async function quoteAndSelect(p: {
     // anything. Below that bar a route is not usable at any leverage.
     debt: p.debt,
     slipNum: p.slipNum,
+    tokenIn: p.input.fromAsset.underlyingAsset,
+    tokenOut: p.input.toAsset.underlyingAsset,
+    simulate: simulateSwap,
   })
 }
 

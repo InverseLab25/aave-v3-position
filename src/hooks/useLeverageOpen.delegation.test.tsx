@@ -47,6 +47,15 @@ vi.mock('../lib/aaveStatics', () => ({
   getReserveTokens: mocks.getReserveTokens,
 }))
 vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
+// Unreachable simulator, which is the fallback path: every route is then judged on its BUILT
+// output, exactly as it was before simulation existed. Left that way on purpose — these tests
+// are about delegation and signature reuse, and a measured output would silently change the
+// numbers they assert on. The real thing goes through the shared HTTP gate, whose setTimeout
+// never fires under this file's fake timers, so leaving it unmocked hangs the preview instead.
+vi.mock('../adapters/simulate', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  simulateSwap: vi.fn(async () => null),
+}))
 // Partial: `AggregatorHttpError` has to stay the real class — the throttling tests branch on
 // `instanceof` — while the cache drop needs to be observable.
 vi.mock('../adapters/http', async (orig) => ({

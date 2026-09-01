@@ -230,6 +230,12 @@ export function useDeleverageClose() {
           // No floor in derived mode: a route that returns less does not fail, it repays less.
           debt: p.deriveRepay ? 0n : p.debt,
           slipNum: p.slipNum,
+          tokenIn: p.collateralAddr,
+          tokenOut: p.debtAddr,
+          // No `simulate` on purpose. This proves a buildable route EXISTS before asking for
+          // signatures and then throws the calldata away; `buildFreshRoute` re-selects and
+          // measures the route that is actually submitted. Measuring here would spend a call
+          // on a result nothing reads.
         })
         if (!preflight.router) {
           throw new CloseError(

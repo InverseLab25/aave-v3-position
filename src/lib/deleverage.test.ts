@@ -1,15 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { parseUnits } from 'viem'
 import {
   quoteRate,
   validateSwapTx,
   selectBuildableRoute,
+  effectiveOut,
   rankRoutes,
   applyPin,
   COMPATIBLE_ADAPTERS,
   TX_GAS_CAP_2_24,
 } from './deleverage'
-import type { QuoteResponse } from '../adapters/types'
+import type { QuoteResponse, TransactionPayload } from '../adapters/types'
 
 const WETH = 18
 const USDC = 6
@@ -178,5 +179,100 @@ describe('applyPin', () => {
 
   it('returns nothing for a pin that did not price, so the caller can say which one failed', () => {
     expect(applyPin(routes, 'OpenOcean', nameOf)).toEqual([])
+  })
+})
+
+
+describe('effectiveOut', () => {
+  const tx: TransactionPayload = { to: '0xR', spender: '0xR', data: '0xaa', value: '0', amountOut: '100' }
+
+  it('prefers what the simulation measured over what the aggregator claimed', () => {
+    expect(effectiveOut(tx, { ok: true, amountOut: 97n, gasUsed: 1 })).toBe(97n)
+  })
+
+  it('falls back to the built figure when there was no simulation to read', () => {
+    // Null means the simulator could not be asked. That is not evidence about the route, so the
+    // aggregator's own number stands rather than the route being penalised for an outage.
+    expect(effectiveOut(tx, null)).toBe(100n)
+  })
+
+  it('falls back to the built figure when the simulation reverted', () => {
+    // Deliberate, and the weakest point in the design: the route is still offered on a number
+    // the simulator has already contradicted. Kept because dropping it would make a simulator
+    // outage and a bad route indistinguishable to the user.
+    expect(effectiveOut(tx, { ok: false, amountOut: 0n, gasUsed: 1, revertReason: 'x' })).toBe(100n)
+  })
+})
+
+describe('selectBuildableRoute — ranking on measured output', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload => ({
+    to: '0xR', spender: '0xR', data, value: '0', amountOut,
+  })
+
+  it('picks the route that measures best, not the one quoted best', async () => {
+    // Candidates arrive best-first BY QUOTE. Simulation is what catches a quote that does not
+    // survive contact with live state, so it has to be allowed to reorder them.
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+    const measured: Record<string, bigint> = { a: 90n, b: 98n }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) => ({ ok: true, amountOut: measured[c], gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('b')
+  })
+
+  it('hands the simulation back so the caller can derive minOut from it', async () => {
+    const { selected } = await selectBuildableRoute(['a'], {
+      build: async () => tx('100'),
+      isAllowlisted: () => true,
+      simulate: async () => ({ ok: true, amountOut: 97n, gasUsed: 4200 }),
+    })
+
+    expect(selected?.sim).toEqual({ ok: true, amountOut: 97n, gasUsed: 4200 })
+  })
+
+  it('lets a route whose simulation failed compete on its built figure', async () => {
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      // 'a' cannot be measured; it keeps its claim of 100 and still beats b's measured 98.
+      simulate: async (c) => (c === 'a' ? null : { ok: true, amountOut: 98n, gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('a')
+    expect(selected?.sim).toBeNull()
+  })
+
+  it('does not spend a simulation on a route it has already rejected', async () => {
+    const simulate = vi.fn(async () => ({ ok: true, amountOut: 1n, gasUsed: 1 }))
+
+    await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => ({ ...tx('100'), gasEstimate: c === 'big' ? '20000000' : '9000000' }),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+      simulate,
+    })
+
+    expect(simulate).toHaveBeenCalledTimes(1)
+  })
+
+  it('ranks on the built figure when no simulator is wired up', async () => {
+    const built: Record<string, TransactionPayload> = { a: tx('99', '0xaa'), b: tx('100', '0xbb') }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+    })
+
+    expect(selected?.candidate).toBe('b')
   })
 })

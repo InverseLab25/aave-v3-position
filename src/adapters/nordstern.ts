@@ -101,7 +101,7 @@ interface NordsternQuote {
  * rather than access. Taken from the page it is running on so a preview or a rename attributes
  * itself, with the deployed origin standing in off-browser where there is no page to ask.
  */
-const ATTRIBUTION = {
+export const ATTRIBUTION = {
   Referer:
     typeof location !== 'undefined' ? location.origin : 'https://defi-route.siddhnathbrass.in',
 };

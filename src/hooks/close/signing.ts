@@ -1,7 +1,8 @@
 import { parseSignature, type Address } from 'viem'
 import type { WalletClient } from 'viem'
 import { clearQuoteCache } from '../../adapters/http'
-import { CloseError, buildPermitTypedData } from '../../lib/deleverage'
+import { CloseError, buildPermitTypedData, effectiveOut } from '../../lib/deleverage'
+import { simulateSwap } from '../../adapters/simulate'
 import {
   reuseBlocker,
   selectRoute,
@@ -138,7 +139,7 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
         log('Refreshing the swap route before submitting…')
         clearQuoteCache() // the reuse window outlasts a fast signing; force the network
         const candidates = await p.quoteAt(p.requiredIn)
-        const { router, swapData, chosen, tx, rejected } = await selectRoute({
+        const { router, swapData, chosen, tx, sim, rejected } = await selectRoute({
           candidates,
           adapters: p.adapters,
           strategies: p.strategies,
@@ -148,6 +149,9 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
           // No floor in derived mode: a route that returns less does not fail, it repays less.
           debt: p.deriveRepay ? 0n : p.debt,
           slipNum: p.slipNum,
+          tokenIn: p.collateralAddr,
+          tokenOut: p.debtAddr,
+          simulate: simulateSwap,
         })
 
         if (!router || !swapData || !chosen || !tx) {
@@ -160,10 +164,12 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
         if (BigInt(chosen.amountIn) !== p.requiredIn) {
           throw new CloseError('pair', 'Re-quote returned a different swap size — try again')
         }
-        // The build endpoint re-simulates and returns its OWN amountOut, which is what the
-        // router's minReturnAmount is derived from. Prefer it over the quote's wherever a
-        // floor or a comparison is being made.
-        const builtOut = tx.amountOut ? BigInt(tx.amountOut) : BigInt(chosen.amountOut)
+        // What the floor, the degradation check and the receipt are all measured against.
+        // A simulation of this exact calldata against live state wins where there is one; the
+        // build's own amountOut is the fallback, and the quote's the last resort for an adapter
+        // that omits it. `effectiveOut` owns that choice so the open flow cannot diverge from it.
+        const measured = effectiveOut(tx, sim)
+        const builtOut = measured > 0n ? measured : BigInt(chosen.amountOut)
 
         // Skipped in derived mode, which has no fixed target to fall short of — a lighter
         // route simply repays less. The degradation check below is what stops one that moved

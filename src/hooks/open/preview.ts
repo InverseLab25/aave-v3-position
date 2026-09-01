@@ -13,7 +13,8 @@ import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import type { Adapter, QuoteResponse } from '../../adapters/types'
 import { getChainConfig, getTxGasCap } from '../../config/chains'
-import { COMPATIBLE_ADAPTERS, applyPin, selectBuildableRoute } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, selectBuildableRoute } from '../../lib/deleverage'
+import { simulateSwap, swapSimulationInput } from '../../adapters/simulate'
 import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
@@ -272,6 +273,20 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           label: (c) => c.a.name,
           txGasCap: getTxGasCap(chainId),
           cancelled,
+          // The contract makes this swap mid-flash-loan, so it is the sender and the recipient.
+          // The open direction is debt -> collateral, the mirror of the close.
+          simulate: (c, tx) =>
+            simulateSwap(
+              swapSimulationInput({
+                chainId,
+                caller: input.contract,
+                tokenIn: debtAsset,
+                tokenOut: collateral,
+                amountIn: c.q.amountIn,
+                tx,
+              }),
+              signal,
+            ),
         })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
         // superseded attempt writes a no-route error that a reverted input would make current.
@@ -285,9 +300,14 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         }
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
 
-        // The BUILT route's output, not the quote's: `buildTransaction`'s amountOut is
-        // re-simulated and documented as authoritative, and it is what `minOut` derives from.
-        const builtOut = BigInt(build.built.amountOut ?? build.quote.amountOut)
+        // What this route was MEASURED to return, against live state, for this exact calldata.
+        // `minOut`, the flash size and the whole projection all come off this number, so the
+        // ladder matters: a simulation where there is one, the build's own amountOut where
+        // there is not, the quote's only as a last resort. `effectiveOut` owns that choice so
+        // the close flow cannot read it differently — see its note on why a REVERTED simulation
+        // still falls back rather than dropping the route.
+        const measured = effectiveOut(build.built, selected.sim)
+        const builtOut = measured > 0n ? measured : BigInt(build.quote.amountOut)
         // What this route contractually guarantees to deliver.
         const guaranteedOut = (builtOut * (BPS - input.slippageBps)) / BPS
 
