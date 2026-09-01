@@ -138,3 +138,45 @@ it('re-quotes when an input value actually changes', async () => {
 
   expect(mocks.getPauseState).toHaveBeenCalledTimes(2)
 })
+
+it('does not quote while the panel is out of view', async () => {
+  // The panel is not unmounted when the user switches to the DEX tab or backgrounds the browser:
+  // AavePosition is hidden with `display: none` so an in-flight transaction's report survives.
+  // Hidden it still re-keys on every background refetch of prices and balances, and each re-key
+  // now costs a build and a simulation per candidate on top of the quotes — all of it for a
+  // screen nobody is looking at.
+  function Paused() {
+    useLeverageOpen(makeInput(), undefined, { paused: true })
+    return null
+  }
+  render(<Paused />)
+
+  await settle()
+
+  expect(mocks.getPauseState).not.toHaveBeenCalled()
+})
+
+it('quotes as soon as the panel comes back into view', async () => {
+  // The mirror. Pausing that never resumes would leave the user reading a preview priced before
+  // they left, which is worse than not quoting: it looks current and is not.
+  function Resuming() {
+    const [paused, setPaused] = useState(true)
+    useLeverageOpen(makeInput(), undefined, { paused })
+    useEffect(() => {
+      const t = setTimeout(() => setPaused(false), 1000)
+      return () => clearTimeout(t)
+    }, [])
+    return null
+  }
+  render(<Resuming />)
+
+  await settle()
+  expect(mocks.getPauseState).not.toHaveBeenCalled()
+
+  await act(async () => {
+    vi.advanceTimersByTime(1000)
+  })
+  await settle()
+
+  expect(mocks.getPauseState).toHaveBeenCalledTimes(1)
+})

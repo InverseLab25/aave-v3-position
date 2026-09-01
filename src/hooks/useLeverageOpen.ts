@@ -33,7 +33,7 @@ import {
   type ReserveInfo,
 } from './open/types'
 import { runPreview } from './open/preview'
-import { prepareOpen, submitOpen } from './open/execute'
+import { approveMargin, prepareOpen, submitOpen } from './open/execute'
 
 // Re-exported so consumers keep importing the flow's vocabulary from the hook itself.
 export type { LeverageOpenInput, OpenDeps, OpenPreview, OpenStep, ReserveInfo }
@@ -44,7 +44,24 @@ export type { LeverageOpenInput, OpenDeps, OpenPreview, OpenStep, ReserveInfo }
  * `signTypedData` still gets the real `writeContract` wired to wagmi underneath. That is also why
  * the wagmi hooks below are called unconditionally — rules of hooks, and the merge needs both.
  */
-export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Partial<OpenDeps>) {
+export function useLeverageOpen(
+  input: LeverageOpenInput | null,
+  injected?: Partial<OpenDeps>,
+  /**
+   * `paused` stops the quoting effect while nobody is looking at the panel.
+   *
+   * AavePosition is hidden with `display: none` rather than unmounted when the user leaves its
+   * tab, deliberately — see the note on the frozen confirmation pair in LeveragePanel, where a
+   * reserve refetch unmounting things mid-transaction destroyed a settled report. Hidden, the
+   * panel still re-keys on every background refetch of prices and balances, and a re-key now
+   * costs a build and a simulation per candidate on top of the quotes. Gating the QUOTING rather
+   * than the mount is what stops that without putting the report back at risk.
+   *
+   * Unpausing re-quotes, on purpose: a preview priced before the user looked away is worse than
+   * none, because it looks current.
+   */
+  options?: { paused?: boolean },
+) {
   const client = usePublicClient()
   const chainId = useChainId()
   const { address: owner } = useConnection()
@@ -64,7 +81,16 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   /** Why the last run found no usable route. Empty unless `previewError` is NO_ROUTE. */
   const [rejected, setRejected] = useState<string[]>([])
   /** Every aggregator that priced the last run, best-first. What the route picker lists. */
-  const [routes, setRoutes] = useState<QuoteResponse[]>([])
+  /**
+   * The priced field, stored WITH the pair it was priced for.
+   *
+   * Together, so the list can never be read against a pair it did not come from — and so a
+   * re-quote of the same pair leaves the last list standing until the new one lands, rather than
+   * blanking the picker on every three-second refresh.
+   */
+  const [quotedRoutes, setQuotedRoutes] = useState<{ pair: string; routes: QuoteResponse[] }>(
+    { pair: '', routes: [] },
+  )
   const [step, setStep] = useState<OpenStep>('idle')
   const [txHash, setTxHash] = useState<Hex | undefined>()
   const [execError, setExecError] = useState<string | null>(null)
@@ -244,6 +270,14 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
   // The pin is folded in because it changes what the quote is FOR: a preview solved freely and
   // one priced at a pinned borrow are different plans, and switching between them must re-quote.
   const key = input ? `${inputKey(input)}|pin:${pinnedBorrow ?? '-'}` : null
+  /**
+   * The same key with the ROUTE PIN left out — what the route LIST actually depends on.
+   *
+   * The list answers "who priced this pair". A pin does not change that; it only decides which
+   * of them gets built. Masking the list on the full `key` therefore emptied the picker the
+   * instant someone clicked a row in it, taking away the thing they were using.
+   */
+  const pairKey = input ? inputKey({ ...input, preferredAggregator: undefined }) : null
   // Carries the live object into an effect that must not depend on its identity. Every value the
   // effect reads is folded into `key`, so a run always sees an object matching the key it fired
   // for. Synced in its own effect, declared FIRST: effects run in declaration order within a
@@ -261,7 +295,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     // Frozen: a held signature commits to an exact borrowAmount, so the plan must not move
     // underneath it. Nothing goes stale — `previewFor` still matches `input`, which has not
     // changed either.
-    if (!input || !key || frozen.current) return
+    if (!input || !key || frozen.current || options?.paused) return
 
     let cancelled = false
     const forInput = key
@@ -274,9 +308,13 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     const timer = setTimeout(async () => {
       await runPreview({
         input, pinned, forInput, client, chainId, owner,
+        // Recomputed from the effect's own `input` rather than the render-scope `pairKey`, which
+        // is nullable and belongs to a later render than the one this run answers for.
+        forPair: inputKey({ ...input, preferredAggregator: undefined }),
         cancelled: () => cancelled,
         signal: controller.signal,
-        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes,
+        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
+        setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v }),
       })
     }, DEBOUNCE_MS)
 
@@ -285,7 +323,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
       controller.abort()
       clearTimeout(timer)
     }
-  }, [key, client, chainId, owner, tick])
+  }, [key, client, chainId, owner, tick, options?.paused])
 
   // Masks preview/previewError the instant `input` no longer matches what they were computed
   // for. `execute` and the return value both use these, never the raw state, so nothing
@@ -319,6 +357,17 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
    * the strength of it — and `step` is state, which an awaiting caller cannot read back in time.
    */  // The context is built inside each callback rather than shared: a shared builder would have to
   // join both dependency sets, and each would then re-create on a change only the other cares about.
+  /**
+   * The panel's Open button: check the margin allowance, approve if it is short, nothing else.
+   *
+   * Needs no route, which is the point — the panel prices nothing now, so making this wait on a
+   * quote would leave the button dead on a screen that has no quote coming.
+   */
+  const approve = useCallback(
+    () => approveMargin({ input, client, owner, chainId, deps, setStep, setExecError, setExecRemedy }),
+    [input, client, owner, chainId, deps],
+  )
+
   const prepare = useCallback(
     () => prepareOpen({
         input, effectivePreview, client, owner, chainId, deps, refresh, held, prepared, frozen,
@@ -367,7 +416,9 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
      * The aggregators that answered, best-first. Masked with the preview: a list belonging to
      * inputs the user has already edited past would invite them to pin a price that is gone.
      */
-    routes: stale ? [] : routes,
+    // Derived, not stored: a list from another pair stops being returned the instant the form
+    // moves, without a state write from render.
+    routes: quotedRoutes.pair === pairKey ? quotedRoutes.routes : [],
     isQuoting: effectiveIsQuoting,
     refresh,
     /** Refresh on the user's behalf: drops the reuse window, then re-quotes. */
@@ -376,6 +427,7 @@ export function useLeverageOpen(input: LeverageOpenInput | null, injected?: Part
     /** A submitted open whose receipt never arrived, or could not be read. Not a failure. */
     settleNote,
     /** Approve and delegate. Prompts the wallet; opens nothing. */
+    approve,
     prepare,
     /** Send what `prepare` authorised, against the route currently on screen. */
     submit,

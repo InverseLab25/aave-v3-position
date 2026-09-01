@@ -117,7 +117,16 @@ function App() {
       </header>
       <main>
         <div style={{ display: activeTab === 'aave' ? 'block' : 'none' }}>
-          <AavePosition viewAddress={viewAddress} viewChainId={viewChainId} apiNativePrice={apiNativePrice} />
+          {/* Hidden rather than unmounted, so an open position's in-flight transaction and its
+              settled report survive a tab switch. `active` is what stops it pricing meanwhile —
+              without it the leverage panel re-quotes on every background refetch of prices and
+              balances, for a screen nobody is looking at. */}
+          <AavePosition
+            viewAddress={viewAddress}
+            viewChainId={viewChainId}
+            apiNativePrice={apiNativePrice}
+            active={activeTab === 'aave'}
+          />
         </div>
         {!isViewMode && activeTab === 'dex' && (
           <Suspense fallback={<div style={{ padding: '20px' }}>Loading DEX Discovery…</div>}>

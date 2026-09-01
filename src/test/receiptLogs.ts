@@ -6,7 +6,7 @@
  * through viem means a fixture is wrong only if the ABI is.
  */
 import { encodeAbiParameters, pad, parseAbiParameters, type Address, type Hex } from 'viem'
-import { SWAPPED_TOPIC } from '../lib/txOutcome'
+import { AGGREGATED_TRADE_TOPIC, SWAPPED_TOPIC } from '../lib/txOutcome'
 
 export const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 export const ZERO_ADDRESS: Address = '0x0000000000000000000000000000000000000000'
@@ -55,5 +55,43 @@ export function transferLog(
     address: token,
     topics: [TRANSFER_TOPIC, pad(from, { size: 32 }), pad(to, { size: 32 })],
     data: encodeAbiParameters(parseAbiParameters('uint256'), [value]),
+  }
+}
+
+/**
+ * Nordstern's `AggregatedTrade`, which its Guard emits instead of `Swapped`.
+ *
+ * Two arguments are indexed, so they live in topics rather than data — the shape hand-written
+ * hex gets wrong most often. Encoded through viem for the same reason the others are.
+ */
+export function aggregatedTradeLog(o: {
+  guard: Address
+  id?: number
+  user: Address
+  tokenIn: Address
+  tokenOut: Address
+  executor?: Address
+  amountIn: bigint
+  amountOut: bigint
+  minAmountOut?: bigint
+}): FixtureLog {
+  return {
+    address: o.guard,
+    topics: [
+      AGGREGATED_TRADE_TOPIC,
+      pad(`0x${(o.id ?? 0xf853).toString(16)}` as Hex, { size: 32 }),
+      pad(o.user, { size: 32 }),
+    ],
+    data: encodeAbiParameters(
+      parseAbiParameters('address, address, address, uint256, uint256, uint256'),
+      [
+        o.tokenIn,
+        o.tokenOut,
+        o.executor ?? o.guard,
+        o.amountIn,
+        o.amountOut,
+        o.minAmountOut ?? o.amountOut,
+      ],
+    ),
   }
 }

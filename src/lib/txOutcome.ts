@@ -30,6 +30,32 @@ const swappedAbi = [
   },
 ] as const
 
+/**
+ * `keccak256("AggregatedTrade(uint16,address,address,address,address,uint256,uint256,uint256)")`.
+ *
+ * Nordstern's Guard emits this instead of `Swapped`. Confirmed against a real Base close, tx
+ * 0x8849dbd2…c819d: same topic, and the words land where this ABI says they do.
+ */
+export const AGGREGATED_TRADE_TOPIC =
+  '0x97d8fe5395a5423bef64e2004851e9b3f60f7848835afa581b4a0a8e84bc662d' as const
+
+const aggregatedTradeAbi = [
+  {
+    type: 'event',
+    name: 'AggregatedTrade',
+    inputs: [
+      { name: 'id', type: 'uint16', indexed: true },
+      { name: 'user', type: 'address', indexed: true },
+      { name: 'tokenIn', type: 'address', indexed: false },
+      { name: 'tokenOut', type: 'address', indexed: false },
+      { name: 'executor', type: 'address', indexed: false },
+      { name: 'amountIn', type: 'uint256', indexed: false },
+      { name: 'amountOut', type: 'uint256', indexed: false },
+      { name: 'minAmountOut', type: 'uint256', indexed: false },
+    ],
+  },
+] as const
+
 /** `keccak256("Transfer(address,address,uint256)")` — every ERC20 movement carries it. */
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
 
@@ -65,7 +91,15 @@ interface RouterSwap {
 }
 
 /**
- * Every `Swapped` in a receipt, in the order the transaction emitted them.
+ * Every router fill in a receipt, in the order the transaction emitted them.
+ *
+ * Two event shapes, because the aggregators the contracts can execute do not agree on one.
+ * KyberSwap and 1inch emit `Swapped`; Nordstern's Guard emits `AggregatedTrade`. Reading only
+ * the first left every Nordstern close reporting nothing at all — no settled fill, no history
+ * basis, no fill price — which is worse than reporting it wrong, because nothing looks broken.
+ *
+ * `AggregatedTrade` names no receiver. The Guard pulls with `transferFrom(msg.sender, …)` and
+ * returns the output to that same caller, so `user` is both sender and receiver.
  *
  * A receipt carries every log the whole call tree produced — Aave's, the flash lender's, the
  * tokens' — so anything that fails to decode is skipped rather than thrown on. A report that
@@ -74,15 +108,32 @@ interface RouterSwap {
 export function decodeSwaps(logs: readonly ReceiptLog[]): RouterSwap[] {
   const swaps: RouterSwap[] = []
   for (const log of logs) {
-    if (log.topics[0] !== SWAPPED_TOPIC) continue
     try {
-      const { args } = decodeEventLog({
-        abi: swappedAbi,
-        eventName: 'Swapped',
-        data: log.data,
-        topics: log.topics as [Hex, ...Hex[]],
-      })
-      swaps.push({ router: log.address, ...args })
+      if (log.topics[0] === SWAPPED_TOPIC) {
+        const { args } = decodeEventLog({
+          abi: swappedAbi,
+          eventName: 'Swapped',
+          data: log.data,
+          topics: log.topics as [Hex, ...Hex[]],
+        })
+        swaps.push({ router: log.address, ...args })
+      } else if (log.topics[0] === AGGREGATED_TRADE_TOPIC) {
+        const { args } = decodeEventLog({
+          abi: aggregatedTradeAbi,
+          eventName: 'AggregatedTrade',
+          data: log.data,
+          topics: log.topics as [Hex, ...Hex[]],
+        })
+        swaps.push({
+          router: log.address,
+          sender: args.user,
+          srcToken: args.tokenIn,
+          dstToken: args.tokenOut,
+          dstReceiver: args.user,
+          spentAmount: args.amountIn,
+          returnAmount: args.amountOut,
+        })
+      }
     } catch {
       // Truncated data, or a variant that indexes its address arguments — either way the words
       // are not where this ABI says they are, and guessing produces numbers worse than silence.

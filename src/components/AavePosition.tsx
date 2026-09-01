@@ -43,6 +43,8 @@ interface AavePositionProps {
   viewAddress?: `0x${string}`
   viewChainId?: number
   apiNativePrice?: number | null
+  /** Whether this is the tab on screen. Passed down so a hidden panel stops pricing. */
+  active?: boolean
 }
 
 function StatBox({ label, value, valueClass, title }: { label: string; value: React.ReactNode; valueClass?: string; title?: string }) {
@@ -66,7 +68,7 @@ function DetailRow({ label, value, icon }: { label: string; value: React.ReactNo
   )
 }
 
-export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AavePositionProps = {}) {
+export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active }: AavePositionProps = {}) {
   const {
     isConnected,
     isViewMode,
@@ -454,6 +456,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
         </div>
 
         <LeveragePanel
+          active={active}
           suppliedAssets={suppliedAssets}
           borrowedAssets={borrowedAssets}
           availableReserves={availableReserves}
@@ -574,6 +577,7 @@ export function AavePosition({ viewAddress, viewChainId, apiNativePrice }: AaveP
       </div>
 
       <LeveragePanel
+        active={active}
         suppliedAssets={suppliedAssets}
         borrowedAssets={borrowedAssets}
         availableReserves={availableReserves}

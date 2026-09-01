@@ -60,6 +60,11 @@ function setup(over: Partial<Parameters<typeof ConfirmLeverageModal>[0]> = {}) {
     slippagePercent: 0.5,
     onSlippageChange: vi.fn(),
     reusableSignature: null,
+    // One route is not a choice, so the picker renders nothing by default — the suites here are
+    // about the confirmation, and a picker underneath them would only add noise.
+    routes: [],
+    pinnedRoute: null,
+    onPinRoute: vi.fn(),
     onRefresh: vi.fn(),
     onHardRefresh: vi.fn(),
     onResign: vi.fn(),
@@ -283,4 +288,39 @@ it('asks for a genuinely new price when the user presses Refresh', () => {
 
   expect(props.onHardRefresh).toHaveBeenCalledTimes(1)
   expect(props.onRefresh).not.toHaveBeenCalled()
+})
+
+it('stays pressable while it re-prices a route already on screen', () => {
+  // The modal re-quotes every three seconds. Disabling Confirm for the duration meant the button
+  // died on a loop, and a press landing in one of those windows did nothing at all. There is a
+  // route on screen and it is what a press would send, so the press is honest.
+  const props = setup({ preview, isQuoting: true })
+
+  const confirm = screen.getByRole('button', { name: 'Confirm' })
+  fireEvent.click(confirm)
+
+  expect(props.onConfirm).toHaveBeenCalledTimes(1)
+})
+
+it('waits for the first price before it can be pressed', () => {
+  // The mirror. Nothing has been quoted yet, so there is nothing a press could send.
+  setup({ preview: null, isQuoting: true })
+
+  expect(screen.getByRole('button', { name: 'Pricing…' }).hasAttribute('disabled')).toBe(true)
+})
+
+it('still offers the route picker when the winning route could not be built', () => {
+  // The error this renders alongside literally says "pick another route". Hiding the picker with
+  // the rest of the route block — which is gated on a preview, and there is none when nothing
+  // built — left the user reading an instruction they had no way to follow.
+  setup({
+    preview: null,
+    execError: 'KyberSwap cannot serve this trade: route needs 20307933 gas — pick another route',
+    routes: [
+      { aggregator: 'KyberSwap', amountOut: '400.0000' },
+      { aggregator: 'Nordstern', amountOut: '399.8000' },
+    ],
+  })
+
+  expect(screen.getByRole('button', { name: /Nordstern/i })).toBeTruthy()
 })

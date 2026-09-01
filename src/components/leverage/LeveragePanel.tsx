@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { erc20Abi, formatUnits, parseUnits } from 'viem'
 import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../../hooks/useAavePositions'
@@ -31,8 +31,6 @@ import { hideTokens } from '../../lib/txOutcome'
 import { defaultPair } from './defaultPair'
 import { PairPicker, type BoostPosition, type LeverageTab } from './PairPicker'
 import { PositionSummary } from './PositionSummary'
-import { RouteDetails } from './RouteDetails'
-import { RoutePicker } from '../RoutePicker'
 import { DEFAULT_SLIPPAGE_PERCENT, toSlippageBps } from './slippage'
 import { T } from '../../styles/theme'
 
@@ -52,6 +50,12 @@ const toTokenSource = (r: AvailableReserve | undefined): TokenMetaSource | null 
     }
     : null
 
+const subscribeVisibility = (onChange: () => void) => {
+  document.addEventListener('visibilitychange', onChange)
+  return () => document.removeEventListener('visibilitychange', onChange)
+}
+const isTabVisible = () => document.visibilityState === 'visible'
+
 interface LeveragePanelProps {
   suppliedAssets: SuppliedAsset[]
   borrowedAssets: BorrowedAsset[]
@@ -63,6 +67,13 @@ interface LeveragePanelProps {
   /** Reserves the user's eMode category excludes from collateral, lowercased. Empty when off. */
   eModeExcludedReserves: Record<string, boolean>
   viewAddress?: `0x${string}`
+  /**
+   * Whether the tab holding this panel is the one on screen. False stops quoting.
+   *
+   * AavePosition is hidden rather than unmounted when the user leaves it, so without this the
+   * panel keeps re-pricing a screen nobody can see every time prices or balances refetch.
+   */
+  active?: boolean
   /** `getUserAccountData` totals, 8dp USD — the account the new position lands on top of. */
   existingCollateralUsd: bigint
   existingDebtUsd: bigint
@@ -99,9 +110,12 @@ function display(amount: bigint, decimals: number, places: number): string {
  */
 export function LeveragePanel({
   suppliedAssets, borrowedAssets, availableReserves, collateralFlags, hasAnyCollateralEnabled,
-  eModeExcludedReserves, viewAddress,
+  eModeExcludedReserves, viewAddress, active,
   existingCollateralUsd, existingDebtUsd, existingLtvBps, existingLiquidationThresholdBps,
 }: LeveragePanelProps) {
+  // The browser tab's own visibility, alongside the in-app one. A backgrounded window is just as
+  // unwatched as a hidden tab, and `visibilitychange` is the only thing that moves this.
+  const tabVisible = useSyncExternalStore(subscribeVisibility, isTabVisible, () => true)
   const chainId = useChainId()
   const { address } = useConnection()
   const contract = getStrategiesAddress(chainId)
@@ -449,10 +463,36 @@ export function LeveragePanel({
     }
   })()
 
+  /**
+   * The pair the confirmation was opened against, FROZEN at that moment.
+   *
+   * The modal used to be mounted on `confirming && collateralReserve && debtReserve`, and both
+   * reserves are derived from `useAavePositions` data that refetches. Any refetch that briefly
+   * emptied the reserve list therefore unmounted the modal mid-transaction — and on the boost path
+   * that is not a rare race but the ordinary sequence, because a successful open CHANGES the
+   * position and provokes exactly that refetch, at the same moment the receipt lands. The settled
+   * report was being destroyed as it was written.
+   *
+   * A snapshot instead. Everything the modal must keep fresh — the route, the projection, the
+   * quoting flag — is still passed live; only its right to exist stops depending on a refetch.
+   */
+  /** Guards the Open press against a second click landing before `step` catches up. */
+  const pressing = useRef(false)
+
+  const [confirming, setConfirming] = useState<{
+    collateral: AvailableReserve
+    debt: AvailableReserve
+  } | null>(null)
+
   const {
     preview, previewError, rejected, routes, isQuoting, prepare, submit, step, execError, execRemedy, settleNote, txHash, refresh, hardRefresh, outcome,
     reusableSignature, pinnedBorrow, forgetSignature, reset,
-  } = useLeverageOpen(input)
+    approve,
+  } = useLeverageOpen(input, undefined, {
+    // The panel prices nothing. Quoting starts when the confirmation opens and stops with it,
+    // so the form costs no aggregator calls however long someone sits typing in it.
+    paused: !confirming || active === false || !tabVisible,
+  })
 
   // Filed here rather than in the hook: this is the layer that knows the symbols and decimals,
   // and an entry without those is unreadable by the time anyone comes back to look at it.
@@ -471,74 +511,23 @@ export function LeveragePanel({
    * button on one left it disabled at exactly the moments a user reaches for it. Pressing it now
    * opens the modal, and the modal is what waits for a route.
    */
-  /**
-   * The pair the confirmation was opened against, FROZEN at that moment.
-   *
-   * The modal used to be mounted on `confirming && collateralReserve && debtReserve`, and both
-   * reserves are derived from `useAavePositions` data that refetches. Any refetch that briefly
-   * emptied the reserve list therefore unmounted the modal mid-transaction — and on the boost path
-   * that is not a rare race but the ordinary sequence, because a successful open CHANGES the
-   * position and provokes exactly that refetch, at the same moment the receipt lands. The settled
-   * report was being destroyed as it was written.
-   *
-   * A snapshot instead. Everything the modal must keep fresh — the route, the projection, the
-   * quoting flag — is still passed live; only its right to exist stops depending on a refetch.
-   */
-  const [confirming, setConfirming] = useState<{
-    collateral: AvailableReserve
-    debt: AvailableReserve
-  } | null>(null)
-
-  /**
-   * A press of Open that is still waiting for a route before it can ask the wallet for anything.
-   *
-   * The delegation signs ONE exact borrow and the contract matches it exactly, so what gets
-   * signed has to be a figure the router agreed to — never the oracle seed, which is an estimate
-   * the solve then corrects. So the press arms this, and the effect below spends it once a
-   * preview lands.
-   */
-  const [pendingOpen, setPendingOpen] = useState(false)
-
-  /**
-   * Guards the effect against the identity churn of its own dependencies.
-   *
-   * `input` and `preview` are rebuilt on nearly every render, so the effect re-runs constantly
-   * while armed — and without this, each run would fire another `prepare`, i.e. another wallet
-   * prompt. A ref rather than state because it must take effect within the same tick.
-   */
-  const preparing = useRef(false)
-
-  useEffect(() => {
-    if (!pendingOpen || preparing.current) return
-    // A press that lands before the route does is HELD rather than refused — this is the whole
-    // reason the button does not gate on a live preview.
-    const routable = Boolean(input) && !previewError
-    if (routable && (isQuoting || !preview)) return
-
-    preparing.current = true
-    void (async () => {
-      // The press is spent either way, so a form with no route to price cannot leave the button
-      // reading "Pricing…" forever. Awaited on both branches: a synchronous setState from inside
-      // an effect cascades renders, and the lint rule that says so is right.
-      const authorised = await (routable && preview ? prepare() : Promise.resolve(false))
-      preparing.current = false
-      setPendingOpen(false)
-      // Only on success. A rejected approve or signature leaves the user on the form, where the
-      // error renders under the button they just pressed.
-      // Both are non-null here: `routable` gated the prepare, and it cannot be true without them.
-      if (authorised && collateralReserve && debtReserve) {
-        setConfirming({ collateral: collateralReserve, debt: debtReserve })
-      }
-    })()
-  }, [pendingOpen, input, previewError, isQuoting, preview, prepare, collateralReserve, debtReserve])
-
   // Someone else's portfolio is read-only. An undeployed contract does NOT hide the panel: it is
   // how the feature is discovered, and hiding it makes it look absent rather than unavailable.
   // Nothing can be signed without an address — `input` stays null, so Open stays disabled.
   if (viewAddress) return null
 
   const paused = previewError === 'PAUSED'
-  const errorCode = sizingError ?? (paused ? null : previewError)
+  /**
+   * A form nobody has typed into yet has no mistake in it to report.
+   *
+   * NO_MARGIN and NO_SUPPLY are prompts rather than errors — they only ever mean "you have not
+   * filled this in". Rendered in red on a freshly loaded page they read as something already
+   * being wrong, before the user has done anything at all. Suppressed only while BOTH boxes are
+   * untouched: once either is filled, the prompt is what says which one is still missing.
+   */
+  const pristine = marginStr === '' && supplyStr === ''
+  const unTyped = sizingError === 'NO_MARGIN' || sizingError === 'NO_SUPPLY'
+  const errorCode = (pristine && unTyped ? null : sizingError) ?? (paused ? null : previewError)
   // The floor a debt-asset margin puts under the supply, said in the asset the supply is typed
   // in. A collateral margin is already in those units, so there is nothing to convert.
   const marginWorth =
@@ -732,65 +721,12 @@ export function LeveragePanel({
             existingDebtAmount={existingDebtAmount}
           />
 
-          {/* The panel prices once per change to the form and then stops, which is right for a
-              form and wrong for a price — so there is a way to ask for a newer one without
-              nudging an amount to provoke it. */}
-          {preview && (
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button
-                type="button"
-                onClick={hardRefresh}
-                disabled={isQuoting}
-                style={{
-                  border: 'none', background: 'none', padding: 0,
-                  cursor: isQuoting ? 'default' : 'pointer',
-                  color: isQuoting ? T.textMuted : T.primary,
-                  fontWeight: 600, fontSize: T.fontSize.sm,
-                }}
-              >
-                {isQuoting ? 'Pricing…' : '↻ Refresh'}
-              </button>
-            </div>
-          )}
+          {/* The route picker, the built figures, the price-impact block and the re-price
+              button all moved to the confirmation. Every one of them reads a quote, and the panel
+              takes none — the estimate column on the right is oracle-priced and needs none. */}
 
-          {/* Offered whenever more than one aggregator priced the pair. The pin survives edits to
-              the form on purpose — it is the user overriding the ranking, not a per-quote choice
-              — and "Use best" hands the decision back. */}
-          {collateralReserve && (
-            <RoutePicker
-              routes={routes.map((q) => ({
-                aggregator: q.aggregator,
-                amountOut: display(BigInt(q.amountOut), collateralReserve.raw.decimals, 4),
-              }))}
-              symbol={collateralReserve.symbol}
-              pinned={pinnedRoute}
-              onPin={setPinnedRoute}
-              disabled={isQuoting || busy}
-            />
-          )}
-
-          {/* Only once a route has answered: every figure here comes from the BUILT transaction,
-              and there is no honest way to estimate its floor beforehand. */}
-          {preview && collateralReserve && debtReserve && (
-            <RouteDetails
-              expectedOut={preview.expectedOut}
-              minOut={preview.minOut}
-              swapIn={preview.swapIn}
-              collateralSymbol={collateralReserve.symbol}
-              debtSymbol={debtReserve.symbol}
-              collateralDecimals={collateralReserve.raw.decimals}
-              debtDecimals={debtReserve.raw.decimals}
-              slippageBps={slippageBps}
-            />
-          )}
-
-          {priceImpactBlocked && (
-            <div style={{ fontSize: T.fontSize.sm, color: T.danger }}>
-              This route would give up {preview?.priceImpactPercent?.toFixed(2)}% of the position to
-              price impact — too much to submit. Wait for deeper liquidity or supply less.
-            </div>
-          )}
-
+          {/* Still all three, because the sequence is what the user is being told. Only the
+              first happens here now; the other two are the confirmation's. */}
           <div style={{ fontSize: T.fontSize.sm, color: T.textMuted }}>
             {(['approving', 'signing', 'sending'] as const).map((s, i) => (
               <span key={s} style={{ fontWeight: step === s ? 700 : 400, color: step === s ? T.text : T.textMuted }}>
@@ -800,27 +736,37 @@ export function LeveragePanel({
             ))}
           </div>
 
-          {/* Gated on the FORM being openable, not on a quote having landed — a press that
-              arrives before the route does waits for it rather than being refused. */}
+          {/* Never waits on a quote, because there is none here to wait for. The margin token and
+              the amount both come from the form, so the allowance is answerable immediately. */}
           <button
             onClick={() => {
               // The previous attempt's hash, error and authorisation belong to the previous
               // attempt.
               reset()
-              setPendingOpen(true)
+              // `approve` awaits a pause read before it sets `step`, so `busy` has not caught up
+              // yet and a fast second click would land in that window and prompt the wallet
+              // twice. A ref, because it has to take effect inside the same tick.
+              if (pressing.current) return
+              pressing.current = true
+              void (async () => {
+                // Opens the confirmation on the RETURN value, not on `step`: state cannot be read
+                // back inside the same tick. A refusal leaves the user here, where the error
+                // renders under the button they just pressed.
+                const approved = await approve()
+                pressing.current = false
+                if (approved && collateralReserve && debtReserve) {
+                  setConfirming({ collateral: collateralReserve, debt: debtReserve })
+                }
+              })()
             }}
-            disabled={!input || paused || busy || pendingOpen}
+            disabled={!input || busy}
             style={{
               padding: T.space[3], borderRadius: T.radius.md, border: 'none', cursor: 'pointer',
-              background: !input || paused || busy || pendingOpen ? T.border : T.primary,
+              background: !input || busy ? T.border : T.primary,
               color: '#fff', fontWeight: 600,
             }}
           >
-            {step === 'approving' || step === 'signing'
-              ? 'Check your wallet…'
-              : pendingOpen
-                ? 'Pricing…'
-                : actionLabel}
+            {step === 'approving' ? 'Check your wallet…' : actionLabel}
           </button>
 
           {/* Errors from an attempt made in the modal stay visible after it closes — the modal is
@@ -849,6 +795,12 @@ export function LeveragePanel({
       {confirming && (
         <ConfirmLeverageModal
           title={actionLabel}
+          routes={routes.map((q) => ({
+            aggregator: q.aggregator,
+            amountOut: display(BigInt(q.amountOut), confirming.collateral.raw.decimals, 4),
+          }))}
+          pinnedRoute={pinnedRoute}
+          onPinRoute={setPinnedRoute}
           marginLine={boosting || !marginReserve
             ? null
             : `${display(marginAmount, marginReserve.raw.decimals, 6)} ${marginReserve.symbol}`}
@@ -888,7 +840,11 @@ export function LeveragePanel({
           onRefresh={refresh}
           onHardRefresh={hardRefresh}
           onResign={forgetSignature}
-          onConfirm={() => void submit()}
+          onConfirm={() => void (async () => {
+            // Sign THEN send. The delegation commits to one exact borrow, so it can only be
+            // taken once a route has solved one — which happens here, not on the panel.
+            if (await prepare()) await submit()
+          })()}
           onClose={() => setConfirming(null)}
         />
       )}

@@ -34,6 +34,37 @@ interface IRouterAllowlist {
 ///      `afterBalance < assets` check are what actually bound this — do not relax them.
 address constant KYBERSWAP_ROUTER_V2 = 0x6131B5fae19EA4f9D964eAc0408E4408b66337b5;
 
+/// @dev Nordstern's Guard, the `to` its aggregator API returns for a swap. Per-chain rather than
+///      one constant like KyberSwap's: the two addresses differ, though `eth_getCode` returns
+///      byte-identical 1852-byte runtime code on both, so it is one contract deployed twice
+///      rather than two implementations.
+///
+///      Reviewed against the same three properties as KYBERSWAP_ROUTER_V2:
+///        - the approve target equals the call target. The Guard pulls with
+///          `transferFrom(msg.sender, ...)` — `23b872dd` is in its bytecode and it exposes no
+///          `approve` — so approve-then-call against a single address satisfies it, which is
+///          what `validateSwapTx` requires and what the frontend adapter already asserts by
+///          refusing any build whose `to` is not the Guard;
+///        - output lands on the caller. Confirmed by simulating a real build through
+///          `api.nordstern.finance/simulate`, which measures the balance delta at `from` and
+///          installs a minimal proxy there — so the recipient was a CONTRACT, not an EOA,
+///          which is the case this allowlist actually cares about;
+///        - it holds no admin surface. The runtime code carries exactly two external entry
+///          points (`3f0bde25`, `985f61a1`) plus `transferFrom` and `balanceOf`, and no
+///          `owner`/`transferOwnership`, so there is no privileged party who can repoint it.
+///
+///      Source was read for the Base Guard — published as `AggregatorGuard`, not a proxy, no
+///      owner, no pause (see the GUARDS note in src/adapters/nordstern.ts). Arbitrum's is
+///      byte-identical, so that review carries. Msg.value behaviour for an ERC20 input is the
+///      one thing untested: `LibCall.callContract` sends none, so nothing here depends on it,
+///      but it has not been proven the Guard rejects one.
+///
+///      Both addresses were taken from a real quote on the target chain, which is the rule the
+///      SECURITY note below sets: they are the `to` that
+///      `GET api.nordstern.finance/aggregator/{chainId}` returned for a USDC→WETH swap.
+address constant NORDSTERN_GUARD_BASE = 0xC87De04e2EC1F4282dFF2933A2D58199f688fC3d;
+address constant NORDSTERN_GUARD_ARBITRUM = 0x57f96440f1b1cAD53B40A8924BD540b1279A491c;
+
 /// @dev `AaveV3Deleverager` on Ethereum mainnet.
 address constant DELEVERAGER_ETHEREUM = 0x834796774Eb472E571B5c21Da438069225C2B162;
 
@@ -62,10 +93,13 @@ address constant STRATEGIES_CREATE3 = 0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c
 ///           the allowlist against. Take the value from a real quote on the target chain,
 ///           cross-check it against the aggregator's published docs, then set it here.
 ///
-///           The aggregator the frontend can route through is `COMPATIBLE_ADAPTERS` in
-///           src/lib/deleverage.ts: KyberSwap. Anything else is rejected before quoting
-///           (separate approval proxy, off-chain intent, or a Permit2 signature a contract
-///           cannot produce), so allowlisting it achieves nothing.
+///           The aggregators the frontend can route through are `COMPATIBLE_ADAPTERS` in
+///           src/lib/deleverage.ts. Anything else is rejected before quoting (separate approval
+///           proxy, off-chain intent, or a Permit2 signature a contract cannot produce), so
+///           allowlisting it achieves nothing. That list and this script are deliberately
+///           updated in one order and only one: allowlist here first, on chain, then add the
+///           name there. Reversed, the frontend ranks and sizes against a route that is
+///           rejected at build time, and the user sees a rate that moved for no reason.
 ///
 /// Usage:
 ///   # dry run (simulation only) — always do this first and read the logged allowlist
@@ -88,17 +122,16 @@ address constant STRATEGIES_CREATE3 = 0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c
 /// Env vars:
 ///   TARGET  - optional; the deployed contract to configure. Defaults to the known deployment
 ///             for the connected chain (see {_defaultTarget}); required on any other chain.
-///   ROUTERS - optional; comma-separated router addresses. Defaults to KyberSwap's router,
-///             which is the same address on all three supported chains.
+///   ROUTERS - optional; comma-separated router addresses. Defaults to the known-good set for
+///             the connected chain (see {_defaultRouters}): KyberSwap everywhere, plus
+///             Nordstern's Guard on Base and Arbitrum.
 ///   ALLOWED - optional; true to allowlist (default), false to revoke.
 contract RouterSetup is Script {
     function run() external {
         IRouterAllowlist target = IRouterAllowlist(vm.envOr("TARGET", _defaultTarget()));
         bool allowed = vm.envOr("ALLOWED", true);
 
-        address[] memory defaultRouters = new address[](1);
-        defaultRouters[0] = KYBERSWAP_ROUTER_V2;
-        address[] memory routers = vm.envOr("ROUTERS", ",", defaultRouters);
+        address[] memory routers = vm.envOr("ROUTERS", ",", _defaultRouters());
         require(routers.length != 0, "ROUTERS is empty");
 
         console2.log("Chain id:   ", block.chainid);
@@ -156,6 +189,27 @@ contract RouterSetup is Script {
         vm.stopBroadcast();
 
         _logAllowlist(target);
+    }
+
+    /// @dev The routers allowlisted on the connected chain when ROUTERS is not given.
+    ///
+    ///      Chain-dependent because Nordstern's Guard is, unlike KyberSwap's router. A chain
+    ///      with no Nordstern deployment we have verified gets KyberSwap alone rather than a
+    ///      zero entry — `run` would reject the zero address anyway, but returning a short
+    ///      array says "not here" instead of "misconfigured".
+    ///
+    ///      Ethereum is deliberately KyberSwap-only: Nordstern serves it, but no Guard address
+    ///      there has been through the review in NORDSTERN_GUARD_BASE. Pass it via ROUTERS once
+    ///      it has.
+    function _defaultRouters() internal view returns (address[] memory) {
+        address nordstern;
+        if (block.chainid == 8453) nordstern = NORDSTERN_GUARD_BASE;
+        if (block.chainid == 42161) nordstern = NORDSTERN_GUARD_ARBITRUM;
+
+        address[] memory routers = new address[](nordstern == address(0) ? 1 : 2);
+        routers[0] = KYBERSWAP_ROUTER_V2;
+        if (nordstern != address(0)) routers[1] = nordstern;
+        return routers;
     }
 
     /// @dev The deployment this script configures on the connected chain.

@@ -1,6 +1,7 @@
 import type { Address, Hex, PublicClient } from 'viem'
 import {
   getDelegationAllowance,
+  getPauseState,
   getPermitContext,
   planOpen,
   buildCreditDelegation,
@@ -9,6 +10,7 @@ import {
   aaveV3StrategiesAbi,
 } from '../../lib/strategies-sdk'
 import { resolveOpenMode } from '../../lib/leverage'
+import { resolveMode } from '../../lib/strategies-sdk'
 import {
   browserStorage,
   canReuseDelegation,
@@ -80,7 +82,96 @@ export interface SubmitContext extends BaseContext {
 }
 
 /**
- * Take the approval and the delegation, and bank them.
+ * The token the margin is paid in, from the form alone.
+ *
+ * Must agree with `planOpen` and with the preview's `marginAsset`, which routes everything but
+ * "debt" through the collateral entry point — a disagreement approves the wrong token.
+ */
+function marginTokenOf(input: LeverageOpenInput): Address {
+  const mode = resolveOpenMode(input.direction, input.marginAsset)
+  const { collateral, debtAsset } = resolveMode({ mode, volatile: input.subject, stable: input.quote })
+  return (input.marginAsset === 'debt' ? debtAsset : collateral) as Address
+}
+
+/**
+ * Approve the margin, if the allowance does not already cover it.
+ *
+ * Split off `prepareOpen` because it needs no route: the token and the amount both come from the
+ * form, so the panel can do this before a single quote has been asked for. The delegation is the
+ * half that genuinely needs a solved borrow — it signs ONE exact figure the contract matches
+ * exactly (AaveV3Strategies.sol:287,343), so signing the oracle seed on the panel would revert.
+ *
+ * Returns whether the margin is now approved, because the caller opens the confirmation on the
+ * strength of it and `step` is state an awaiting caller cannot read back in time. False means the
+ * wallet refused, and the user stays on the form where the error renders under the button.
+ */
+export async function approveMargin(ctx: {
+  input: LeverageOpenInput | null
+  client: PublicClient | undefined
+  owner: Address | undefined
+  chainId: number
+  deps: () => OpenDeps
+  setStep: (v: OpenStep) => void
+  setExecError: (v: string | null) => void
+  setExecRemedy: (v: StrategiesRemedy | null) => void
+}): Promise<boolean> {
+  const { input, client, owner, chainId, deps, setStep, setExecError, setExecRemedy } = ctx
+  if (!input || !client || !owner) return false
+
+  setExecError(null)
+  setExecRemedy(null)
+  try {
+    // Checked before the wallet is asked for anything. An approve into a paused contract is a
+    // real transaction the user pays for and cannot use, and the panel no longer prices — so
+    // `previewError === 'PAUSED'`, which used to carry this, never arrives before the modal.
+    const { paused } = await getPauseState(client, input.contract)
+    if (paused) {
+      setExecError('Leverage is paused.')
+      setStep('error')
+      return false
+    }
+
+    const marginAsset = marginTokenOf(input)
+    setStep('approving')
+    const allowance = (await client.readContract({
+      address: marginAsset, abi: ERC20_ABI, functionName: 'allowance',
+      args: [owner, input.contract],
+    })) as bigint
+    if (allowance >= input.marginAmount) {
+      // Nothing to prompt for. A wallet popping up here on a second open reads as a fault.
+      setStep('idle')
+      return true
+    }
+
+    const approveGas = await pinnedGasLimit(
+      () =>
+        client.estimateContractGas({
+          address: marginAsset, abi: ERC20_ABI, functionName: 'approve',
+          args: [input.contract, input.marginAmount], account: owner,
+        }),
+      { chainId, label: 'approve' },
+    )
+    await deps().writeContract({
+      address: marginAsset, abi: ERC20_ABI, functionName: 'approve',
+      args: [input.contract, input.marginAmount], gas: approveGas,
+      ...(await adjustedFees(client)),
+    })
+    setStep('idle')
+    return true
+  } catch (err) {
+    const decoded = decodeStrategiesError(err)
+    setExecError(decoded?.message ?? extractRevertMessage(err))
+    setExecRemedy(decoded?.remedy ?? null)
+    setStep('error')
+    return false
+  }
+}
+
+/**
+ * Take the delegation, and bank it.
+ *
+ * The approval is no longer part of this — see {@link approveMargin}, which the panel runs before
+ * the modal opens. What is left needs a priced route, so it runs from the modal.
  *
  * Returns false when nothing was authorised — the caller keeps the modal open rather than
  * moving on to a send that would revert on the delegation check.
@@ -106,29 +197,8 @@ export async function prepareOpen(ctx: PrepareContext): Promise<boolean> {
         client, chainId, dataProvider, effectivePreview.debtAsset,
       )
 
-      // 1. Approve the margin, unless the allowance already covers it.
-      setStep('approving')
-      const allowance = (await client.readContract({
-        address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'allowance',
-        args: [owner, input.contract],
-      })) as bigint
-      if (allowance < input.marginAmount) {
-        const approveGas = await pinnedGasLimit(
-          () =>
-            client.estimateContractGas({
-              address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
-              args: [input.contract, input.marginAmount], account: owner,
-            }),
-          { chainId, label: 'approve' },
-        )
-        await deps().writeContract({
-          address: effectivePreview.marginAsset, abi: ERC20_ABI, functionName: 'approve',
-          args: [input.contract, input.marginAmount], gas: approveGas,
-          ...(await adjustedFees(client)),
-        })
-      }
-
-      // 2. Delegate credit, unless a standing delegation already covers this borrow.
+      // Delegate credit, unless a standing delegation already covers this borrow. The margin
+      // approval happened on the panel, before any of this was priced.
       setStep('signing')
       const standing = await getDelegationAllowance(client, variableDebtToken, owner, input.contract)
       let delegation = ZERO_STRATEGIES_SIG

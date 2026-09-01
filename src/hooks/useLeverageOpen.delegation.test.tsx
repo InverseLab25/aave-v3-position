@@ -487,9 +487,12 @@ it('blames the pin, not the pair, when the pinned aggregator did not price it', 
   expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
 })
 
-it('prepare takes the approve and the signature, and sends nothing', async () => {
+it('prepare takes the signature and sends nothing', async () => {
   // The gate the split exists for: the wallet work is done, the position is not opened, and the
   // user still gets a look at what they are about to submit.
+  //
+  // The approve is no longer part of this. It needs no route, so the panel takes it before the
+  // modal opens; what is left here signs an exact borrow only a solved route can name.
   mocks.usePublicClient.mockReturnValue({
     readContract: vi.fn(async () => 0n),
     estimateContractGas: vi.fn(async () => 1_200_000n),
@@ -502,9 +505,8 @@ it('prepare takes the approve and the signature, and sends nothing', async () =>
 
   expect(hook().step).toBe('ready')
   expect(signTypedData).toHaveBeenCalledTimes(1)
-  // One write, and it is the approve — not the open.
-  expect(writeContract).toHaveBeenCalledTimes(1)
-  expect(writeContract.mock.calls[0][0]).toMatchObject({ functionName: 'approve' })
+  // Nothing written: not the open, and not the approve either.
+  expect(writeContract).not.toHaveBeenCalled()
   expect(hook().txHash).toBeUndefined()
   // Banked, because everything after this point may fail and must not cost a second prompt.
   expect(loadDelegation(localStorage, KEY)?.value).toBe(borrow)
@@ -718,3 +720,108 @@ it('clears the route a failed re-quote replaces, so nothing stale can be confirm
   expect(hook().preview).toBeNull()
 })
 
+
+it('approves the margin without pricing anything first', async () => {
+  // The whole point of the split. The approval target is the margin token and the amount is the
+  // figure the user typed, both known from the form — so making the user wait on a route (and
+  // spending the aggregator's budget) to find out whether an allowance is needed was work for
+  // nothing. The delegation is the part that genuinely needs a solved borrow; it is not taken
+  // here, and asking the wallet to sign at this point would sign an oracle estimate.
+  mocks.usePublicClient.mockReturnValue({
+    ...mocks.usePublicClient(),
+    readContract: vi.fn(async () => 0n), // nothing approved yet
+  })
+  await mount()
+
+  await act(async () => {
+    await hook().approve()
+  })
+
+  expect(writeContract).toHaveBeenCalledTimes(1)
+  expect(writeContract.mock.calls[0][0].functionName).toBe('approve')
+  expect(signTypedData).not.toHaveBeenCalled()
+})
+
+it('asks the wallet for nothing when the allowance already covers the margin', async () => {
+  // The common case on a second open. A prompt here reads as "something went wrong" and is the
+  // reason people abandon the flow at the first step.
+  await mount()
+
+  await act(async () => {
+    await hook().approve()
+  })
+
+  expect(writeContract).not.toHaveBeenCalled()
+  expect(signTypedData).not.toHaveBeenCalled()
+})
+
+it('reports the approval as granted so the panel can open the modal', async () => {
+  // The panel opens the confirmation on the strength of the return value: `step` is state, which
+  // an awaiting caller cannot read back in time.
+  await mount()
+
+  let granted: boolean | undefined
+  await act(async () => {
+    granted = await hook().approve()
+  })
+
+  expect(granted).toBe(true)
+})
+
+it('keeps the priced routes on screen while a refresh is in flight', async () => {
+  // The modal re-prices every three seconds. Emptying the list at the start of each run made the
+  // picker vanish and come back on a loop — and a user reaching for a route watched it disappear
+  // under the cursor. The old list is still true until the new one lands; it is a REFRESH of the
+  // same inputs, not a different trade.
+  await mount()
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+
+  let release: (() => void) | undefined
+  const adapter = fakeAdapter()
+  const slow = { ...adapter, getQuote: vi.fn(async (...args: unknown[]) => {
+    await new Promise<void>((r) => { release = r })
+    return (adapter.getQuote as (...a: unknown[]) => unknown)(...args)
+  }) }
+  mocks.getAdaptersForChain.mockReturnValue([slow])
+
+  await act(async () => {
+    hook().refresh()
+  })
+
+  // Mid-refresh: nothing has answered yet, and the list is still the one that did.
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+
+  release?.()
+  await settle()
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+})
+
+it('keeps the route list on screen when the user pins one of them', async () => {
+  // Pinning is a choice made FROM the list, so emptying the list to answer it takes away the
+  // thing being used. The pin changes which candidate gets BUILT; it does not change who priced
+  // the pair, which is all this list says.
+  const kyber = fakeAdapter()
+  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern' }
+  mocks.getAdaptersForChain.mockReturnValue([kyber, nordstern])
+  await mount()
+  expect(hook().routes.length).toBe(2)
+
+  // The re-quote the pin provokes, held open so the assertion lands mid-flight.
+  let release: (() => void) | undefined
+  const hold = async () => { await new Promise<void>((r) => { release = r }) }
+  mocks.getAdaptersForChain.mockReturnValue([
+    { ...kyber, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return kyber.getQuote(...a) }) },
+    { ...nordstern, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return nordstern.getQuote(...a) }) },
+  ])
+
+  await act(async () => {
+    repriceWith(makeInput({ preferredAggregator: 'Nordstern' }))
+  })
+  await act(async () => { vi.advanceTimersByTime(500) })
+
+  // Nothing has answered the new question yet, and the old answer is still true.
+  expect(hook().routes.length).toBe(2)
+
+  release?.()
+  await settle()
+})

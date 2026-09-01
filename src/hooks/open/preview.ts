@@ -37,6 +37,13 @@ interface PreviewRunContext {
   pinned: bigint | null
   /** The input key this run answers for, stamped so a stale run cannot claim a later one. */
   forInput: string
+  /**
+   * The input key with the route pin left out — what the ROUTE LIST is keyed on.
+   *
+   * Stamped onto the list so it can never be read against a pair it was not priced for, which is
+   * what lets a re-quote leave the previous list standing instead of blanking the picker.
+   */
+  forPair: string
   client: PublicClient | undefined
   chainId: number
   owner: Address | undefined
@@ -56,7 +63,7 @@ interface PreviewRunContext {
    * Reported before the pin is applied. A list holding only what is already pinned is a list
    * nobody can leave.
    */
-  setRoutes: (v: QuoteResponse[]) => void
+  setRoutes: (v: QuoteResponse[], forPair: string) => void
   setPreview: (v: OpenPreview | null) => void
   setPreviewFor: (v: string) => void
 }
@@ -64,7 +71,7 @@ interface PreviewRunContext {
 /** One debounced quote-and-size pass. Everything the preview shows is decided here. */
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
-    input, pinned, forInput, client, chainId, cancelled, signal,
+    input, pinned, forInput, client, chainId, cancelled, signal, forPair,
     setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes,
   } = ctx
 
@@ -80,7 +87,10 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
       setIsQuoting(true)
       setPreviewError(null)
       setRejected([])
-      setRoutes([])
+      // The route list is NOT cleared here. It is stamped with the pair it was priced for and
+      // masked by the caller when that no longer matches, so a run for a different trade drops
+      // it automatically while a re-quote of the same trade leaves it standing. Blanking it at
+      // the top of every run is what made the picker vanish and come back every three seconds.
       try {
         if (!client) {
           setPreviewError('NO_CLIENT')
@@ -179,7 +189,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
             .sort((x, y) => (BigInt(y.q.amountOut) > BigInt(x.q.amountOut) ? 1 : -1))
           // The whole field, losers included, so the picker has something to offer. The last
           // round wins, which is the one the preview is actually built from.
-          setRoutes(all.map((c) => c.q))
+          setRoutes(all.map((c) => c.q), forPair)
 
           const usable = applyPin(all, input.preferredAggregator, (c) => c.a.name)
           if (usable.length === 0 && all.length > 0) pinnedOut = true

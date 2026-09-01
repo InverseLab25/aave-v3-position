@@ -9,6 +9,7 @@ import {
   readOutcome,
   walletDeltas,
 } from './txOutcome'
+import { aggregatedTradeLog } from '../test/receiptLogs'
 
 const ROUTER: Address = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'
 const USER: Address = '0x1111111111111111111111111111111111111111'
@@ -397,5 +398,62 @@ describe('hideTokens', () => {
 
   it('passes an absent outcome straight through', () => {
     expect(hideTokens(null, [A_WETH])).toBeNull()
+  })
+})
+
+describe('decodeSwaps — Nordstern', () => {
+  // Taken from a real close on Base, tx 0x8849dbd2…c819d: 220.0097 WETH sold into 536,836.583970
+  // USDC through the Guard at 0xC87De04e…fC3d, with the Strategies contract as the user.
+  const GUARD = '0xC87De04e2EC1F4282dFF2933A2D58199f688fC3d' as Address
+  const STRATEGIES = '0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c' as Address
+  const WETH = '0x4200000000000000000000000000000000000006' as Address
+  const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as Address
+
+  it('reads a fill from AggregatedTrade, which the Guard emits instead of Swapped', () => {
+    // Nordstern is in COMPATIBLE_ADAPTERS, so its receipts reach every reader of this — the
+    // settled report, the history basis, the fill price. Recognising only `Swapped` left all of
+    // them silently empty on a Nordstern close rather than visibly wrong, which is worse.
+    const swaps = decodeSwaps([
+      aggregatedTradeLog({
+        guard: GUARD,
+        user: STRATEGIES,
+        tokenIn: WETH,
+        tokenOut: USDC,
+        amountIn: 220009705635980620942n,
+        amountOut: 536836583970n,
+        minAmountOut: 536579553452n,
+      }),
+    ])
+
+    expect(swaps).toEqual([
+      {
+        router: GUARD,
+        sender: STRATEGIES,
+        srcToken: WETH,
+        dstToken: USDC,
+        // The event names no receiver. The Guard pulls with `transferFrom(msg.sender, …)` and
+        // returns the output to that same caller, so the user IS the receiver.
+        dstReceiver: STRATEGIES,
+        spentAmount: 220009705635980620942n,
+        returnAmount: 536836583970n,
+      },
+    ])
+  })
+
+  it('reads both event shapes out of one receipt, in emission order', () => {
+    // A flip sells one leg and buys another, and the two legs need not route through the same
+    // aggregator. Readers index into this list positionally, so the order has to hold.
+    const swaps = decodeSwaps([
+      aggregatedTradeLog({
+        guard: GUARD, user: STRATEGIES, tokenIn: WETH, tokenOut: USDC,
+        amountIn: 1n, amountOut: 2n,
+      }),
+      swappedLog({
+        address: GUARD, sender: STRATEGIES, srcToken: USDC, dstToken: WETH,
+        dstReceiver: STRATEGIES, spentAmount: 3n, returnAmount: 4n,
+      }),
+    ])
+
+    expect(swaps.map((s) => [s.spentAmount, s.returnAmount])).toEqual([[1n, 2n], [3n, 4n]])
   })
 })

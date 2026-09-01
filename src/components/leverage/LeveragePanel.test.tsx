@@ -1,9 +1,10 @@
 /**
  * What the Open button does before the confirmation modal exists.
  *
- * The wallet work — approve and delegate — moved onto this button, so pressing it has to wait for
- * a route the borrow can be signed against, ask exactly once however many times React re-renders
- * underneath it, and open the modal only if the wallet actually granted both.
+ * It takes the margin APPROVAL and nothing else. The panel prices nothing now, so there is no
+ * route here to wait for — and the delegation cannot be taken until one exists, because it signs
+ * an exact borrow the contract matches exactly. So this button answers immediately, asks the
+ * wallet at most once, and opens the modal only if the approval was actually granted.
  *
  * `useLeverageOpen` is faked here on purpose: what it does with a signature has its own suite, and
  * what is under test is the wiring around it.
@@ -73,6 +74,7 @@ const RESERVES = [
 
 /** The hook's return, rebuilt per render so the panel sees whatever the test has set. */
 let hookState: Record<string, unknown>
+const approve = vi.fn<() => Promise<boolean>>()
 const prepare = vi.fn<() => Promise<boolean>>()
 const submit = vi.fn<() => Promise<void>>()
 
@@ -86,6 +88,7 @@ function setHook(over: Record<string, unknown> = {}) {
     txHash: undefined,
     execError: null,
     execRemedy: null,
+    approve,
     prepare,
     submit,
     refresh: vi.fn(),
@@ -156,53 +159,55 @@ beforeEach(() => {
   // The margin balance, comfortably covering anything typed below.
   mocks.useReadContract.mockReturnValue({ data: 10n ** 30n })
   mocks.getStrategiesAddress.mockReturnValue(STRATEGIES)
+  approve.mockResolvedValue(true)
   prepare.mockResolvedValue(true)
   submit.mockResolvedValue(undefined)
   setHook()
 })
 
-it('holds a press that arrives before the route does, rather than refusing it', async () => {
-  // The button does not gate on a live preview — that is what left it disabled at exactly the
-  // moments a user reached for it. It waits instead.
+it('opens the confirmation without waiting for a route', async () => {
+  // The point of the split. Nothing here is priced, so a press that gates on a preview would
+  // gate on something that is never coming.
+  setHook({ preview: null })
   mount()
   fillForm()
 
   fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
 
-  expect(await screen.findByRole('button', { name: 'Pricing…' })).toBeTruthy()
-  // Nothing signed: there is no router-solved borrow to sign over yet.
+  await waitFor(() => expect(approve).toHaveBeenCalledTimes(1))
+  // The modal is up; its action still reads "Pricing…" because no route has landed yet, which is
+  // the honest label for a button with nothing to send.
+  expect(await screen.findByRole('button', { name: 'Cancel' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Pricing…' })).toBeTruthy()
+  // The borrow has not been solved yet, so there is nothing legitimate to sign over.
   expect(prepare).not.toHaveBeenCalled()
 })
 
-it('asks the wallet once, however many times it re-renders while armed', async () => {
-  // `input` and `preview` are rebuilt on nearly every render, so the arming effect re-runs
-  // constantly. Without the ref guard each run would be another signature prompt.
-  setHook({ preview: PREVIEW })
+it('asks the wallet once however fast the button is pressed', async () => {
+  // `approve` reads the pause state before it touches `step`, so `busy` lags the first click by
+  // a tick. Without the ref guard a double click lands in that window and prompts twice.
   mount()
   fillForm()
 
-  fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
-  // Churn the panel while the wallet is out: each of these is a fresh render with fresh
-  // identities for everything the effect depends on.
-  for (const value of ['0.2', '0.3', '0.4']) {
-    fireEvent.change(screen.getByLabelText('Max slippage percent'), { target: { value } })
-  }
+  const button = screen.getByRole('button', { name: /Open long/i })
+  fireEvent.click(button)
+  fireEvent.click(button)
+  fireEvent.click(button)
 
-  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(approve).toHaveBeenCalledTimes(1))
   await act(async () => {})
-  expect(prepare).toHaveBeenCalledTimes(1)
+  expect(approve).toHaveBeenCalledTimes(1)
 })
 
-it('opens the confirmation once the wallet has granted both', async () => {
+it('opens the confirmation once the approval is granted', async () => {
   setHook({ preview: PREVIEW })
   mount()
   fillForm()
 
   fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
 
-  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1))
-  // The modal is the thing that only exists on the far side of the wallet prompts, and its
-  // Confirm is now the send alone.
+  await waitFor(() => expect(approve).toHaveBeenCalledTimes(1))
+  // The modal is where the pricing, the signature and the send all now live.
   expect(await screen.findByRole('button', { name: 'Confirm' })).toBeTruthy()
 })
 
@@ -239,49 +244,17 @@ it('keeps the confirmation open when the reserve list churns underneath it', asy
 })
 
 it('leaves the user on the form when the wallet is rejected', async () => {
-  prepare.mockResolvedValue(false)
+  approve.mockResolvedValue(false)
   setHook({ preview: PREVIEW })
   mount()
   fillForm()
 
   fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
 
-  await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1))
+  await waitFor(() => expect(approve).toHaveBeenCalledTimes(1))
   expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull()
-  // And the button comes back, rather than staying stuck on "Pricing…".
+  // And the button comes back, rather than staying stuck mid-press.
   expect(await screen.findByRole('button', { name: /Open long/i })).toBeTruthy()
-})
-
-it('gives the press back when the pair turns out to have no route', async () => {
-  setHook({ previewError: 'NO_ROUTE' })
-  mount()
-  fillForm()
-
-  fireEvent.click(screen.getByRole('button', { name: /Open long/i }))
-
-  await waitFor(() => expect(screen.getByRole('button', { name: /Open long/i })).toBeTruthy())
-  expect(prepare).not.toHaveBeenCalled()
-})
-
-it('re-prices on demand from the route area', async () => {
-  // The panel quotes once per change to the form and then stops, which is right for a form and
-  // wrong for a price. Without this the only way to ask for a newer one is to nudge an amount.
-  setHook({ preview: PREVIEW })
-  mount()
-
-  fireEvent.click(screen.getByRole('button', { name: /refresh/i }))
-
-  expect(hookState.hardRefresh).toHaveBeenCalledTimes(1)
-})
-
-it('will not stack refreshes on top of a quote already in flight', async () => {
-  // Each press costs an aggregator round-trip against a 3/s ceiling shared with the auto-poll.
-  setHook({ preview: PREVIEW, isQuoting: true })
-  mount()
-
-  const button = screen.getByRole('button', { name: /pricing/i })
-
-  expect((button as HTMLButtonElement).disabled).toBe(true)
 })
 
 it('leaves the position tokens out of the settled wallet changes', async () => {
@@ -443,4 +416,23 @@ it('records the settled transaction, which the position screen is what displays'
   expect(rows[0].kind).toBe('open')
   expect(screen.queryByText(/Recent activity/)).toBeNull()
 
+})
+
+it('says nothing about empty fields until one of them is filled in', () => {
+  // A form that has never been touched is not a form with a mistake in it. Loading the page
+  // straight into red text reads as something already being wrong, and the two codes that fire
+  // here — NO_MARGIN and NO_SUPPLY — are only ever "you have not typed this yet".
+  mount()
+
+  expect(screen.queryByText(/Enter how much/i)).toBeNull()
+})
+
+it('prompts for the field still missing once the other one is filled in', () => {
+  // The mirror. Suppressing the prompt outright would leave a user who filled one box with a
+  // dead Open button and nothing saying which box is still empty.
+  mount()
+
+  fireEvent.change(screen.getByLabelText('Supply to Aave amount'), { target: { value: '1' } })
+
+  expect(screen.getByText(/Enter how much/i)).toBeTruthy()
 })

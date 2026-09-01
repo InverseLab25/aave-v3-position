@@ -17,6 +17,7 @@ import { TxReport } from '../TxReport'
 import type { TokenMeta } from '../TxOutcome'
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RouteDetails } from './RouteDetails'
+import { RoutePicker } from '../RoutePicker'
 import { SlippageField } from './SlippageField'
 import { T, MODAL_WIDTH } from '../../styles/theme'
 
@@ -67,6 +68,17 @@ interface ConfirmLeverageModalProps {
   collateralDecimals: number
   debtDecimals: number
 
+  /**
+   * Every aggregator that priced this swap, best-first, and the override.
+   *
+   * Moved here from the panel along with the quoting: the panel prices nothing now, so there was
+   * no list there to choose from. Pinning is a hard override rather than a preference — the
+   * pinned route is quoted, sized and built on its own.
+   */
+  routes: { aggregator: string; amountOut: string }[]
+  pinnedRoute: string | null
+  onPinRoute: (aggregator: string | null) => void
+
   step: OpenStep
   execError: string | null
   /** What to do about `execError`, when the decoded revert suggests something. */
@@ -109,6 +121,7 @@ export function ConfirmLeverageModal({
   preview, projection, isQuoting, previewMessage, showResign,
   priceImpactBlocked, slippageBps, slippagePercent, onSlippageChange,
   collateralSymbol, debtSymbol, collateralDecimals, debtDecimals,
+  routes, pinnedRoute, onPinRoute,
   step, execError, remedyHint, settleNote, txHash, chainId, outcome, outcomeTokens,
   reusableSignature, onRefresh, onHardRefresh, onResign, onConfirm, onClose,
 }: ConfirmLeverageModalProps) {
@@ -171,14 +184,19 @@ export function ConfirmLeverageModal({
           <button onClick={onClose} className="btn-secondary" style={{ flex: 1, padding: '10px' }}>
             {done ? 'Done' : 'Cancel'}
           </button>
+          {/* `isQuoting` gates only the FIRST price. Once a route is on screen a re-quote must
+              not take the button away: it re-prices every three seconds, so the button died on a
+              loop and a press landing in one of those windows did nothing. A press sends whatever
+              route is current when it lands, which is exactly what is on screen. The "↻ Pricing…"
+              line above is where a refresh in flight shows itself. */}
           {!done && (
             <button
               onClick={onConfirm}
-              disabled={!preview || isQuoting || busy || priceImpactBlocked}
+              disabled={!preview || busy || priceImpactBlocked}
               className="btn-primary"
               style={{ flex: 1, padding: '10px' }}
             >
-              {busy ? 'Processing…' : isQuoting ? 'Pricing…' : 'Confirm'}
+              {busy ? 'Processing…' : !preview ? 'Pricing…' : 'Confirm'}
             </button>
           )}
         </>
@@ -232,6 +250,19 @@ export function ConfirmLeverageModal({
                 ↻ {isQuoting ? 'Pricing…' : 'Refresh'}
               </button>
             </div>
+
+            {/* OUTSIDE the preview branch, deliberately. When nothing builds there is no preview
+                and the error says "pick another route" — so hiding the picker with the rest of the
+                route block left the user reading an instruction they had no way to follow. The
+                list survives a failed run because it is stamped with the pair it was priced for,
+                not with the route that lost. */}
+            <RoutePicker
+              routes={routes}
+              symbol={collateralSymbol}
+              pinned={pinnedRoute}
+              onPin={onPinRoute}
+              disabled={busy}
+            />
 
             {preview ? (
               <>
