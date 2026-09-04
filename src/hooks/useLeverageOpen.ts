@@ -7,7 +7,7 @@ import {
   useWriteContract,
 } from 'wagmi'
 import { type Hex } from 'viem'
-import { resolveMode, BPS } from '../lib/strategies-sdk'
+import { resolveMode, BPS, forgetContractState } from '../lib/strategies-sdk'
 import { deriveOpen, resolveOpenMode, type LeverageError } from '../lib/leverage'
 import { seedBorrow } from '../lib/solveBorrow'
 import {
@@ -143,6 +143,9 @@ export function useLeverageOpen(
    */
   const hardRefresh = useCallback(() => {
     clearQuoteCache()
+    // The pause flag and the allowlist too: someone pressing refresh after the owner changed one
+    // is asking to see it, and the cache would otherwise hold the old answer for up to a minute.
+    forgetContractState()
     setTick((t) => t + 1)
   }, [])
 
@@ -371,17 +374,24 @@ export function useLeverageOpen(
    * Needs no route, which is the point — the panel prices nothing now, so making this wait on a
    * quote would leave the button dead on a screen that has no quote coming.
    */
+  // `inputRef.current`, not `input`, in all three below. The caller rebuilds `input` on every
+  // render — the quoting effect dodges that through the ref, but these listed the object itself
+  // and so were recreated every render, which made their memoization decorative. An event
+  // handler wants the LATEST input anyway: `submit`'s own note says it sends against whatever is
+  // on screen when pressed.
   const approve = useCallback(
-    () => approveMargin({ input, client, owner, chainId, deps, setStep, setExecError, setExecRemedy }),
-    [input, client, owner, chainId, deps],
+    () => approveMargin({
+        input: inputRef.current, client, owner, chainId, deps, setStep, setExecError, setExecRemedy,
+      }),
+    [client, owner, chainId, deps],
   )
 
   const prepare = useCallback(
     () => prepareOpen({
-        input, effectivePreview, client, owner, chainId, deps, refresh, held, prepared, frozen,
-        setStep, setExecError, setExecRemedy, setSettleNote, setStorageTick,
+        input: inputRef.current, effectivePreview, client, owner, chainId, deps, refresh, held,
+        prepared, frozen, setStep, setExecError, setExecRemedy, setSettleNote, setStorageTick,
       }),
-    [input, effectivePreview, client, owner, chainId, deps, refresh, held],
+    [effectivePreview, client, owner, chainId, deps, refresh, held],
   )
 
   /**
@@ -393,10 +403,11 @@ export function useLeverageOpen(
    */
   const submit = useCallback(
     () => submitOpen({
-        input, effectivePreview, client, owner, chainId, deps, refresh, forget, prepared, frozen,
-        currentSend, setStep, setTxHash, setOutcome, setExecError, setExecRemedy, setSettleNote,
+        input: inputRef.current, effectivePreview, client, owner, chainId, deps, refresh, forget,
+        prepared, frozen, currentSend, setStep, setTxHash, setOutcome, setExecError, setExecRemedy,
+        setSettleNote,
       }),
-    [input, effectivePreview, client, owner, chainId, deps, refresh, forget],
+    [effectivePreview, client, owner, chainId, deps, refresh, forget],
   )
 
   /**

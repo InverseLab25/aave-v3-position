@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest'
-import { pinnedGasLimit, GasEstimateError, GAS_LIMIT_BUFFER_PERCENT } from './gas'
+import {
+  pinnedGasLimit,
+  gasFromMeasuredSwap,
+  GasEstimateError,
+  GAS_LIMIT_BUFFER_PERCENT,
+  STRATEGY_OVERHEAD_GAS,
+} from './gas'
 
 /** The rejection, typed. `.catch(e => e)` widens to include the resolved value. */
 async function rejection(p: Promise<unknown>): Promise<GasEstimateError> {
@@ -64,5 +70,42 @@ describe('pinnedGasLimit', () => {
 
   it('does not clamp when the chain is unknown', async () => {
     expect(await pinnedGasLimit(async () => 15_500_000n, { chainId: 999999 })).toBe(23_250_000n)
+  })
+})
+
+describe('gasFromMeasuredSwap', () => {
+  it('adds the strategy overhead to what the simulator measured', () => {
+    expect(gasFromMeasuredSwap(2_600_000n)).toBe(2_600_000n + STRATEGY_OVERHEAD_GAS)
+  })
+
+  it('does NOT buffer on top, unlike an estimate', () => {
+    // The buffer exists because an estimate is a guess against state that may move. This is a
+    // measurement plus an allowance already several times the real overhead — padding it again
+    // would send limits far past what a wallet shows without alarm.
+    expect(gasFromMeasuredSwap(2_600_000n)).toBeLessThan(
+      (2_600_000n * GAS_LIMIT_BUFFER_PERCENT) / 100n + STRATEGY_OVERHEAD_GAS,
+    )
+  })
+
+  it('refuses rather than pinning a limit the chain will not accept', () => {
+    // Base caps a transaction at 2^24. A limit above it is rejected by the node before any funds
+    // check, so there is no transaction worth sending — and it is not retryable, which `overCap`
+    // is what tells the caller.
+    let thrown: unknown
+    try {
+      gasFromMeasuredSwap(16_000_000n, { chainId: 8453, label: 'open' })
+    } catch (e) {
+      thrown = e
+    }
+
+    expect(thrown).toBeInstanceOf(GasEstimateError)
+    expect((thrown as GasEstimateError).overCap).toBe(true)
+    expect((thrown as Error).message).toContain('open:')
+  })
+
+  it('leaves an uncapped chain alone', () => {
+    expect(gasFromMeasuredSwap(30_000_000n, { chainId: 999_999 })).toBe(
+      30_000_000n + STRATEGY_OVERHEAD_GAS,
+    )
   })
 })

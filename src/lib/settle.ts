@@ -12,6 +12,7 @@
  * logging where they belong.
  */
 import { WaitForTransactionReceiptTimeoutError, type Address, type Hex } from 'viem'
+import type { OutBasis } from './deleverage'
 import { readOutcome, type ReceiptLog, type TxOutcome } from './txOutcome'
 
 /**
@@ -52,9 +53,18 @@ interface SettleInput {
   client: SettleClient
   hash: Hex
   wallet: Address
+  /**
+   * The contract that held the tokens during the swap, where one did.
+   *
+   * Forwarded to `readOutcome` so a router that emits no swap event can still be read off its
+   * transfers — and those transfers belong to the contract, not to the signer.
+   */
+  executor?: Address
   /** The swap this flow was quoting, so the fill can be matched out of everything the receipt has. */
   pair: { srcToken: Address; dstToken: Address }
   expectedOut: bigint
+  /** Whose word `expectedOut` is on, so the recorded fill says what it is comparing against. */
+  basis: OutBasis
   minOut: bigint
   /**
    * Whether this send is still the one on screen. Checked AFTER the wait, since a user can abandon
@@ -67,7 +77,9 @@ export async function settleTransaction({
   client,
   hash,
   wallet,
+  executor,
   pair,
+  basis,
   expectedOut,
   minOut,
   isCurrent,
@@ -98,8 +110,10 @@ export async function settleTransaction({
     outcome: readOutcome({
       logs: receipt.logs ?? [],
       wallet,
+      executor,
       pair,
       expectedOut,
+      basis,
       minOut,
     }),
   }

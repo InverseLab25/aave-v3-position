@@ -49,7 +49,12 @@ vi.mock('../lib/aaveStatics', () => ({
   getReserveTokens: mocks.getReserveTokens,
   getATokenName: mocks.getATokenName,
 }))
-vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
+// Partial: `quoteField` has to stay real. It is the thing that turns one adapter into the list
+// of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
+vi.mock('../adapters', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getAdaptersForChain: mocks.getAdaptersForChain,
+}))
 // Partial, deliberately: only `selectRoute` reaches the network. canReuseSignature and
 // reuseBlocker stay real — those ARE the decisions under test.
 vi.mock('../lib/closePlan', async (orig) => ({
@@ -155,7 +160,7 @@ beforeEach(() => {
   mocks.useConnection.mockReturnValue({ address: USER })
   mocks.useChainId.mockReturnValue(1)
   mocks.useWalletClient.mockReturnValue({
-    data: { signTypedData: mocks.signTypedData, writeContract: mocks.writeContract },
+    data: { getChainId: async () => 1, signTypedData: mocks.signTypedData, writeContract: mocks.writeContract },
   })
   mocks.useConfig.mockReturnValue({})
   mocks.usePublicClient.mockReturnValue({

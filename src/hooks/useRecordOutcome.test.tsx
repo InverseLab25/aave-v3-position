@@ -28,7 +28,7 @@ const outcome: TxOutcome = {
     spentAmount: 10n ** 18n,
     returnAmount: 3405_100000n,
   },
-  fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
+  fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false, basis: 'simulated' as const },
   deltas: [{ token: USDC, delta: 3405_100000n }],
 }
 

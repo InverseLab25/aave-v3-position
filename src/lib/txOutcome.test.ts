@@ -7,6 +7,7 @@ import {
   fillQuality,
   pickSwap,
   readOutcome,
+  swapFromTransfers,
   walletDeltas,
 } from './txOutcome'
 import { aggregatedTradeLog } from '../test/receiptLogs'
@@ -246,15 +247,17 @@ describe('fillQuality', () => {
   const floor = 3404_400000n // what minOut allowed it to fill at
 
   it('reports a fill that landed exactly on the quote as no drift at all', () => {
-    expect(fillQuality({ returnAmount: quoted, expectedOut: quoted, minOut: floor })).toEqual({
+    expect(fillQuality({ returnAmount: quoted, expectedOut: quoted, minOut: floor, basis: 'simulated' })).toEqual({
       delta: 0n,
       percent: 0,
       belowFloor: false,
+      // Carried through so the delta can be read for what it compared against.
+      basis: 'simulated',
     })
   })
 
   it('reports a fill under the quote as a shortfall', () => {
-    const q = fillQuality({ returnAmount: 3405_100000n, expectedOut: quoted, minOut: floor })
+    const q = fillQuality({ returnAmount: 3405_100000n, expectedOut: quoted, minOut: floor , basis: 'simulated' })
 
     expect(q.delta).toBe(-2_700000n)
     expect(q.percent).toBeCloseTo(-0.0792, 4)
@@ -262,20 +265,20 @@ describe('fillQuality', () => {
   })
 
   it('reports a fill above the quote as a gain', () => {
-    const q = fillQuality({ returnAmount: 3411_207800n, expectedOut: quoted, minOut: floor })
+    const q = fillQuality({ returnAmount: 3411_207800n, expectedOut: quoted, minOut: floor , basis: 'simulated' })
 
     expect(q.delta).toBe(3_407800n)
     expect(q.percent).toBeCloseTo(0.1, 4)
   })
 
   it('flags a fill that came in under the floor the transaction was meant to enforce', () => {
-    const q = fillQuality({ returnAmount: floor - 1n, expectedOut: quoted, minOut: floor })
+    const q = fillQuality({ returnAmount: floor - 1n, expectedOut: quoted, minOut: floor , basis: 'simulated' })
 
     expect(q.belowFloor).toBe(true)
   })
 
   it('leaves the percentage unstated when there is no quote to measure against', () => {
-    const q = fillQuality({ returnAmount: 100n, expectedOut: 0n, minOut: 0n })
+    const q = fillQuality({ returnAmount: 100n, expectedOut: 0n, minOut: 0n , basis: 'simulated' })
 
     expect(q.percent).toBeNull()
     expect(q.delta).toBe(100n)
@@ -391,9 +394,19 @@ describe('hideTokens', () => {
   })
 
   it('reports nothing when hiding empties an outcome that had no swap either', () => {
-    const nothingLeft = hideTokens(outcome(), [WETH, A_WETH, USDC])
+    // Its own logs, not `outcome()`: those describe a token leaving and another coming back,
+    // which IS a swap once transfers are read as a fallback for a router that emits no event.
+    // Here nothing is sold, so there is no fill to find and hiding the rest leaves nothing.
+    const noSwap = readOutcome({
+      logs: [transferLog(A_WETH, ZERO, USER, 3n * 10n ** 18n)],
+      wallet: USER,
+      pair: { srcToken: WETH, dstToken: USDC },
+      expectedOut: 0n,
+      minOut: 0n,
+    })
 
-    expect(nothingLeft).toBeNull()
+    expect(noSwap?.swap).toBeNull()
+    expect(hideTokens(noSwap, [A_WETH])).toBeNull()
   })
 
   it('passes an absent outcome straight through', () => {
@@ -455,5 +468,56 @@ describe('decodeSwaps — Nordstern', () => {
     ])
 
     expect(swaps.map((s) => [s.spentAmount, s.returnAmount])).toEqual([[1n, 2n], [3n, 4n]])
+  })
+})
+
+describe('swapFromTransfers', () => {
+  // Base 0xbde5abe9d0985c278f4ec501853701469f225aae0edf76a814e9b8cb275893e0, a leveraged open
+  // routed through Socket. Four of its 77 logs, in the order the transaction emitted them:
+  // the flash loan arriving, the swap's input leaving, its output arriving, and the surplus
+  // being supplied to Aave. The loan and the output are the SAME token, which is the whole
+  // reason this reads a window rather than a sum.
+  const STRATEGIES = '0x75b1ab12e47aaee4e1033100de1992e735c32c9c' as Address
+  const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913' as Address
+  const WETH = '0x4200000000000000000000000000000000000006' as Address
+  const t = (a: string) => pad(a as Hex, { size: 32 })
+  const LOGS = [
+    // Morpho lends 10 WETH to the contract, before the swap exists.
+    { address: WETH, topics: [TRANSFER_TOPIC, t('0xbbbbbbbbbb9cc5e90e3b3af64bdaf62c37eeffcb'), t(STRATEGIES)] as Hex[],
+      data: '0x0000000000000000000000000000000000000000000000008ac7230489e80000' as Hex },
+    // 25,257.913359 USDC out to Socket's settler.
+    { address: USDC, topics: [TRANSFER_TOPIC, t(STRATEGIES), t('0x50cfe7c1938db66a1a6d2e86d36f39fbef3d5c4a')] as Hex[],
+      data: '0x00000000000000000000000000000000000000000000000000000005e17d2c0f' as Hex },
+    // 10.0354798 WETH back from the 0x Settler. No swap event anywhere in the receipt.
+    { address: WETH, topics: [TRANSFER_TOPIC, t('0x7747f8d2a76bd6345cc29622a946a929647f2359'), t(STRATEGIES)] as Hex[],
+      data: '0x0000000000000000000000000000000000000000000000008b452fb5147124bc' as Hex },
+    // The 0.0354798 surplus supplied to Aave.
+    { address: WETH, topics: [TRANSFER_TOPIC, t(STRATEGIES), t('0xd4a0e0b9149bcee3c920d2e00b5de09138fd8bb7')] as Hex[],
+      data: '0x000000000000000000000000000000000000000000000000007e0cb08a8924bc' as Hex },
+  ]
+
+  it('reads the fill a router announced no event for', () => {
+    const swap = swapFromTransfers(LOGS, STRATEGIES, { srcToken: USDC, dstToken: WETH })
+
+    expect(swap?.spentAmount).toBe(25_257_913_359n)
+    expect(swap?.returnAmount).toBe(10_035_479_799_443_563_708n)
+  })
+
+  it('leaves the flash loan out, though it arrives in the swap output token', () => {
+    const swap = swapFromTransfers(LOGS, STRATEGIES, { srcToken: USDC, dstToken: WETH })
+
+    // Scanning from the top instead would find the 10 WETH loan first and report that as the
+    // fill. From the bottom the loan is never reached.
+    expect(swap!.returnAmount).toBeLessThan(11n * 10n ** 18n)
+  })
+
+  it('answers null rather than half a fill when the receipt holds no swap', () => {
+    // The loan and the Aave supply alone: nothing ever left in USDC.
+    expect(swapFromTransfers([LOGS[0], LOGS[3]], STRATEGIES, { srcToken: USDC, dstToken: WETH })).toBeNull()
+  })
+
+  it('ignores transfers belonging to somebody else', () => {
+    const other = '0x000000000000000000000000000000000000dead' as Address
+    expect(swapFromTransfers(LOGS, other, { srcToken: USDC, dstToken: WETH })).toBeNull()
   })
 })

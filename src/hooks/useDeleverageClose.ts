@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { formatUnits, type Address } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { CloseError, toCloseError } from '../lib/deleverage'
+import { CloseError, routeKey, toCloseError } from '../lib/deleverage'
 import { statedRate } from '../lib/swapRoute'
 import {
   assertExecutable,
@@ -150,7 +150,7 @@ export function useDeleverageClose() {
           preview: {
             covered: p.covered,
             guaranteed: p.guaranteed,
-            aggregator: p.best.aggregator,
+            aggregator: routeKey(p.best),
             // Pre-formatted here rather than in the modal: the plan is the only place that knows
             // the debt asset's decimals without the UI having to look them up again.
             // Ranked on what was MEASURED, so the row the picker tags "best" is the route that
@@ -160,11 +160,11 @@ export function useDeleverageClose() {
             // which is all anyone can honestly show for them.
             routes: p.offers
               .map((q) => ({
-                aggregator: q.aggregator,
+                aggregator: routeKey(q),
                 amountOut: formatUnits(BigInt(q.amountOut), dDec),
                 measuredOut:
-                  p.measuredOut[q.aggregator] !== undefined
-                    ? formatUnits(p.measuredOut[q.aggregator], dDec)
+                  p.measuredOut[routeKey(q)] !== undefined
+                    ? formatUnits(p.measuredOut[routeKey(q)], dDec)
                     : undefined,
               }))
               .sort((a, b) => Number(b.measuredOut ?? b.amountOut) - Number(a.measuredOut ?? a.amountOut)),
@@ -184,6 +184,21 @@ export function useDeleverageClose() {
             // runs. A close selling USDC for WETH read as "1 USDC = 0.000409 WETH", which is
             // arithmetically fine and unreadable. Same symbols on both calls, so the expected
             // fill and the floor under it stay comparable.
+            // Whose word the expected rate is on. Same reasoning as the open's RouteDetails: the
+            // user is deciding whether to sign against this number, and a measured one and an
+            // aggregator's own estimate read identically without it.
+            expectedBasis: p.expectedBasis,
+            // The aggregator's own claim, kept beside the measured one. Only where a measurement
+            // actually displaced it — on the other two rungs `expectedOut` IS the quote, and a
+            // second row showing the same number would invent a source that does not exist.
+            quotedRate:
+              p.expectedBasis === 'simulated'
+                ? statedRate({
+                    srcSymbol: input.collateral.symbol, dstSymbol: input.debtAsset.symbol,
+                    srcDecimals: cDec, dstDecimals: dDec,
+                    spentAmount: p.requiredIn, returnAmount: p.quotedOut,
+                  })
+                : null,
             rate: statedRate({
               srcSymbol: input.collateral.symbol, dstSymbol: input.debtAsset.symbol,
               srcDecimals: cDec, dstDecimals: dDec,
@@ -274,8 +289,12 @@ export function useDeleverageClose() {
           client: publicClient,
           hash,
           wallet: address,
+          // The swap ran inside AaveV3Strategies, so its transfers are the ones that describe
+          // the fill — Socket and the 0x Settler under it emit no swap event to read instead.
+          executor: getChainConfig(chainId)?.aave.strategies as Address | undefined,
           pair: { srcToken: p.collateralAddr, dstToken: p.debtAddr },
           expectedOut: builtOut,
+          basis: p.expectedBasis,
           minOut,
         })
 

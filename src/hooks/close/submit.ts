@@ -1,7 +1,8 @@
 import { formatUnits, type Address, type PublicClient, type WalletClient } from 'viem'
 import type { Config } from 'wagmi'
 import { estimateFeesPerGas } from 'wagmi/actions'
-import { calculateAdjustedFees, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
+import { calculateAdjustedFees, gasFromMeasuredSwap, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
+import { assertWalletChain } from '../../lib/walletChain'
 import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
 import { computeMinOut, deriveDebtRepay, isSlippageShapedFailure, planWithdrawal } from '../../lib/closePlan'
@@ -170,27 +171,32 @@ export async function submitClose(
         const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
           calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
 
-        // One execution, not two. `estimateContractGas` runs the transaction on the node, so a
-        // route that went stale reverts HERE — an eth_call on top of it would be asking the same
-        // question again. And there is no gap between the two to worry about: `pinnedGasLimit`
-        // buffers upward and clamps only down to the chain's cap, never below the estimate, so
-        // the limit sent is always one the transaction has already been shown to run in.
+        // Built from the swap the simulator already measured wherever there is one, matching the
+        // open. Estimating would execute this same transaction against this same state a second
+        // time to learn a number we have.
         //
-        // Matches the open, which has always worked this way.
+        // KNOWN COST. `estimateContractGas` was also the last dry run before signing: a route
+        // that went stale reverted HERE rather than on chain. Skipping it moves that revert to
+        // the user's own transaction, and the window is however long they take to press Confirm
+        // after the last three-second re-quote. The floor frozen into the calldata still protects
+        // the OUTPUT — this only changes where a stale route is discovered, not whether one can
+        // fill badly.
         log('Sizing the close…')
         let gas: bigint
         try {
-          gas = await pinnedGasLimit(
-            () =>
-              publicClient.estimateContractGas({
-                address: p.strategies,
-                abi: aaveV3StrategiesAbi,
-                functionName: 'closePositionWithPermit',
-                args,
-                account: address,
-              }),
-            { chainId, label: 'close' },
-          )
+          gas = p.swapGasUsed
+            ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close' })
+            : await pinnedGasLimit(
+                () =>
+                  publicClient.estimateContractGas({
+                    address: p.strategies,
+                    abi: aaveV3StrategiesAbi,
+                    functionName: 'closePositionWithPermit',
+                    args,
+                    account: address,
+                  }),
+                { chainId, label: 'close' },
+              )
         } catch (e) {
           // Over the chain's per-transaction cap is not a stale route and not retryable: the
           // route has to change. Refreshing the quote and inviting another press would send the
@@ -223,6 +229,9 @@ export async function submitClose(
 
         log('Submitting close transaction…')
         setStep('sending')
+        // Before the send, not after: a network switched in the wallet while the modal was open
+        // would otherwise put this chain's calldata on another chain's address.
+        await assertWalletChain(walletClient, chainId)
         const hash = await walletClient.writeContract({
           address: p.strategies,
           abi: aaveV3StrategiesAbi,

@@ -1,5 +1,6 @@
 import { parseAbi, type Address, type Hex } from 'viem'
 import type { StrategiesSig } from '../../lib/strategies-sdk'
+import type { OutBasis } from '../../lib/deleverage'
 import {
   type CollateralEnablement,
   type Direction,
@@ -87,6 +88,25 @@ export interface OpenPreview {
    * "what we expect" against "what the transaction will still accept".
    */
   expectedOut: bigint
+  /** Whose word {@link expectedOut} is on — see `expectedOutcome`. */
+  expectedBasis: OutBasis
+  /**
+   * What the aggregator QUOTED for this route, before anything measured it.
+   *
+   * Kept next to {@link expectedOut} rather than replaced by it so the two can be shown side by
+   * side: the gap between them is how far the aggregator's arithmetic sits from what the route
+   * actually does against live state, and it is the only number here that says anything about
+   * whether that aggregator's figures can be taken at face value.
+   */
+  quotedOut: bigint
+  /**
+   * Gas the simulator measured for the SWAP alone, or null when nothing simulated it.
+   *
+   * The transaction's limit is built from this plus `STRATEGY_OVERHEAD_GAS` rather than from a
+   * fresh `eth_estimateGas` — the simulation already executed this exact calldata against this
+   * exact state, so estimating would run it a second time to learn the same thing.
+   */
+  swapGasUsed: bigint | null
   minOut: bigint
   /** What the account becomes, verified against the built route rather than the oracle. */
   projection: OpenProjection
@@ -172,6 +192,14 @@ export interface OpenDeps {
     abi: readonly unknown[]
     functionName: string
     args: readonly unknown[]
+    /**
+     * The chain this transaction was PREPARED for, so wagmi refuses to send it anywhere else.
+     *
+     * `useChainId` follows the connection and the preview re-quotes when it changes, but a
+     * network switched in the wallet mid-confirm leaves a window between the two. Without this
+     * what goes out is one chain's calldata addressed to another chain's contract.
+     */
+    chainId?: number
     /** Always ours, never the wallet's — see `pinnedGasLimit`. */
     gas?: bigint
     maxFeePerGas?: bigint

@@ -14,7 +14,7 @@ import type { Address, Hex } from 'viem'
 import { quoteRate } from './deleverage'
 import type { PositionEvent } from './strategiesLogs'
 import type { TokenMeta } from './tokenMeta'
-import { decodeSwaps, pickSwap, walletDeltas, type ReceiptLog } from './txOutcome'
+import { decodeSwaps, pickSwap, swapFromTransfers, walletDeltas, type ReceiptLog } from './txOutcome'
 import type { HistoryDelta, TxHistoryEntry } from './txHistory'
 
 /**
@@ -62,6 +62,15 @@ export interface ReceiptClient {
 
 export interface BackfillContext {
   wallet: Address
+  /**
+   * The AaveV3Strategies deployment that executed these transactions.
+   *
+   * Taken from the caller rather than re-read from the chain config: it is the same address
+   * screening already matched the receipt's event against, so it cannot be missing here without
+   * the receipt never having been filed. The config's copy is an env var that defaults to an
+   * empty string, which would read as "no contract" and quietly drop every swap.
+   */
+  strategies: Address
   chainId: number
   /** Symbol and decimals per token, keyed by LOWER-CASED address. */
   tokens: Record<string, TokenMeta>
@@ -88,14 +97,18 @@ function buildEntry(
   event: PositionEvent,
   receipt: PositionReceipt,
   timestamp: bigint,
-  { wallet, chainId, tokens, hidden }: BackfillContext,
+  { wallet, chainId, strategies, tokens, hidden }: BackfillContext,
 ): TxHistoryEntry | null {
   // A position event cannot be emitted by a transaction that reverted, so this is a guard against
   // a provider answering with someone else's receipt rather than an expected case.
   if (receipt.status !== 'success') return null
 
   const meta = (token: Address) => tokens[token.toLowerCase()]
-  const swap = pickSwap(decodeSwaps(receipt.logs), swapPair(event))
+  const pair = swapPair(event)
+  // Same fallback the live path uses: Socket and the 0x Settler announce no swap, so without it
+  // a backfilled row carries no fill and no basis at all.
+  const swap =
+    pickSwap(decodeSwaps(receipt.logs), pair) ?? swapFromTransfers(receipt.logs, strategies, pair)
   const src = swap ? meta(swap.srcToken) : undefined
   const dst = swap ? meta(swap.dstToken) : undefined
   const skip = new Set(hidden.map((t) => t.toLowerCase()))

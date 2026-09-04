@@ -1,5 +1,5 @@
 import { type Address, type Hex, type PublicClient } from 'viem'
-import { getAllowedRouters, getPauseState, resolveMode, BPS } from '../../lib/strategies-sdk'
+import { readContractState, resolveMode, BPS } from '../../lib/strategies-sdk'
 import {
   deriveOpen,
   projectOpen,
@@ -13,7 +13,8 @@ import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import type { Adapter, QuoteResponse } from '../../adapters/types'
 import { getChainConfig, getTxGasCap } from '../../config/chains'
-import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, selectBuildableRoute } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
+import { quoteField } from '../../adapters'
 import { simulateSwap, swapSimulationInput } from '../../adapters/simulate'
 import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
@@ -149,10 +150,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           return
         }
 
-        const [{ paused }, routers] = await Promise.all([
-          getPauseState(client, input.contract),
-          getAllowedRouters(client, input.contract),
-        ])
+        // Cached across runs — see `readContractState`. These were two RPC reads on every
+        // debounce and every three-second re-quote, for values that change once in a blue moon.
+        const { paused, routers } = await readContractState(client, chainId, input.contract)
         if (cancelled()) return
         if (paused) {
           setPreviewError('PAUSED')
@@ -194,18 +194,28 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           const results = await Promise.all(
             adapters.map(async (a) => {
               try {
-                const q = await a.getQuote(
-                  fromAsset, toAsset, swapIn.toString(), slippagePercent, chainId, signal,
-                )
-                return q ? { a, q } : null
+                // The whole field from each adapter, not just its best. Socket answers one
+                // request with a route per underlying aggregator, and those differ from each
+                // other as much as two adapters do. Quoted for the contract that will execute
+                // them, so the routes come back already addressed to it.
+                const quotes = await quoteField(a, {
+                  fromAsset,
+                  toAsset,
+                  amountIn: swapIn.toString(),
+                  slippage: slippagePercent,
+                  chainId,
+                  caller: input.contract,
+                  signal,
+                })
+                return quotes.map((q) => ({ a, q }))
               } catch (e) {
                 if (e instanceof AggregatorHttpError && e.retryable) throttled = true
-                return null
+                return []
               }
             }),
           )
           const all = results
-            .filter((r): r is Candidate => r !== null)
+            .flat()
             // Ties return 0. A comparator that answers -1 for equal values is inconsistent, and
             // sort is entitled to do anything with one — harmless at two candidates, wrong the
             // moment there are more.
@@ -218,7 +228,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           // the caller in `finally`, once, rather than on every round.
           field = all.map((c) => c.q)
 
-          const usable = applyPin(all, input.preferredAggregator, (c) => c.a.name)
+          const usable = applyPin(all, input.preferredAggregator, (c) => routeKey(c.q))
           if (usable.length === 0 && all.length > 0) pinnedOut = true
           return usable
         }
@@ -339,7 +349,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // measurements have to arrive after the list, not before: the list is what stamps the
         // pair they are matched against.
         measuredField = Object.fromEntries(
-          measurements.map((m) => [m.candidate.a.name, effectiveOut(m.tx, m.sim)]),
+          measurements.map((m) => [routeKey(m.candidate.q), effectiveOut(m.tx, m.sim)]),
         )
 
         const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
@@ -350,8 +360,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // there is not, the quote's only as a last resort. `effectiveOut` owns that choice so
         // the close flow cannot read it differently — see its note on why a REVERTED simulation
         // still falls back rather than dropping the route.
-        const measured = effectiveOut(build.built, selected.sim)
-        const builtOut = measured > 0n ? measured : BigInt(build.quote.amountOut)
+        const quotedOut = BigInt(build.quote.amountOut)
+        const expectation = expectedOutcome(build.built, selected.sim, quotedOut)
+        const builtOut = expectation.amount
         // What this route contractually guarantees to deliver.
         const guaranteedOut = (builtOut * (BPS - input.slippageBps)) / BPS
 
@@ -424,6 +435,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           borrowAmount,
           swapIn,
           expectedOut: builtOut,
+          expectedBasis: expectation.basis,
+          quotedOut,
+          swapGasUsed: selected.sim ? BigInt(selected.sim.gasUsed) : null,
           minOut: guaranteedOut > flashAmount ? guaranteedOut : flashAmount,
           projection,
           router: build.built.to as Address,

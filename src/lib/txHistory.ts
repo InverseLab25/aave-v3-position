@@ -10,6 +10,7 @@
  * `localStorage` can be absent or throw outright, and no part of this is worth failing a flow for.
  */
 import type { Address, Hex } from 'viem'
+import type { OutBasis } from './deleverage'
 import type { DelegationStorage } from './delegationCache'
 import { clearScreened } from './screenCache'
 
@@ -48,7 +49,7 @@ export interface TxHistoryEntry {
    * the formatting. Taken from the SWAP event, so it is the price paid rather than the one quoted.
    */
   rate: string | null
-  fill: { delta: bigint; percent: number | null; belowFloor: boolean } | null
+  fill: { delta: bigint; percent: number | null; belowFloor: boolean; basis: OutBasis } | null
   deltas: HistoryDelta[]
   /**
    * Where this row came from: the flow that sent the transaction, or a scan of the chain.
@@ -266,6 +267,11 @@ function decodeEntry(raw: unknown, lookup: TokenLookup, walletOf: WalletLookup):
             delta: fillDelta,
             percent: asNullableNumber(fillRaw.percent),
             belowFloor: fillRaw.belowFloor === true,
+            // Rows written before the basis was recorded have none. `quoted` is the honest
+            // reading of an unknown one: it is the weakest of the three, so an old row cannot
+            // pass itself off as a measurement.
+            basis:
+              fillRaw.basis === 'simulated' || fillRaw.basis === 'built' ? fillRaw.basis : 'quoted',
           }
         : null,
     deltas: Array.isArray(r.deltas)

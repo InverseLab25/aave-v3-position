@@ -1,6 +1,6 @@
 import { maxUint256, type Address } from 'viem'
 import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
-import { CloseError, effectiveOut, selectBuildableRoute } from './deleverage'
+import { CloseError, effectiveOut, routeKey, selectBuildableRoute } from './deleverage'
 import { swapSimulationInput } from '../adapters/simulate'
 import type { SimulationInput, SimulationResult } from '../adapters/simulate'
 import { getTxGasCap } from '../config/chains'
@@ -324,7 +324,7 @@ export async function selectRoute({
     isAllowlisted: (router) => allowedRouters.has(router.toLowerCase()),
     reject: (c) =>
       (BigInt(c.amountOut) * slipNum) / 10000n < debt ? 'guaranteed output below the debt' : null,
-    label: (c) => c.aggregator,
+    label: (c) => routeKey(c),
     txGasCap: getTxGasCap(chainId),
     // Deliberately the swap's OWN sender, tokens and size rather than the user's wallet: the
     // swap happens inside the contract mid-flash-loan, and measuring it anywhere else answers
@@ -345,7 +345,7 @@ export async function selectRoute({
   })
 
   const measuredOut: Record<string, bigint> = {}
-  for (const m of measurements) measuredOut[m.candidate.aggregator] = effectiveOut(m.tx, m.sim)
+  for (const m of measurements) measuredOut[routeKey(m.candidate)] = effectiveOut(m.tx, m.sim)
 
   if (selected) {
     return {

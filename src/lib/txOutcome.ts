@@ -6,6 +6,7 @@
  * time the flow reports success, so the settled figures cost nothing but the decoding.
  */
 import { decodeEventLog, type Address, type Hex } from 'viem'
+import type { OutBasis } from './deleverage'
 
 /**
  * `keccak256("Swapped(address,address,address,address,uint256,uint256)")`.
@@ -201,6 +202,50 @@ export function walletDeltas(logs: readonly ReceiptLog[], wallet: Address): Wall
 }
 
 /**
+ * The fill read off plain `Transfer` logs, for routers that announce nothing.
+ *
+ * Socket and the 0x Settler underneath it emit no swap event at all, so `decodeSwaps` comes back
+ * empty and the whole report — settled fill, fill quality, history basis — silently goes missing.
+ * The transfers are still there, and two of them say exactly what happened: the first `srcToken`
+ * to leave the executor is what it paid, and the last `dstToken` to arrive is what it got.
+ *
+ * Read from the END for the output, which is what keeps the flash loan out of it. A leveraged
+ * open receives its loan in the SAME token the swap pays out — on Base, 10 WETH arriving before
+ * the swap is even asked for — so a scan that starts at the top finds the loan and reports
+ * 10 WETH of output that no swap produced. From the bottom, the loan is never reached.
+ *
+ * Null when either leg is missing, which is the honest answer for a receipt that holds no swap.
+ */
+export function swapFromTransfers(
+  logs: readonly ReceiptLog[],
+  executor: Address,
+  pair: { srcToken: Address; dstToken: Address },
+): RouterSwap | null {
+  const who = executor.toLowerCase()
+  // topics[1] is `from` and topics[2] is `to`, both addresses left-padded to 32 bytes.
+  const at = (log: ReceiptLog, i: 1 | 2) => ('0x' + (log.topics[i] ?? '').slice(-40)).toLowerCase()
+  const isTransfer = (log: ReceiptLog, token: Address, party: 1 | 2) =>
+    log.topics[0] === TRANSFER_TOPIC &&
+    log.topics.length >= 3 &&
+    log.address.toLowerCase() === token.toLowerCase() &&
+    at(log, party) === who
+
+  const sent = logs.find((l) => isTransfer(l, pair.srcToken, 1))
+  const received = logs.findLast((l) => isTransfer(l, pair.dstToken, 2))
+  if (!sent || !received) return null
+
+  return {
+    router: executor,
+    sender: executor,
+    srcToken: pair.srcToken,
+    dstToken: pair.dstToken,
+    dstReceiver: executor,
+    spentAmount: BigInt(sent.data),
+    returnAmount: BigInt(received.data),
+  }
+}
+
+/**
  * The swap this flow was quoting, out of everything the receipt reported.
  *
  * A leveraged open or close fills through exactly one router call, but the receipt also carries
@@ -233,6 +278,15 @@ interface FillQuality {
    * which is worth showing rather than swallowing.
    */
   belowFloor: boolean
+  /**
+   * Whose word `expectedOut` was on, so `delta` can be read for what it is.
+   *
+   * A delta against a SIMULATED expectation is drift between a measurement and the chain, and is
+   * normally thousandths of a percent. A delta against a QUOTED one is the gap between an
+   * aggregator's arithmetic and reality, which is a different and much weaker claim. Both print
+   * as a percentage, so without this they average together into a number meaning neither.
+   */
+  basis: OutBasis
 }
 
 /** Percentages are reported to four decimals, which is finer than any tolerance a user sets. */
@@ -242,6 +296,7 @@ export function fillQuality(o: {
   returnAmount: bigint
   expectedOut: bigint
   minOut: bigint
+  basis: OutBasis
 }): FillQuality {
   const delta = o.returnAmount - o.expectedOut
   return {
@@ -249,6 +304,7 @@ export function fillQuality(o: {
     percent:
       o.expectedOut === 0n ? null : Number((delta * PERCENT_SCALE) / o.expectedOut) / 10_000,
     belowFloor: o.returnAmount < o.minOut,
+    basis: o.basis,
   }
 }
 
@@ -272,17 +328,34 @@ export interface TxOutcome {
 export function readOutcome(o: {
   logs: readonly ReceiptLog[]
   wallet: Address
+  /**
+   * Whoever held the tokens during the swap, when that is not the wallet.
+   *
+   * A leveraged open or close swaps inside AaveV3Strategies, so the transfers that describe the
+   * fill are the contract's and not the user's. Defaults to `wallet`, which is right for the
+   * plain swap where the signer is the one trading.
+   */
+  executor?: Address
   pair: { srcToken: Address; dstToken: Address }
   expectedOut: bigint
   minOut: bigint
+  /** Whose word `expectedOut` is on. Defaults to `quoted`, the weakest reading. */
+  basis?: OutBasis
 }): TxOutcome | null {
-  const swap = pickSwap(decodeSwaps(o.logs), o.pair)
+  const swap =
+    pickSwap(decodeSwaps(o.logs), o.pair) ??
+    swapFromTransfers(o.logs, o.executor ?? o.wallet, o.pair)
   const deltas = walletDeltas(o.logs, o.wallet)
   if (!swap && deltas.length === 0) return null
   return {
     swap,
     fill: swap
-      ? fillQuality({ returnAmount: swap.returnAmount, expectedOut: o.expectedOut, minOut: o.minOut })
+      ? fillQuality({
+          returnAmount: swap.returnAmount,
+          expectedOut: o.expectedOut,
+          minOut: o.minOut,
+          basis: o.basis ?? 'quoted',
+        })
       : null,
     deltas,
   }

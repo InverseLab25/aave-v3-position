@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { routeKey } from '../../lib/deleverage'
 import { erc20Abi, formatUnits, parseUnits } from 'viem'
 import { useChainId, useConnection, useReadContract } from 'wagmi'
 import type { AvailableReserve, BorrowedAsset, SuppliedAsset } from '../../hooks/useAavePositions'
@@ -794,11 +795,11 @@ export function LeveragePanel({
           // its own route and nothing here can check it.
           routes={routes
             .map((q) => ({
-              aggregator: q.aggregator,
+              aggregator: routeKey(q),
               amountOut: display(BigInt(q.amountOut), confirming.collateral.raw.decimals, 4),
               measuredOut:
-                measuredOut[q.aggregator] !== undefined
-                  ? display(measuredOut[q.aggregator], confirming.collateral.raw.decimals, 4)
+                measuredOut[routeKey(q)] !== undefined
+                  ? display(measuredOut[routeKey(q)], confirming.collateral.raw.decimals, 4)
                   : undefined,
             }))
             .sort((a, b) => Number(b.measuredOut ?? b.amountOut) - Number(a.measuredOut ?? a.amountOut))}

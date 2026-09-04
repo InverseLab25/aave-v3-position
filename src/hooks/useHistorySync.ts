@@ -31,7 +31,26 @@ import { positionHashes } from '../lib/aaveTxHashes'
 import { userHistoryQuery } from '../lib/aaveUserHistory'
 import { clearScreened } from '../lib/screenCache'
 import { buildTokenMap, positionTokens, type TokenMeta } from '../lib/tokenMeta'
+import { loadHistory } from '../lib/txHistory'
 import type { AvailableReserve } from './useAavePositions'
+
+/**
+ * Rows already stored that carry no swap, so their receipts get read again.
+ *
+ * A leveraged open or close always fills through a router, so a row with `swap: null` was
+ * decoded by a reader that could not see it — before the transfer fallback existed, every
+ * Socket-routed position landed this way. Screening remembers the hash as handled, and the
+ * indexer often does not list it at all, so nothing else would ever offer it back.
+ */
+function incompleteHashes(
+  storage: ReturnType<typeof browserStorage>,
+  wallet: Address,
+  chainId: number,
+) {
+  return loadHistory(storage, { wallet, chainId })
+    .filter((e) => e.swap === null)
+    .map((e) => e.hash)
+}
 
 export interface HistorySyncStatus {
   /** A catch-up scan is in flight on at least one chain. */
@@ -183,6 +202,9 @@ export function useHistorySync(
           wallet,
           chainId,
           hashes: positionHashes(history),
+          // Rows we already filed with no swap on them. The indexer does not always list our own
+          // transactions, so their own hashes are the only way back to those receipts.
+          reread: incompleteHashes(storage, wallet, chainId),
           tokens: chainMeta.tokens,
           hidden: chainMeta.hidden,
         })

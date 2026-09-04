@@ -111,9 +111,9 @@ export function quoteRate(
  *     Odos and ParaSwap all satisfy it — ParaSwap only since Augustus v6.2, where the
  *     approval spender is the router itself rather than a separate TokenTransferProxy.
  *
- *  2. Its router is on the deleverager's on-chain allowlist. KyberSwap's router is, on all
- *     three chains; Nordstern's Guard is on Base and Arbitrum only — see
- *     script/RouterSetup.s.sol.
+ *  2. Its router is on the deleverager's on-chain allowlist. Nordstern's Guard is on Base and
+ *     Arbitrum only — see script/RouterSetup.s.sol. KyberSwap's router is allowlisted on all
+ *     three chains but is deliberately not named here any more, so nothing quotes it.
  *
  *     This list has no chain dimension, so condition 2 holding on SOME chain is what gets a
  *     name in. What keeps Nordstern away from mainnet, where its Guard is not allowlisted, is
@@ -132,8 +132,47 @@ export function quoteRate(
  *
  * To widen this: allowlist the router on-chain FIRST (RouterSetup.s.sol, owner-signed),
  * then add the name here. Never the other way round.
+ *
+ * Socket satisfies both. Its AllowanceHolder (0x50c4E75a512F2A14A7b304787Adf79C4531A5909, the
+ * same address on both chains) is allowlisted on AaveV3Strategies on Base and Arbitrum, read
+ * off `getAllowedRouters()` on 2026-09-04. Socket signs each route for whoever `userAddress`
+ * names and its AllowanceHolder rejects anyone else with `CallerNotSignedUser()` (0x85132e0f),
+ * so naming the Strategies contract there is the whole requirement — its `contractCaller`
+ * parameter adds nothing and is not sent. Quoted and simulated as the contract on Base at
+ * 25,243 USDC, every route executed and measured within 0.003% of its quote.
+ *
+ * What Socket does cost is 20bps of the INPUT on every route, to
+ * 0xe3D091bcb9406Ddb9a121e37f4eb1345336AFBBf. That is the unkeyed public host; a request keyed
+ * with `x-api-key` and an `affiliate` header comes back with no fee at all. Unkeyed, Socket
+ * therefore loses to Nordstern on every trade by roughly that margin and the extra quoting is
+ * close to wasted. The key is what makes it competitive.
+ *
+ * Mainnet has neither: no Nordstern Guard, and Socket's AllowanceHolder is not on the
+ * Deleverager's allowlist, which holds KyberSwap's router alone. So chain 1 currently ranks
+ * nothing, KyberSwap no longer being named here.
  */
-export const COMPATIBLE_ADAPTERS = ['KyberSwap', 'Nordstern'] as const
+export const COMPATIBLE_ADAPTERS = ['Nordstern', 'Socket'] as const
+
+/**
+ * How many routes are built and measured, best-quoted first.
+ *
+ * Six, not three. The cut is made on quotes because measuring is the expensive part and nothing
+ * is measured yet — but a quote is the least reliable number in this flow, and a rank cut makes
+ * the decision on the smallest differences in it. One Base field had the third and fourth quotes
+ * 0.0001 apart while the third measured 0.05% under its own quote: cutting at three dropped the
+ * fourth, unmeasured, on a margin far smaller than the error being measured away. Widening the
+ * field is the fix, because the cut cannot be made on anything better.
+ *
+ * Affordable now in a way it was not when this was three. Both adapters return prebuilt
+ * transactions from `getQuotes`, so building a candidate costs no HTTP at all — an extra one is
+ * one more `eth_simulateV1` and nothing else, and those run concurrently, so the cost is quota
+ * rather than wall clock. Simulation has no public fallback (see `simulationRpc`), so the quota
+ * spent is the user's own.
+ *
+ * Six rather than unbounded because Socket answers with a route per underlying aggregator, and
+ * a whole field plus Nordstern lands about there — past it the tail is genuinely hopeless.
+ */
+export const MAX_MEASURED_ROUTES = 6
 
 
 /**
@@ -171,6 +210,17 @@ export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
  * to that route the moment the pinned one failed to build. An empty result against a non-empty
  * input is what each flow turns into "that route cannot serve this trade".
  */
+/**
+ * What identifies one row: the venue where the adapter named one, the adapter otherwise.
+ *
+ * The single place this fallback lives. Keying measurements or pins on `aggregator` alone
+ * collapses every Socket route onto one entry, so they all report the winner's measurement and
+ * pinning any of them pins all of them.
+ */
+export function routeKey(q: { aggregator: string; routeId?: string }): string {
+  return q.routeId ?? q.aggregator
+}
+
 export function applyPin<T>(
   routes: T[],
   pinned: string | undefined,
@@ -195,6 +245,14 @@ export function applyPin<T>(
  */
 export const TX_GAS_CAP_2_24 = 16_777_216n
 
+/**
+ * Largest calldata a route may carry, in bytes.
+ *
+ * 20KB. Only KyberSwap has ever exceeded it in any sample taken here — 22 to 25KB on Base at
+ * 1M USDC — and those routes measured over the chain's per-transaction gas cap.
+ */
+export const MAX_CALLDATA_BYTES = 20 * 1024
+
 export function validateSwapTx(
   tx: { to: string; data: string; value: string; spender: string; gasEstimate?: string },
   isRouterAllowlisted: boolean,
@@ -214,6 +272,15 @@ export function validateSwapTx(
   }
   if (value !== 0n) return `route requires ${value} wei of ETH; the deleverager sends none`
   if (!isRouterAllowlisted) return `router ${tx.to} is not allowlisted on the deleverager`
+  // Calldata is charged before the first opcode runs — 4 gas a zero byte, 16 otherwise — and
+  // KyberSwap ships tens of kilobytes where every other route here is a kilobyte or two.
+  // Measured on Base at 1M USDC: a 25KB Kyber route needed 18.1M gas against the 16.78M cap
+  // while quoting 12.5M, so the gas check above passes it and the chain would not. This is a
+  // blunt instrument on purpose — an exact figure needs a simulation, and a route this large
+  // has never been the winner in any sample.
+  if (tx.data.length > 2 + MAX_CALLDATA_BYTES * 2) {
+    return `route carries ${Math.round((tx.data.length - 2) / 2048)}KB of calldata, over the ${MAX_CALLDATA_BYTES / 1024}KB limit`
+  }
   // A route that cannot fit in one transaction is rejected by the node, not by a revert, so
   // there is no simulation to catch it and no error the user can act on. Aggregator gas is an
   // estimate rather than a measurement, so this catches the clearly-impossible rather than the
@@ -252,6 +319,37 @@ export function effectiveOut(
 ): bigint {
   if (sim) return sim.amountOut
   return BigInt(tx.amountOut ?? 0)
+}
+
+/**
+ * Where a route's expected output actually came from.
+ *
+ * Recorded because the three rungs are not equally trustworthy and the number alone cannot say
+ * which one it is. A `fill` measured against a simulation is a comparison with something that
+ * WAS measured against live state; one measured against `quoted` compares a fill with the
+ * aggregator's arithmetic about its own route, which nothing checked. Both render as the same
+ * percentage, so without this a reader averaging fill quality is mixing two different claims.
+ */
+export type OutBasis = 'simulated' | 'built' | 'quoted'
+
+/**
+ * What a route is expected to return, and on whose word.
+ *
+ * The full ladder, in one place, because the open and close flows both walk it and both derive
+ * their slippage floor from the result — reading it differently would let the two enforce
+ * different floors on the same trade. {@link effectiveOut} is the ranking half of this and stays
+ * separate: ranking compares candidates against each other and does not care whose word it is.
+ */
+export function expectedOutcome(
+  tx: TransactionPayload,
+  sim: SimulationResult | null | undefined,
+  /** The quote's own figure, the last resort when the build returned no amount either. */
+  quoted: bigint,
+): { amount: bigint; basis: OutBasis } {
+  if (sim) return { amount: sim.amountOut, basis: 'simulated' }
+  const built = BigInt(tx.amountOut ?? 0)
+  if (built > 0n) return { amount: built, basis: 'built' }
+  return { amount: quoted, basis: 'quoted' }
 }
 
 /**
@@ -315,11 +413,17 @@ export async function selectBuildableRoute<C>(
 
   // The caller's own bar first, and synchronously: it costs nothing and a candidate that fails
   // it should not cost a build.
-  const toBuild: C[] = []
+  const passed: C[] = []
   for (const candidate of candidates) {
     const bar = opts.reject?.(candidate)
     if (bar) rejected.push(`${name(candidate)}: ${bar}`)
-    else toBuild.push(candidate)
+    else passed.push(candidate)
+  }
+  // Capped AFTER the caller's bar, so a candidate rejected for nothing does not use up a slot.
+  // Candidates arrive best-quoted first, so this keeps the ones most likely to win.
+  const toBuild = passed.slice(0, MAX_MEASURED_ROUTES)
+  for (const dropped of passed.slice(MAX_MEASURED_ROUTES)) {
+    rejected.push(`${name(dropped)}: outside the top ${MAX_MEASURED_ROUTES} by quote`)
   }
   if (opts.cancelled?.()) return nothing
 

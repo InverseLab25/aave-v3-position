@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   clearQuoteCache: vi.fn(),
   getPauseState: vi.fn(),
   getAllowedRouters: vi.fn(),
+  readContractState: vi.fn(),
   getDelegationAllowance: vi.fn(),
   getPermitContext: vi.fn(),
   getPoolDataProvider: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../lib/strategies-sdk', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getPauseState: mocks.getPauseState,
   getAllowedRouters: mocks.getAllowedRouters,
+  readContractState: mocks.readContractState,
   getDelegationAllowance: mocks.getDelegationAllowance,
   getPermitContext: mocks.getPermitContext,
 }))
@@ -46,7 +48,12 @@ vi.mock('../lib/aaveStatics', () => ({
   getPoolDataProvider: mocks.getPoolDataProvider,
   getReserveTokens: mocks.getReserveTokens,
 }))
-vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
+// Partial: `quoteField` has to stay real. It is the thing that turns one adapter into the list
+// of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
+vi.mock('../adapters', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getAdaptersForChain: mocks.getAdaptersForChain,
+}))
 // Unreachable simulator, which is the fallback path: every route is then judged on its BUILT
 // output, exactly as it was before simulation existed. Left that way on purpose — these tests
 // are about delegation and signature reuse, and a measured output would silently change the
@@ -90,19 +97,32 @@ let debtPerCollateral = 3000n
  * Prices the pair at {@link debtPerCollateral}, so the borrow the solver lands on is a
  * function of the supply alone and moves only when the test moves it.
  */
+/**
+ * `fakeAdapter`'s quotes, relabelled.
+ *
+ * Measurements are keyed off the quote rather than the adapter that fetched it, since one
+ * adapter can answer with several venues. A fake that renames the adapter but leaves its quotes
+ * saying 'Socket' therefore collides with the real Socket rows, which is what the key exists to
+ * stop.
+ */
+const nordsternQuote: Adapter['getQuote'] = async (...args) => {
+  const q = await fakeAdapter().getQuote(...args)
+  return q && { ...q, aggregator: 'Nordstern' }
+}
+
 function fakeAdapter(): Adapter {
   return {
-    name: 'KyberSwap',
+    name: 'Socket',
     supportsExecution: true,
     getQuote: vi.fn(async (_from, _to, amountIn): Promise<QuoteResponse> => ({
-      aggregator: 'KyberSwap',
+      aggregator: 'Socket',
       amountIn,
       // debt (6dp) → collateral (18dp) at the current rate.
       amountOut: ((BigInt(amountIn) * 10n ** 18n) / (debtPerCollateral * 10n ** 6n)).toString(),
       amountOutUsd: '0',
       gasUsd: '0',
       netReturnUsd: 0,
-      routeDetails: { protocol: 'KyberSwap', path: [] } as unknown as QuoteResponse['routeDetails'],
+      routeDetails: { protocol: 'Socket', path: [] } as unknown as QuoteResponse['routeDetails'],
       rawQuote: {},
     })),
     buildTransaction: vi.fn(async (quote): Promise<TransactionPayload> => ({
@@ -263,6 +283,7 @@ beforeEach(() => {
   mocks.useSignTypedData.mockReturnValue({ signTypedDataAsync: vi.fn() })
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue([ROUTER])
+  mocks.readContractState.mockResolvedValue({ paused: false, routers: [ROUTER] })
   mocks.getAdaptersForChain.mockReturnValue([fakeAdapter()])
   mocks.getPoolDataProvider.mockResolvedValue('0x0000000000000000000000000000000000000123')
   mocks.getReserveTokens.mockResolvedValue({ vDebt: V_DEBT })
@@ -444,7 +465,7 @@ it('skips the wallet entirely when a standing delegation already covers the borr
 
 it('separates an aggregator that is refusing to answer from a pair that has no route', async () => {
   // Being rate-limited is not the same as there being no liquidity, and telling the user the
-  // latter sends them looking for the wrong problem. KyberSwap is the only compatible adapter,
+  // latter sends them looking for the wrong problem. Socket is the only compatible adapter,
   // so one 429 takes the whole flow down.
   const adapter = fakeAdapter()
   adapter.getQuote = vi.fn(async () => {
@@ -471,7 +492,7 @@ it('still says NO_ROUTE when the aggregator answers and simply has nothing', asy
 it('reports the aggregators that priced the pair, so the user can pin one of them', async () => {
   await mount()
 
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 })
 
 it('blames the pin, not the pair, when the pinned aggregator did not price it', async () => {
@@ -484,7 +505,7 @@ it('blames the pin, not the pair, when the pinned aggregator did not price it', 
   expect(hook().preview).toBeNull()
   expect(hook().previewError).toBe('ROUTE_UNAVAILABLE')
   // The losers are still listed, or there is nothing to un-pin onto.
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 })
 
 it('prepare takes the signature and sends nothing', async () => {
@@ -774,7 +795,7 @@ it('keeps the priced routes on screen while a refresh is in flight', async () =>
   // under the cursor. The old list is still true until the new one lands; it is a REFRESH of the
   // same inputs, not a different trade.
   await mount()
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 
   let release: (() => void) | undefined
   const adapter = fakeAdapter()
@@ -789,20 +810,20 @@ it('keeps the priced routes on screen while a refresh is in flight', async () =>
   })
 
   // Mid-refresh: nothing has answered yet, and the list is still the one that did.
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 
   release?.()
   await settle()
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 })
 
 it('keeps the route list on screen when the user pins one of them', async () => {
   // Pinning is a choice made FROM the list, so emptying the list to answer it takes away the
   // thing being used. The pin changes which candidate gets BUILT; it does not change who priced
   // the pair, which is all this list says.
-  const kyber = fakeAdapter()
-  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern' }
-  mocks.getAdaptersForChain.mockReturnValue([kyber, nordstern])
+  const socket = fakeAdapter()
+  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern', getQuote: nordsternQuote }
+  mocks.getAdaptersForChain.mockReturnValue([socket, nordstern])
   await mount()
   expect(hook().routes.length).toBe(2)
 
@@ -810,7 +831,7 @@ it('keeps the route list on screen when the user pins one of them', async () => 
   let release: (() => void) | undefined
   const hold = async () => { await new Promise<void>((r) => { release = r }) }
   mocks.getAdaptersForChain.mockReturnValue([
-    { ...kyber, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return kyber.getQuote(...a) }) },
+    { ...socket, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return socket.getQuote(...a) }) },
     { ...nordstern, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return nordstern.getQuote(...a) }) },
   ])
 
@@ -830,13 +851,13 @@ it('reports what each route measured, not only what it quoted', async () => {
   // The picker lists the field. Listing quoted figures there while the winner is chosen on
   // measured ones lets the row tagged "best" be a route that lost — and a quote is the
   // aggregator's own claim about its own route, which nothing on this path can check.
-  const kyber = fakeAdapter()
-  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern' }
-  mocks.getAdaptersForChain.mockReturnValue([kyber, nordstern])
+  const socket = fakeAdapter()
+  const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern', getQuote: nordsternQuote }
+  mocks.getAdaptersForChain.mockReturnValue([socket, nordstern])
 
   await mount()
 
-  expect(Object.keys(hook().measuredOut).sort()).toEqual(['KyberSwap', 'Nordstern'])
+  expect(Object.keys(hook().measuredOut).sort()).toEqual(['Nordstern', 'Socket'])
 })
 
 it('still lists the field when sizing never converges', async () => {
@@ -849,11 +870,11 @@ it('still lists the field when sizing never converges', async () => {
     ...fakeAdapter(),
     // Always returns far too little, so every refinement round comes back short.
     getQuote: vi.fn(async (_f, _t, amountIn) => ({
-      aggregator: 'KyberSwap',
+      aggregator: 'Socket',
       amountIn,
       amountOut: '1',
       amountOutUsd: '0', gasUsd: '0', netReturnUsd: 0,
-      routeDetails: { protocol: 'KyberSwap', path: [] } as unknown as QuoteResponse['routeDetails'],
+      routeDetails: { protocol: 'Socket', path: [] } as unknown as QuoteResponse['routeDetails'],
       rawQuote: {},
     })) as unknown as Adapter['getQuote'],
   }
@@ -862,5 +883,5 @@ it('still lists the field when sizing never converges', async () => {
   await mount()
 
   expect(hook().preview).toBeNull()
-  expect(hook().routes.map((q) => q.aggregator)).toEqual(['KyberSwap'])
+  expect(hook().routes.map((q) => q.aggregator)).toEqual(['Socket'])
 })

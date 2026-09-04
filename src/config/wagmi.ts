@@ -1,30 +1,8 @@
 import { http, createConfig } from 'wagmi'
 import { createClient } from 'viem'
 import { mainnet, sepolia, arbitrum, optimism, polygon, base, baseSepolia } from 'wagmi/chains'
-import { injected } from 'wagmi/connectors'
+import { RPC_URLS } from './rpc'
 
-/**
- * Per-chain RPC overrides, `VITE_RPC_URL_<chainId>`. Chains without an entry fall back to the
- * chain's public RPC, which is a shared node with a rate limit meant for occasional use.
- *
- * Written out one line per chain rather than looked up by id, because Vite only substitutes
- * literal `import.meta.env.X` accesses at build time — a computed key reads as undefined in a
- * production bundle, which fails the same silent way as having no entry at all. `chains.ts` spells
- * its `VITE_STRATEGIES_ADDRESS_*` reads out for the same reason.
- *
- * Also lets a chain be pointed at a local fork for testing, without touching the others.
- */
-const RPC_URLS: Partial<Record<number, string>> = {
-  // `VITE_RPC_URL` is the original, pre-per-chain name for this one. Still honoured so an
-  // existing .env keeps working; `VITE_RPC_URL_1` wins where both are set.
-  [mainnet.id]: import.meta.env.VITE_RPC_URL_1 ?? import.meta.env.VITE_RPC_URL,
-  [optimism.id]: import.meta.env.VITE_RPC_URL_10,
-  [polygon.id]: import.meta.env.VITE_RPC_URL_137,
-  [base.id]: import.meta.env.VITE_RPC_URL_8453,
-  [arbitrum.id]: import.meta.env.VITE_RPC_URL_42161,
-  [sepolia.id]: import.meta.env.VITE_RPC_URL_11155111,
-  [baseSepolia.id]: import.meta.env.VITE_RPC_URL_84532,
-}
 
 /**
  * Calls per JSON-RPC POST.
@@ -42,7 +20,12 @@ const RPC_BATCH_SIZE = 10
 
 export const config = createConfig({
   chains: [mainnet, arbitrum, optimism, polygon, base, sepolia, baseSepolia],
-  connectors: [injected()],
+  // None configured explicitly, deliberately. wagmi's EIP-6963 discovery is on by default, so
+  // every installed wallet announces itself under its own name — and a generic `injected()`
+  // alongside it is the SAME provider listed a second time, which is a duplicate row in the
+  // picker and a `ConnectorAlreadyConnectedError` if the user takes the wrong one. Discovery
+  // also means a wallet only appears when it is actually installed.
+  connectors: [],
   // A client factory rather than a `transports` map, because `batch.multicall` is a viem
   // client option and is not reachable through `transports`.
   client({ chain }) {

@@ -1,4 +1,5 @@
 import type { Account, Address, Chain, PublicClient, Transport, WalletClient } from 'viem'
+import { assertWalletChain } from '../../lib/walletChain'
 import { getFlipperAddress } from '../../config/chains'
 import { getChainConfig } from '../../config/chains'
 import { getAdaptersForChain } from '../../adapters'
@@ -218,6 +219,7 @@ export async function submitFlip(
         const fees = await adjustedFees(publicClient)
 
         setStep('sending')
+        await assertWalletChain(walletClient, chainId)
         const hash = await walletClient.writeContract({
           address: flipper,
           abi: aaveV3FlipperAbi,

@@ -119,8 +119,12 @@ export function TxOutcomePanel({ outcome, tokens }: TxOutcomePanelProps) {
         </Row>
       )}
 
+      {/* Labelled by what it was actually compared against. "vs simulated" is drift between a
+          measurement and the chain and is normally thousandths of a percent; "vs quoted" is the
+          gap between an aggregator's own arithmetic and reality, which is a weaker claim and
+          routinely larger. Calling both of them "vs quote" made the two read as one number. */}
       {fill && dst && !isDisplayZero(fill.delta, dst.decimals) && (
-        <Row label="vs quote">
+        <Row label={fill.basis === 'quoted' ? 'vs quoted' : `vs ${fill.basis}`}>
           <span style={{ color: fill.delta < 0n ? T.danger : T.success }}>
             {fill.delta > 0n ? '+' : '-'}{amount(fill.delta < 0n ? -fill.delta : fill.delta, dst.decimals)} {dst.symbol}
           </span>

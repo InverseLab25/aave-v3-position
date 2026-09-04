@@ -32,6 +32,45 @@ import { getTxGasCap } from '../config/chains'
  */
 export const GAS_LIMIT_BUFFER_PERCENT = 150n
 
+/**
+ * Everything a leveraged open or close does BESIDES the swap: the flash loan, the supply, the
+ * borrow and the repayment, plus the contract's own bookkeeping.
+ *
+ * 1.5M, against a measured ~400-600k on Base, so roughly three times the real cost. Deliberately
+ * loose: unused gas is refunded, while a limit set too low is an out-of-gas revert with the
+ * margin already approved and the delegation already spent.
+ */
+export const STRATEGY_OVERHEAD_GAS = 1_500_000n
+
+/**
+ * A gas limit built from the swap the simulator already measured, rather than from a fresh
+ * `eth_estimateGas`.
+ *
+ * The estimate was a second full execution of the same transaction against the same state — the
+ * simulation that priced the route already ran it. What it did not run is the Aave half, which
+ * {@link STRATEGY_OVERHEAD_GAS} covers.
+ *
+ * No {@link bufferedGasLimit} on top. That buffer exists because an estimate is a guess made
+ * against state that may have moved by the time the transaction mines; the overhead allowance
+ * here is already several times the measured cost, and padding it again would send limits far
+ * past what any wallet will show without alarm.
+ */
+export function gasFromMeasuredSwap(
+  swapGas: bigint,
+  opts: { chainId?: number; label?: string } = {},
+): bigint {
+  const gas = swapGas + STRATEGY_OVERHEAD_GAS
+  const cap = getTxGasCap(opts.chainId)
+  if (cap !== undefined && gas > cap) {
+    throw new GasEstimateError(
+      `${opts.label ? `${opts.label}: ` : ''}needs ${gas} gas, above this chain's ${cap} ` +
+        `per-transaction cap. Nothing was submitted.`,
+      { overCap: true },
+    )
+  }
+  return gas
+}
+
 /** Apply the safety buffer to a raw gas estimate. */
 export function bufferedGasLimit(estimate: bigint): bigint {
   return (estimate * GAS_LIMIT_BUFFER_PERCENT) / 100n

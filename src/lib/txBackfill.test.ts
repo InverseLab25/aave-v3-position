@@ -11,6 +11,7 @@ import type { PositionEvent } from './strategiesLogs'
 
 const ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5' as Address
 const WALLET = '0x1111111111111111111111111111111111111111' as Address
+const STRATEGIES = '0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c' as Address
 const WETH = '0x4200000000000000000000000000000000000006' as Address
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as Address
 const A_WETH = '0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8' as Address
@@ -60,6 +61,7 @@ function openEvent(over: Partial<PositionEvent> = {}): PositionEvent {
 const CONTEXT: BackfillContext = {
   wallet: WALLET,
   chainId: 8453,
+  strategies: STRATEGIES,
   tokens: {
     [WETH.toLowerCase()]: { symbol: 'WETH', decimals: 18 },
     [USDC.toLowerCase()]: { symbol: 'USDC', decimals: 6 },

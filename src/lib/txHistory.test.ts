@@ -46,7 +46,7 @@ function entry(over: Partial<TxHistoryEntry> = {}): TxHistoryEntry {
       returnAmount: 10n ** 18n,
     },
     rate: '0.000293',
-    fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
+    fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false, basis: 'simulated' as const },
     deltas: [{ token: WETH, symbol: 'WETH', decimals: 18, delta: 10n ** 18n }],
     source: 'live',
     blockNumber: null,
@@ -341,7 +341,7 @@ describe('mergeHistory', () => {
     })
 
     expect(loadHistory(storage)[0].fill).toEqual({
-      delta: -2_700000n, percent: -0.0792, belowFloor: false,
+      delta: -2_700000n, percent: -0.0792, belowFloor: false, basis: 'simulated',
     })
   })
 

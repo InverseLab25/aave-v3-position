@@ -42,7 +42,7 @@ function entry(over: Partial<TxHistoryEntry> = {}): TxHistoryEntry {
       returnAmount: 10n ** 18n,
     },
     rate: '0.000293',
-    fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
+    fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false, basis: 'simulated' as const },
     deltas: [{ token: WETH, symbol: 'aWETH', decimals: 18, delta: 10n ** 18n }],
     source: 'live',
     blockNumber: null,
@@ -176,7 +176,7 @@ describe('TxHistoryList', () => {
 
   it('shows no slippage badge when the fill matched the quote exactly', () => {
     // A delta of zero rendered "+0.000000 WETH" — a badge whose content is that nothing happened.
-    appendHistory(localStorage, entry({ fill: { delta: 0n, percent: 0, belowFloor: false } }))
+    appendHistory(localStorage, entry({ fill: { delta: 0n, percent: 0, belowFloor: false, basis: 'simulated' as const } }))
     show()
     expand()
 

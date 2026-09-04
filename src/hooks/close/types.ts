@@ -1,4 +1,5 @@
 import type { Address } from 'viem'
+import type { OutBasis } from '../../lib/deleverage'
 import type { StatedRate } from '../../lib/swapRoute'
 import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'
@@ -45,6 +46,12 @@ export interface CloseInput {
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
 export interface ClosePlan {
+  /** Whose word `expectedOut` is on — see `expectedOutcome`. */
+  expectedBasis: OutBasis
+  /** What the aggregator quoted, before anything measured it. See OpenPreview.quotedOut. */
+  quotedOut: bigint
+  /** Gas the simulator measured for the swap alone. See OpenPreview.swapGasUsed. */
+  swapGasUsed: bigint | null
   /** AaveV3Strategies — the contract the close executes against. */
   strategies: Address
   collateralAddr: Address
@@ -148,6 +155,10 @@ export interface ClosePreview {
    * Debt token per 1 collateral token on this route. Derived from the quote, not from oracle
    * prices, so it carries the route's price impact at the size being swapped.
    */
+  /** Whose word the expected rate is on — see `expectedOutcome`. */
+  expectedBasis: OutBasis
+  /** The aggregator's own rate, where a simulation displaced it. Null otherwise. */
+  quotedRate: StatedRate | null
   rate: StatedRate | null
   /**
    * The price implied by the router's guaranteed floor — `minDebtOut / requiredIn`. The

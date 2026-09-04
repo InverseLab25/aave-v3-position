@@ -370,6 +370,52 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   gap: var(--space-2);
 }
 
+/*
+ * Wallet picker rows.
+ *
+ * Separate bordered buttons with space between them, not one divided group. Each wallet is its
+ * own choice and reads better as its own control; the grouped-list version put them in a single
+ * box where the rows looked like fields of one thing.
+ */
+.wallet-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.wallet-option {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  width: 100%;
+  /* Vertical padding smaller than horizontal: the icon already sets the row's height, so equal
+     padding on all four sides made a tall block around a 20px mark. */
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-base);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.wallet-option:hover:not(:disabled) {
+  background: var(--color-surface-alt);
+  border-color: var(--color-primary);
+}
+
+.wallet-option:disabled { opacity: 0.5; cursor: default; }
+
+/* Sized even when absent, so a wallet that reports no icon keeps its label where the rest sit. */
+.wallet-option-icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-sm);
+}
+
 /* ── 15. Info row (key-value pair) ───────────────────────────────────────── */
 .info-row {
   display: flex;

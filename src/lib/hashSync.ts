@@ -39,6 +39,14 @@ interface HashSyncInput {
   chainId: number
   /** Every hash the indexer reported for this wallet. Duplicates and repeats are expected. */
   hashes: readonly Hex[]
+  /**
+   * Hashes to fetch again whatever the screening cache says.
+   *
+   * For rows already filed that are known to be incomplete. Kept separate from `hashes` because
+   * these deliberately cost a receipt every round they stay incomplete, which is the price of
+   * the row being repairable at all.
+   */
+  reread?: readonly Hex[]
   tokens: Record<string, TokenMeta>
   hidden: readonly Address[]
 }
@@ -87,13 +95,22 @@ export async function syncChainFromHashes({
   wallet,
   chainId,
   hashes,
+  reread,
   tokens,
   hidden,
 }: HashSyncInput): Promise<HashSyncResult> {
   const scope = { wallet, chainId }
   // De-duplicated and filtered against the cache in one step: one open shows up in the indexer as
   // a supply, a borrow and a second supply, all under the same hash.
-  const todo = unscreened(storage, scope, hashes)
+  //
+  // `reread` skips that filter, and has to. A row already screened is never offered again, so a
+  // row that was filed incomplete — decoded before its router could be read, say — can never
+  // repair itself no matter how often the user resyncs. Worse, the hash may not be in `hashes`
+  // at all: the indexer misses some of our own transactions, so a row we wrote live is sometimes
+  // the only record that it happened.
+  const forced = reread ?? []
+  const queued = new Set(forced.map((h) => h.toLowerCase()))
+  const todo = [...forced, ...unscreened(storage, scope, hashes).filter((h) => !queued.has(h.toLowerCase()))]
   if (todo.length === 0) return { examined: 0, found: 0 }
 
   const receipts = await mapWithLimit(todo, RECEIPT_CONCURRENCY, (hash) =>
@@ -109,7 +126,7 @@ export async function syncChainFromHashes({
     if (event && receipt) found.push({ event, receipt })
   }
 
-  const context: BackfillContext = { wallet, chainId, tokens, hidden }
+  const context: BackfillContext = { wallet, chainId, strategies, tokens, hidden }
   const entries = await entriesFromReceipts(client, found, context)
 
   // No range. See the note at the top of this file: walking hashes proves nothing about the

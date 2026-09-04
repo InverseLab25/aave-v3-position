@@ -3,7 +3,7 @@ import { encodeAbiParameters, parseAbiParameters, type Address, type Hex } from 
 import { syncChainFromHashes } from './hashSync'
 import { POSITION_OPENED_TOPIC } from './receiptScreen'
 import { loadScreened } from './screenCache'
-import { loadHistory } from './txHistory'
+import { loadHistory, mergeHistory } from './txHistory'
 import { SWAPPED_TOPIC } from './txOutcome'
 import type { ScreenedReceipt } from './receiptScreen'
 import type { DelegationStorage } from './delegationCache'
@@ -84,6 +84,61 @@ describe('syncChainFromHashes', () => {
     expect(rows[0].hash).toBe(hash(1))
     expect(rows[0].kind).toBe('open')
     expect(rows[0].swap).toMatchObject({ srcToken: USDC, dstToken: WETH, spentAmount: 1_899_171_711n })
+  })
+
+  it('reads a hash again when told to, though screening says it is done', async () => {
+    // How an already-filed row repairs itself. Screening remembers every hash it has judged, so
+    // a row decoded by a reader that could not see its swap would stay incomplete forever — and
+    // the indexer does not always list our own transactions, so its hash may never be offered
+    // again either. `reread` is the way back to that receipt.
+    const storage = memoryStorage()
+    const receipts = { [hash(1)]: openReceipt(hash(1)) }
+
+    const first = client(receipts)
+    await syncChainFromHashes({ ...CONTEXT, client: first, storage, hashes: [hash(1)] })
+    expect(first.getTransactionReceipt).toHaveBeenCalledTimes(1)
+
+    const second = client(receipts)
+    await syncChainFromHashes({ ...CONTEXT, client: second, storage, hashes: [hash(1)] })
+    expect(second.getTransactionReceipt).not.toHaveBeenCalled()
+
+    const third = client(receipts)
+    await syncChainFromHashes({ ...CONTEXT, client: third, storage, hashes: [hash(1)], reread: [hash(1)] })
+    expect(third.getTransactionReceipt).toHaveBeenCalledTimes(1)
+  })
+
+  it('fetches a re-read hash once, not twice, when the indexer lists it too', async () => {
+    const storage = memoryStorage()
+    const c = client({ [hash(1)]: openReceipt(hash(1)) })
+
+    await syncChainFromHashes({ ...CONTEXT, client: c, storage, hashes: [hash(1)], reread: [hash(1)] })
+
+    expect(c.getTransactionReceipt).toHaveBeenCalledTimes(1)
+  })
+
+  it('repairs a stored row the indexer no longer lists', async () => {
+    // The failure this exists for. A row filed with no swap on it, its hash already screened, and
+    // the indexer not listing the transaction at all — so `hashes` is empty and nothing else can
+    // ever offer that receipt again. Only the row's own hash gets back to it.
+    const storage = memoryStorage()
+    const receipts = { [hash(1)]: openReceipt(hash(1)) }
+
+    const first = client(receipts)
+    await syncChainFromHashes({ ...CONTEXT, client: first, storage, hashes: [hash(1)] })
+    // Blank the swap the way the old decoder left it.
+    mergeHistory(storage, {
+      wallet: WALLET, chainId: 8453, range: null,
+      entries: [{ ...loadHistory(storage, { wallet: WALLET, chainId: 8453 })[0], swap: null, source: 'chain' }],
+    })
+
+    const second = client(receipts)
+    await syncChainFromHashes({ ...CONTEXT, client: second, storage, hashes: [], reread: [hash(1)] })
+
+    expect(second.getTransactionReceipt).toHaveBeenCalledTimes(1)
+    expect(loadHistory(storage, { wallet: WALLET, chainId: 8453 })[0].swap).toMatchObject({
+      srcToken: USDC,
+      dstToken: WETH,
+    })
   })
 
   it('never reads the same receipt twice across runs', async () => {

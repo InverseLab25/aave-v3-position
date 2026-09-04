@@ -32,7 +32,7 @@ interface IRouterAllowlist {
 ///      `_checkReturnAmount` is pro-rata, so absolute output can fall below
 ///      `desc.minReturnAmount`. The contract's own `minOut` (the full debt) and its
 ///      `afterBalance < assets` check are what actually bound this — do not relax them.
-address constant KYBERSWAP_ROUTER_V2 = 0x6131B5fae19EA4f9D964eAc0408E4408b66337b5;
+address constant KYBERSWAP_ROUTER_V2 = q;
 
 /// @dev Nordstern's Guard, the `to` its aggregator API returns for a swap. Per-chain rather than
 ///      one constant like KyberSwap's: the two addresses differ, though `eth_getCode` returns
@@ -64,6 +64,30 @@ address constant KYBERSWAP_ROUTER_V2 = 0x6131B5fae19EA4f9D964eAc0408E4408b66337b
 ///      `GET api.nordstern.finance/aggregator/{chainId}` returned for a USDC→WETH swap.
 address constant NORDSTERN_GUARD_BASE = 0xC87De04e2EC1F4282dFF2933A2D58199f688fC3d;
 address constant NORDSTERN_GUARD_ARBITRUM = 0x57f96440f1b1cAD53B40A8924BD540b1279A491c;
+
+/// @dev Socket's AllowanceHolder, the `to` its v3 swap API returns for every route. One address
+///      on Base and Arbitrum alike, confirmed by reading `getAllowedRouters()` on both. Already
+///      allowlisted there; listed here so the set this script signs matches what is on chain.
+///
+///      Reviewed against the same three properties as KYBERSWAP_ROUTER_V2:
+///        - approve target equals call target. Every quote returns `approval.spenderAddress`
+///          and `txData.to` as this one address, with the underlying router call wrapped in
+///          the calldata, which is what `validateSwapTx` requires;
+///        - output lands on the caller. `receiverAddress` is honoured and appears in the
+///          decoded swap struct as the recipient;
+///        - msg.value is zero for an ERC20 input, which is all `LibCall.callContract` sends.
+///
+///      Socket signs each route for whoever `userAddress` names and its AllowanceHolder rejects
+///      anyone else with `CallerNotSignedUser()` (0x85132e0f). Naming the Strategies contract
+///      there is the whole requirement; the `contractCaller` parameter adds nothing and the app
+///      does not send it. Quoted and simulated as the contract on Base at 25,243 USDC, every
+///      route executed within 0.003% of its quote.
+///
+///      One cost to know about: the unkeyed public host takes 20bps of the INPUT on every
+///      route, to 0xe3D091bcb9406Ddb9a121e37f4eb1345336AFBBf. A request keyed with `x-api-key`
+///      and an `affiliate` header comes back with no fee. KyberSwap and Nordstern take none
+///      either way, so an unkeyed Socket route starts 0.2% behind on the same trade.
+address constant SOCKET_ALLOWANCE_HOLDER = 0x50c4E75a512F2A14A7b304787Adf79C4531A5909;
 
 /// @dev `AaveV3Deleverager` on Ethereum mainnet.
 address constant DELEVERAGER_ETHEREUM = 0x834796774Eb472E571B5c21Da438069225C2B162;
@@ -148,8 +172,9 @@ contract RouterSetup is Script {
 
         // Only the entries that actually change state. `setRouters` is idempotent — the
         // allowlist is an EnumerableSet — so re-running against a configured chain would
-        // otherwise sign a transaction that emits events and changes nothing. Ethereum is
-        // already set up; Base and Arbitrum were deployed with an empty allowlist.
+        // otherwise sign a transaction that emits events and changes nothing. All three chains
+        // are configured as of 2026-09-04: Ethereum holds KyberSwap, Base and Arbitrum hold
+        // KyberSwap, their Nordstern Guard and Socket's AllowanceHolder.
         uint256 pendingCount;
         address[] memory pending = new address[](routers.length);
         for (uint256 i; i < routers.length; ++i) {

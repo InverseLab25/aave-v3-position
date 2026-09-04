@@ -4,12 +4,15 @@ import { useEffect, useState } from 'react'
 import type { Address } from 'viem'
 
 // Only the two on-chain preflight reads are mocked, plus wagmi. They are the first thing the
-// quoting effect does, so counting `getPauseState` calls counts effect RUNS — which is exactly
+// quoting effect does, so counting `readContractState` calls counts effect RUNS — which is exactly
 // what this file is about. The adapters are left unmocked and simply find no route on the fake
 // chain id, so each run stops after the preflight.
 const mocks = vi.hoisted(() => ({
   getPauseState: vi.fn(),
   getAllowedRouters: vi.fn(),
+  // Stubbed WITHOUT its cache: the effect's first read is what these tests count, and a cache
+  // would collapse every run after the first into zero calls.
+  readContractState: vi.fn(),
   usePublicClient: vi.fn(),
   useChainId: vi.fn(),
   useConnection: vi.fn(),
@@ -21,6 +24,7 @@ vi.mock('../lib/strategies-sdk', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getPauseState: mocks.getPauseState,
   getAllowedRouters: mocks.getAllowedRouters,
+  readContractState: mocks.readContractState,
 }))
 vi.mock('wagmi', () => ({
   usePublicClient: mocks.usePublicClient,
@@ -78,6 +82,9 @@ beforeEach(() => {
   mocks.useSignTypedData.mockReturnValue({ signTypedDataAsync: vi.fn() })
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue(['0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'])
+  mocks.readContractState.mockResolvedValue({
+    paused: false, routers: ['0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'],
+  })
 })
 
 /**
@@ -111,7 +118,7 @@ it('does not re-quote when a re-render rebuilds an input of identical values', a
 
   await settle()
 
-  expect(mocks.getPauseState).toHaveBeenCalledTimes(1)
+  expect(mocks.readContractState).toHaveBeenCalledTimes(1)
 })
 
 it('re-quotes when an input value actually changes', async () => {
@@ -129,14 +136,14 @@ it('re-quotes when an input value actually changes', async () => {
 
   render(<Changing />)
   await settle()
-  expect(mocks.getPauseState).toHaveBeenCalledTimes(1)
+  expect(mocks.readContractState).toHaveBeenCalledTimes(1)
 
   await act(async () => {
     vi.advanceTimersByTime(1000)
   })
   await settle()
 
-  expect(mocks.getPauseState).toHaveBeenCalledTimes(2)
+  expect(mocks.readContractState).toHaveBeenCalledTimes(2)
 })
 
 it('does not quote while the panel is out of view', async () => {
@@ -153,7 +160,7 @@ it('does not quote while the panel is out of view', async () => {
 
   await settle()
 
-  expect(mocks.getPauseState).not.toHaveBeenCalled()
+  expect(mocks.readContractState).not.toHaveBeenCalled()
 })
 
 it('quotes as soon as the panel comes back into view', async () => {
@@ -171,12 +178,12 @@ it('quotes as soon as the panel comes back into view', async () => {
   render(<Resuming />)
 
   await settle()
-  expect(mocks.getPauseState).not.toHaveBeenCalled()
+  expect(mocks.readContractState).not.toHaveBeenCalled()
 
   await act(async () => {
     vi.advanceTimersByTime(1000)
   })
   await settle()
 
-  expect(mocks.getPauseState).toHaveBeenCalledTimes(1)
+  expect(mocks.readContractState).toHaveBeenCalledTimes(1)
 })

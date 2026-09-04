@@ -36,6 +36,7 @@ const args = {
   wallet: WALLET,
   pair: { srcToken: USDC, dstToken: WETH },
   expectedOut: 1_003_307_090_025_359_338n,
+  basis: 'simulated' as const,
   minOut: 1_000_000_000_000_000_000n,
 }
 

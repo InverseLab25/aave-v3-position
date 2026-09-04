@@ -18,7 +18,7 @@ const outcome: TxOutcome = {
     spentAmount: 1_899_171_711n,
     returnAmount: 1_003_307_090_025_359_338n,
   },
-  fill: { delta: 0n, percent: 0, belowFloor: false },
+  fill: { delta: 0n, percent: 0, belowFloor: false, basis: 'simulated' as const },
   deltas: [],
 }
 

@@ -1,4 +1,4 @@
-import type { Adapter, QuoteResponse, RouteHop, TransactionPayload } from './types';
+import type { Adapter, Asset, QuoteResponse, RouteHop, TransactionPayload } from './types';
 import { fetchQuoteJson, limitedFetch } from './http';
 
 /**
@@ -88,6 +88,25 @@ interface NordsternQuote {
   src: string;
   dst: string;
   amount: string;
+  /**
+   * The transaction the quote round already fetched, and who it was addressed to.
+   *
+   * Nordstern answers a quote and a build from ONE endpoint — the same URL with a different
+   * `from` — so a quote taken for the real caller has already paid for the build. Without this
+   * every route costs two identical round trips, which is what it used to do: quote against a
+   * placeholder, throw the transaction away, ask again.
+   *
+   * Absent from a `getQuote` result, whose round used the placeholder and whose calldata
+   * therefore belongs to nobody.
+   */
+  prebuilt?: {
+    caller: string;
+    to: string;
+    data: string;
+    value: string;
+    amountOut: string;
+    gasEstimate?: string;
+  };
 }
 
 /**
@@ -103,16 +122,89 @@ interface NordsternQuote {
  */
 export const ATTRIBUTION = {
   Referer:
-    typeof location !== 'undefined' ? location.origin : 'https://defi-route.siddhnathbrass.in',
+    typeof location !== 'undefined' ? location.origin : 'https://defiroute.siddhnathbrass.in',
 };
 
 const routeUrl = (chainId: number, q: NordsternQuote, slippage: number, from: string) =>
   `https://api.nordstern.finance/aggregator/${chainId}` +
   `?src=${q.src}&dst=${q.dst}&amount=${q.amount}&from=${from}&slippage=${slippage}`;
 
+/**
+ * One route as a quote, with the transaction kept when it was fetched for the real caller.
+ *
+ * Shared by both entry points so the two readings of the same response cannot drift.
+ */
+const toQuote = (
+  route: NordsternRoute,
+  q: NordsternQuote,
+  toAsset: Asset,
+  amountIn: string,
+  caller?: string,
+): QuoteResponse | null => {
+  if (!route?.toAmount) return null;
+
+  const outUnits = Number(route.toAmount) / 10 ** toAsset.decimals;
+  const amountOutUsd = toAsset.priceInUsd ? outUnits * Number(toAsset.priceInUsd) : 0;
+
+  return {
+    aggregator: 'Nordstern',
+    amountIn,
+    amountOut: route.toAmount,
+    amountOutUsd: amountOutUsd.toFixed(2),
+    gasEstimate: route.gasEstimate,
+    gasUsd: '0',
+    netReturnUsd: amountOutUsd,
+    rawQuote: {
+      ...q,
+      ...(caller && route.tx?.data
+        ? {
+            prebuilt: {
+              caller,
+              to: route.tx.to,
+              data: route.tx.data,
+              value: String(route.tx.value ?? 0),
+              amountOut: route.toAmount,
+              gasEstimate: route.gasEstimate,
+            },
+          }
+        : {}),
+    },
+    routeDetails: {
+      type: 'nordstern',
+      totalAmountIn: BigInt(amountIn),
+      paths: toPaths(route.swaps),
+    },
+  };
+};
+
 export const nordsternAdapter: Adapter = {
   name: 'Nordstern',
   supportsExecution: true,
+
+  getQuotes: async ({
+    fromAsset, toAsset, amountIn, slippage, chainId, caller, signal,
+  }): Promise<QuoteResponse[]> => {
+    if (!GUARDS[chainId]) return [];
+    const q: NordsternQuote = {
+      src: fromAsset.underlyingAsset,
+      dst: toAsset.underlyingAsset,
+      amount: amountIn,
+    };
+    try {
+      // Addressed to the caller that will execute it, so the transaction that comes back is the
+      // one we would otherwise ask for again. One route per request — Nordstern returns its own
+      // best split rather than a field, so this is a single-entry list.
+      const route = await fetchQuoteJson<NordsternRoute>(
+        routeUrl(chainId, q, slippage, caller),
+        { signal, headers: ATTRIBUTION },
+      );
+      const quote = toQuote(route, q, toAsset, amountIn, caller);
+      return quote ? [quote] : [];
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError' || signal?.aborted) return [];
+      throw e;
+    }
+  },
 
   getQuote: async (fromAsset, toAsset, amountIn, slippage, chainId, signal): Promise<QuoteResponse | null> => {
     if (!GUARDS[chainId]) return null;
@@ -126,32 +218,7 @@ export const nordsternAdapter: Adapter = {
         routeUrl(chainId, q, slippage, QUOTE_PLACEHOLDER),
         { signal, headers: ATTRIBUTION },
       );
-      if (!route?.toAmount) return null;
-
-      const outUnits = Number(route.toAmount) / 10 ** toAsset.decimals;
-      const amountOutUsd = toAsset.priceInUsd ? outUnits * Number(toAsset.priceInUsd) : 0;
-
-      return {
-        aggregator: 'Nordstern',
-        amountIn,
-        amountOut: route.toAmount,
-        amountOutUsd: amountOutUsd.toFixed(2),
-        // Reported as given. Their docs say to add 20% before using it, and measured against a
-        // Tenderly simulation it ran ~100% under — but this figure reaches `validateSwapTx`,
-        // where over-stating costs a route that would have run. Padding belongs where a limit is
-        // set, not where one is judged.
-        gasEstimate: route.gasEstimate,
-        // No USD figures of its own, so `routeCostPercent` cannot be derived the way KyberSwap's
-        // is. Left at zero rather than invented; the caller reads it as "unpriced".
-        gasUsd: '0',
-        netReturnUsd: amountOutUsd,
-        rawQuote: q,
-        routeDetails: {
-          type: 'nordstern',
-          totalAmountIn: BigInt(amountIn),
-          paths: toPaths(route.swaps),
-        },
-      };
+      return toQuote(route, q, toAsset, amountIn);
     } catch (e) {
       // An abort is the caller withdrawing interest, not a fault. Same reading as KyberSwap's.
       if ((e as Error)?.name === 'AbortError' || signal?.aborted) return null;
@@ -162,8 +229,26 @@ export const nordsternAdapter: Adapter = {
   buildTransaction: async (quote, slippage, walletAddress, chainId): Promise<TransactionPayload> => {
     const guard = GUARDS[chainId];
     if (!guard) throw new Error(`Nordstern: unsupported chain ${chainId}`);
-    // Re-asked rather than carried over: the quote was addressed to a placeholder, and the
-    // recipient is inside the calldata. Not cacheable for the same reason KyberSwap's build is not.
+
+    // Already fetched, for this caller. Nordstern serves quotes and builds from one endpoint, so
+    // asking again would repeat the request the quote round just made.
+    const prebuilt = (quote.rawQuote as NordsternQuote).prebuilt;
+    if (prebuilt && prebuilt.caller.toLowerCase() === walletAddress.toLowerCase()) {
+      if (prebuilt.to.toLowerCase() !== guard.toLowerCase()) {
+        throw new Error(`Nordstern: route targets ${prebuilt.to}, not the Guard ${guard}`);
+      }
+      return {
+        to: prebuilt.to,
+        data: prebuilt.data,
+        value: prebuilt.value,
+        spender: prebuilt.to,
+        amountOut: prebuilt.amountOut,
+        gasEstimate: prebuilt.gasEstimate,
+      };
+    }
+
+    // No prebuilt: this quote came from `getQuote`, which used a placeholder caller, so the
+    // calldata belongs to nobody and the route has to be asked for again.
     const res = await limitedFetch(
       routeUrl(chainId, quote.rawQuote as NordsternQuote, slippage, walletAddress),
       { headers: ATTRIBUTION },

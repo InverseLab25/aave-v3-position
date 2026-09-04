@@ -33,7 +33,21 @@ export type RouteDetails =
   | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap' | 'socket'; info: string };
 
 export interface QuoteResponse {
+  /**
+   * Which adapter produced this, and therefore which one builds it. Matched by name against
+   * the adapter list, so it is the adapter's name and never the underlying venue's.
+   */
   aggregator: string;
+  /**
+   * What to call this ROW, where that differs from the adapter that fetched it.
+   *
+   * Socket answers one request with a route per underlying venue, so `aggregator` is 'Socket'
+   * five times over — which collides as a key and reads as five identical rows on screen. This
+   * names the venue instead ('0x', 'Bitget'), unique within one adapter's answer. Everything
+   * that keys or labels a route by identity goes through `routeKey`, which falls back to
+   * `aggregator` for the adapters that return one route and need none of this.
+   */
+  routeId?: string;
   amountIn: string;
   amountOut: string;
   /**
@@ -104,5 +118,41 @@ export interface Adapter {
   minQuoteIntervalMs?: number;
   /** `signal` aborts a superseded request so it stops consuming the aggregator. */
   getQuote: (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number, signal?: AbortSignal) => Promise<QuoteResponse | null>;
+  /**
+   * Every route this aggregator offers, rather than only its best.
+   *
+   * Optional, and only worth implementing for an aggregator that is itself a router over
+   * routers. Socket answers one request with a route per underlying aggregator — 0x, Bitget,
+   * Fynd and the rest — and those differ from each other as much as two adapters do. Returning
+   * only the winner throws away the field the caller is meant to rank on measured output.
+   *
+   * Unlike {@link getQuote} this takes the REAL caller rather than a placeholder, because the
+   * quotes it returns carry executable calldata addressed to that caller. That is the point:
+   * `buildTransaction` on one of these needs no second request, which removes a round trip per
+   * candidate from a preview that refreshes every few seconds.
+   */
+  getQuotes?: (args: QuotesRequest) => Promise<QuoteResponse[]>;
   buildTransaction: (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number) => Promise<TransactionPayload>;
+}
+
+export interface QuotesRequest {
+  fromAsset: Asset;
+  toAsset: Asset;
+  amountIn: string;
+  /** A decimal percentage, as `getQuote` takes it. */
+  slippage: number;
+  chainId: number;
+  /** Who will send the transaction. Baked into the returned calldata. */
+  caller: string;
+  /**
+   * Where the output should land, when that is not the caller.
+   *
+   * A separate field because Socket treats them separately: `userAddress` is who the route is
+   * signed for and `receiverAddress` is who receives, and collapsing the two into one address
+   * makes a swap that pays somebody else inexpressible. Defaults to `caller`, which is what
+   * every flow here wants today — the leverage and close swaps run inside AaveV3Strategies
+   * mid-flash-loan and the output has to come back to the contract that owes the loan.
+   */
+  receiver?: string;
+  signal?: AbortSignal;
 }

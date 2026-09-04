@@ -42,6 +42,53 @@ export async function getAllowedRouters(
   })) as readonly Address[];
 }
 
+/**
+ * The two reads every preview needs before it can quote, cached.
+ *
+ * Both change only when the owner sends a transaction, and both were being read again on every
+ * run — every debounce while the user types and every three seconds while the confirmation is
+ * open. Keyed on the CHAIN as well as the address: AaveV3Strategies sits at one CREATE3 address
+ * on Base and Arbitrum, so the address alone would hand one chain the other's allowlist.
+ *
+ * Cached as the promise rather than the value, so two runs racing on a cold key share one
+ * request instead of both issuing it. A rejected promise is dropped so the next run retries
+ * rather than replaying a dead RPC for a minute.
+ *
+ * The TTL is safety rather than correctness: the contract enforces its own pause and allowlist,
+ * so the worst a stale read does is offer a route the send then rejects. {@link
+ * forgetContractState} is for the user's explicit refresh, which should see the chain as it is.
+ */
+export interface ContractState {
+  paused: boolean
+  routers: readonly Address[]
+}
+
+const CONTRACT_STATE_TTL_MS = 60_000
+const contractState_ = new Map<string, { at: number; value: Promise<ContractState> }>()
+
+export function readContractState(
+  client: ReadClient,
+  chainId: number,
+  contract: Address,
+): Promise<ContractState> {
+  const key = `${chainId}:${contract.toLowerCase()}`
+  const hit = contractState_.get(key)
+  if (hit && Date.now() - hit.at < CONTRACT_STATE_TTL_MS) return hit.value
+
+  const value = Promise.all([getPauseState(client, contract), getAllowedRouters(client, contract)])
+    .then(([{ paused }, routers]) => ({ paused, routers }))
+  value.catch(() => {
+    if (contractState_.get(key)?.value === value) contractState_.delete(key)
+  })
+  contractState_.set(key, { at: Date.now(), value })
+  return value
+}
+
+/** Drop every cached read, so the next preview sees the chain as it is now. */
+export function forgetContractState(): void {
+  contractState_.clear()
+}
+
 /** Single-router check — cheaper than enumerating when a candidate is already in hand. */
 export async function isRouterAllowed(
   client: ReadClient,

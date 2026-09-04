@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { forgetContractState } from '../lib/strategies-sdk'
 import { renderHook, act } from '@testing-library/react'
 import { swappedLog, transferLog, ZERO_ADDRESS } from '../test/receiptLogs'
 import { parseUnits, WaitForTransactionReceiptTimeoutError } from 'viem'
@@ -50,7 +51,12 @@ vi.mock('../lib/aaveStatics', () => ({
   getReserveTokens: mocks.getReserveTokens,
   getATokenName: mocks.getATokenName,
 }))
-vi.mock('../adapters', () => ({ getAdaptersForChain: mocks.getAdaptersForChain }))
+// Partial: `quoteField` has to stay real. It is the thing that turns one adapter into the list
+// of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
+vi.mock('../adapters', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getAdaptersForChain: mocks.getAdaptersForChain,
+}))
 // Partial: `AggregatorHttpError` has to be the real class, because the hook branches on
 // `instanceof` to tell a throttled aggregator from a pair with no route.
 vi.mock('../adapters/http', async (orig) => ({
@@ -103,7 +109,7 @@ const SIZED = {
   covered: true,
   guaranteed: true,
   best: {
-    aggregator: 'KyberSwap',
+    aggregator: 'Socket',
     amountIn: parseUnits('7', 18).toString(),
     amountOut: parseUnits('21000', 6).toString(),
     rawAmountInUsd: '21000',
@@ -139,21 +145,24 @@ const baseInput = { collateral: WETH, debtAsset: USDC, slippagePercent: 0.5 }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // The pause/allowlist cache is module-level and keyed on chain and address, which every test
+  // here shares — without this a test that pauses the contract poisons the ones after it.
+  forgetContractState()
   mocks.useConnection.mockReturnValue({ address: USER })
   mocks.useChainId.mockReturnValue(1)
-  mocks.useWalletClient.mockReturnValue({ data: { signTypedData: vi.fn() } })
+  mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData: vi.fn() } })
   mocks.useConfig.mockReturnValue({})
   mocks.usePublicClient.mockReturnValue({ readContract: defaultReads() })
   mocks.getStrategiesAddress.mockReturnValue(DELEVERAGER)
   mocks.getChainConfig.mockReturnValue({
     name: 'Ethereum',
     aave: { poolAddressesProvider: '0x6666666666666666666666666666666666666666' },
-    adapters: ['KyberSwap'],
+    adapters: ['Socket'],
   })
   mocks.getPoolDataProvider.mockResolvedValue('0x7777777777777777777777777777777777777777')
   mocks.getReserveTokens.mockResolvedValue({ aToken: ATOKEN, vDebt: VDEBT })
   mocks.getATokenName.mockResolvedValue('Aave Ethereum WETH')
-  mocks.getAdaptersForChain.mockReturnValue([{ name: 'KyberSwap', getQuote: vi.fn() }])
+  mocks.getAdaptersForChain.mockReturnValue([{ name: 'Socket', getQuote: vi.fn() }])
   mocks.oracleSeed.mockReturnValue(parseUnits('7', 18))
   mocks.sizeSwap.mockResolvedValue(SIZED)
   // The preview builds and measures the field now, so every path through it goes through
@@ -168,7 +177,7 @@ beforeEach(() => {
       amountOut: SIZED.expectedOut.toString(),
     },
     sim: null,
-    measuredOut: { KyberSwap: SIZED.expectedOut },
+    measuredOut: { Socket: SIZED.expectedOut },
     rejected: [],
   } as never)
 })
@@ -188,7 +197,7 @@ const measures = (out: bigint) =>
       to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString(),
     },
     sim: null,
-    measuredOut: { KyberSwap: out },
+    measuredOut: { Socket: out },
     rejected: [],
   } as never)
 
@@ -204,7 +213,7 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(error).toBeNull()
     expect(preview?.covered).toBe(true)
     expect(preview?.guaranteed).toBe(true)
-    expect(preview?.aggregator).toBe('KyberSwap')
+    expect(preview?.aggregator).toBe('Socket')
     // 10 supplied, 7 swapped — the remaining 3 are never withdrawn.
     expect(preview?.collateralSwapped).toBe('7')
     expect(preview?.collateralKeptSupplied).toBe('3')
@@ -224,8 +233,8 @@ describe('buildPlan — validation before any signature is requested', () => {
     // "this pair cannot be closed" — which is both wrong and unactionable.
     mocks.getAdaptersForChain.mockReturnValue([
       {
-        name: 'KyberSwap',
-        getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(429, 'https://kyber/routes')),
+        name: 'Socket',
+        getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(429, 'https://socket/routes')),
       },
     ])
     sizeSwapCallingQuoteAt()
@@ -240,7 +249,7 @@ describe('buildPlan — validation before any signature is requested', () => {
   it('leaves an answered-but-empty quote to the ordinary no-route path', async () => {
     // A refusal is not a verdict on the pair; an actual empty answer is.
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(null) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(null) },
     ])
     let ranked: unknown[] | null = null
     mocks.sizeSwap.mockImplementation(async ({ quoteAt }: { quoteAt: (n: bigint) => Promise<unknown[]> }) => {
@@ -260,7 +269,7 @@ describe('buildPlan — validation before any signature is requested', () => {
         name: 'OpenOcean',
         getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(503, 'https://oo/quote')),
       },
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
     sizeSwapCallingQuoteAt()
 
@@ -271,20 +280,20 @@ describe('buildPlan — validation before any signature is requested', () => {
 
   it('lists every aggregator that answered, so the picker has something to offer', async () => {
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
     sizeSwapCallingQuoteAt()
 
     const { preview } = await previewWith()
 
-    expect(preview?.routes.map((r) => r.aggregator)).toEqual(['KyberSwap'])
+    expect(preview?.routes.map((r) => r.aggregator)).toEqual(['Socket'])
   })
 
   it('names the pinned aggregator when it is the one that cannot serve the swap', async () => {
     // The pair priced fine — one route answered and was dropped by the pin. Reporting this as a
     // pair problem would send the user hunting for liquidity that is right there.
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
     sizeSwapCallingQuoteAt()
 
@@ -413,7 +422,7 @@ const SIG = `0x${'11'.repeat(32)}${'22'.repeat(32)}1b` as const
 
 /** Ranked-quote shape `rankRoutes` will keep: the aggregator must be in COMPATIBLE_ADAPTERS. */
 const quote = (amountOut: bigint) => ({
-  aggregator: 'KyberSwap',
+  aggregator: 'Socket',
   amountIn: parseUnits('7', 18).toString(),
   amountOut: amountOut.toString(),
   netReturnUsd: 21000,
@@ -427,7 +436,7 @@ const route = (builtOut: bigint) => ({
   chosen: quote(builtOut),
   tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: builtOut.toString() },
   sim: null,
-  measuredOut: { KyberSwap: builtOut },
+  measuredOut: { Socket: builtOut },
   rejected: [],
 })
 
@@ -443,12 +452,13 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
   let nonce = 7n
 
   beforeEach(async () => {
+    forgetContractState()
     signTypedData = vi.fn().mockResolvedValue(SIG)
     writeContract = vi.fn().mockResolvedValue('0xhash')
     estimateContractGas = vi.fn().mockResolvedValue(900_000n)
     waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success' })
 
-    mocks.useWalletClient.mockReturnValue({ data: { signTypedData, writeContract } })
+    mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData, writeContract } })
     nonce = 7n
     mocks.usePublicClient.mockReturnValue({
       readContract: vi.fn(async ({ address, functionName }: { address: string; functionName: string }) => {
@@ -463,7 +473,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     })
     // The single adapter behind the real `quoteAt`, so buildFreshRoute re-quotes for real.
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
 
     selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
@@ -744,7 +754,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     const BUILT = parseUnits('20500', 6)
     mocks.sizeSwap.mockResolvedValue({ ...SIZED, expectedOut: REQUOTED, best: quote(REQUOTED) })
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
     ])
     selectRoute.mockResolvedValue(route(BUILT))
 
@@ -765,7 +775,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
 
     const BUILT = parseUnits('20900', 6) // 21000 -> 20900 is -0.48%
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
     ])
     selectRoute.mockResolvedValue(route(BUILT))
 
@@ -816,7 +826,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
       minDebtOut: parseUnits('5970', 6),
     })
     mocks.getAdaptersForChain.mockReturnValue([
-      { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(quote(OUT)) },
+      { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(OUT)) },
     ])
     selectRoute.mockResolvedValue(route(OUT))
 
@@ -1000,7 +1010,7 @@ describe('buildPlan — the preview measures what it shows', () => {
     chosen: quote(out),
     tx: { to: ROUTER, data: '0xdeadbeef', value: '0', spender: ROUTER, amountOut: out.toString() },
     sim: { ok: true, amountOut: out, gasUsed: 4_000_000 },
-    measuredOut: { KyberSwap: out },
+    measuredOut: { Socket: out },
     rejected: [],
   })
 
@@ -1036,7 +1046,7 @@ describe('buildPlan — the preview measures what it shows', () => {
     const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
     selectRoute.mockResolvedValue({
       router: null, swapData: null, chosen: null, tx: null, sim: null, measuredOut: {},
-      rejected: ['KyberSwap: route needs 20307933 gas; this chain caps a transaction at 16777216'],
+      rejected: ['Socket: route needs 20307933 gas; this chain caps a transaction at 16777216'],
     } as never)
 
     const { preview, error } = await previewWith()

@@ -1,6 +1,6 @@
 import { type Address, type PublicClient } from 'viem'
 import { getChainConfig, getFlipperAddress } from '../../config/chains'
-import { getAdaptersForChain } from '../../adapters'
+import { getAdaptersForChain, quoteField } from '../../adapters'
 import type { QuoteResponse } from '../../adapters/types'
 import { selectRoute } from '../../lib/closePlan'
 import { simulateSwap } from '../../adapters/simulate'
@@ -118,7 +118,7 @@ export async function quoteAndSelect(p: {
   slipNum: bigint
 }) {
   return selectRoute({
-    candidates: await quoteAll(p.adapters, p.input, p.flashAmount, p.chainId),
+    candidates: await quoteAll(p.adapters, p.input, p.flashAmount, p.chainId, p.flipper),
     adapters: p.adapters,
     strategies: p.flipper,
     allowedRouters: p.allowedRouters,
@@ -166,19 +166,23 @@ async function quoteAll(
   input: FlipInput,
   amountIn: bigint,
   chainId: number,
+  /** The contract that will execute the route, and therefore who it must be quoted for. */
+  flipper: Address,
 ): Promise<QuoteResponse[]> {
   const settled = await Promise.allSettled(
     adapters.map((a) =>
-      a.getQuote(
-        input.fromAsset,
-        input.toAsset,
-        amountIn.toString(),
-        input.slippagePercent,
+      // Every route each adapter offers, quoted for the Flipper that executes them.
+      quoteField(a, {
+        fromAsset: input.fromAsset,
+        toAsset: input.toAsset,
+        amountIn: amountIn.toString(),
+        slippage: input.slippagePercent,
         chainId,
-      ),
+        caller: flipper,
+      }),
     ),
   )
   return settled
-    .flatMap((s) => (s.status === 'fulfilled' && s.value ? [s.value] : []))
+    .flatMap((s) => (s.status === 'fulfilled' ? s.value : []))
     .sort((a, b) => (BigInt(b.amountOut) > BigInt(a.amountOut) ? 1 : -1))
 }

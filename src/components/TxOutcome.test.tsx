@@ -25,7 +25,7 @@ const outcome = (over: Partial<TxOutcome> = {}): TxOutcome => ({
     spentAmount: 10n ** 18n,
     returnAmount: 3405_100000n,
   },
-  fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false },
+  fill: { delta: -2_700000n, percent: -0.0792, belowFloor: false, basis: 'simulated' as const },
   deltas: [{ token: USDC, delta: 3405_100000n }],
   ...over,
 })
@@ -61,20 +61,20 @@ describe('TxOutcomePanel', () => {
   })
 
   it('reports a fill above the quote the same way, signed the other direction', () => {
-    show(outcome({ fill: { delta: 3_407800n, percent: 0.1, belowFloor: false } }))
+    show(outcome({ fill: { delta: 3_407800n, percent: 0.1, belowFloor: false, basis: 'simulated' as const } }))
 
     expect(screen.getByText(/\+3\.407800 USDC/)).toBeTruthy()
   })
 
   it('says nothing when the fill matched the quote to the displayed precision', () => {
     // A row reading "+0.000000 USDC" is a line whose content is that nothing happened.
-    show(outcome({ fill: { delta: 0n, percent: 0, belowFloor: false } }))
+    show(outcome({ fill: { delta: 0n, percent: 0, belowFloor: false, basis: 'simulated' as const } }))
 
     expect(screen.queryByText(/vs quote/)).toBeNull()
   })
 
   it('flags a fill that came in under the floor the transaction enforced', () => {
-    show(outcome({ fill: { delta: -50_000000n, percent: -1.47, belowFloor: true } }))
+    show(outcome({ fill: { delta: -50_000000n, percent: -1.47, belowFloor: true, basis: 'simulated' as const } }))
 
     expect(screen.getByText(/below the floor/i)).toBeTruthy()
   })

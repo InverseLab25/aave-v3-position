@@ -272,6 +272,8 @@ export function ConfirmLeverageModal({
                 </div>
                 <RouteDetails
                   expectedOut={preview.expectedOut}
+                  expectedBasis={preview.expectedBasis}
+                  quotedOut={preview.quotedOut}
                   minOut={preview.minOut}
                   swapIn={preview.swapIn}
                   collateralSymbol={collateralSymbol}

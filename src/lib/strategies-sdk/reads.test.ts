@@ -1,72 +1,91 @@
-import { expect, it } from "vitest";
-import {
-  getAllowedRouters,
-  getDelegationAllowance,
-  getPauseState,
-  getPermitContext,
-  getPositionBalances,
-  isRouterAllowed,
-} from "./reads";
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Address } from 'viem'
+import { forgetContractState, readContractState } from './reads'
 
-const CONTRACT = "0x000000000000000000000000000000000000BEEF" as const;
-const ATOKEN = "0x0B925eD163218f6662a35e0f0371Ac234f9E9371" as const;
-const VDEBT = "0x72E95b8931767C79bA4EeE721354d6E99a61D004" as const;
-const OWNER = "0x000000000000000000000000000000000000dEaD" as const;
-const ROUTER = "0x6131B5fae19EA4f9D964eAc0408E4408b66337b5" as const;
+const STRATEGIES = '0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c' as Address
+const ROUTER = '0x50c4E75a512F2A14A7b304787Adf79C4531A5909' as Address
 
-/** Responses are keyed by `functionName`, or by `functionName@address` when one call
- *  shape is issued against two different contracts in the same batch. */
-function stubClient(responses: Record<string, unknown>) {
-  return {
-    calls: [] as Array<{ address: string; functionName: string; args?: readonly unknown[] }>,
-    async readContract(p: { address: string; functionName: string; args?: readonly unknown[] }) {
-      this.calls.push(p);
-      const keyed = `${p.functionName}@${p.address}`;
-      return keyed in responses ? responses[keyed] : responses[p.functionName];
-    },
-  };
+/** A client answering `paused` and `getAllowedRouters`, counting what it was asked. */
+function client(paused = 0n, routers: Address[] = [ROUTER]) {
+  const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
+    functionName === 'paused' ? paused : routers,
+  )
+  return { readContract, calls: () => readContract.mock.calls.length }
 }
 
-it("getPauseState treats any nonzero value as paused, not as a bitmask", async () => {
-  expect(await getPauseState(stubClient({ paused: 1n }), CONTRACT)).toEqual({ paused: true });
-  expect(await getPauseState(stubClient({ paused: 2n }), CONTRACT)).toEqual({ paused: true });
-  expect(await getPauseState(stubClient({ paused: 0n }), CONTRACT)).toEqual({ paused: false });
-});
+describe('readContractState', () => {
+  beforeEach(() => {
+    forgetContractState()
+    vi.useFakeTimers()
+  })
+  afterEach(() => vi.useRealTimers())
 
-it("getAllowedRouters returns the enumerated set", async () => {
-  const client = stubClient({ getAllowedRouters: [ROUTER] });
-  expect(await getAllowedRouters(client, CONTRACT)).toEqual([ROUTER]);
-});
+  it('reads once and answers from the cache after that', async () => {
+    // Two RPC reads on every debounce and every three-second re-quote, for values that change
+    // when the owner sends a transaction. This is the whole point of the cache.
+    const c = client()
 
-it("isRouterAllowed queries the single-router view with the router as its argument", async () => {
-  const client = stubClient({ allowedRouters: true });
-  expect(await isRouterAllowed(client, CONTRACT, ROUTER)).toBe(true);
-  expect(client.calls[0].args).toEqual([ROUTER]);
-});
+    const first = await readContractState(c as never, 8453, STRATEGIES)
+    const second = await readContractState(c as never, 8453, STRATEGIES)
 
-it("getPermitContext fetches name and nonce for the EIP-712 domain", async () => {
-  const client = stubClient({ name: "Aave Ethereum WETH", nonces: 7n });
-  expect(await getPermitContext(client, ATOKEN, OWNER)).toEqual({
-    name: "Aave Ethereum WETH",
-    nonce: 7n,
-  });
-  expect(client.calls.find((c) => c.functionName === "nonces")?.args).toEqual([OWNER]);
-});
+    expect(first).toEqual({ paused: false, routers: [ROUTER] })
+    expect(second).toBe(first)
+    expect(c.calls()).toBe(2)
+  })
 
-it("getPositionBalances reads the aToken and debt-token balances of the user", async () => {
-  const client = stubClient({
-    [`balanceOf@${ATOKEN}`]: 5n,
-    [`balanceOf@${VDEBT}`]: 9n,
-  });
-  expect(
-    await getPositionBalances(client, { aToken: ATOKEN, variableDebtToken: VDEBT, user: OWNER }),
-  ).toEqual({ collateral: 5n, debt: 9n });
-  expect(client.calls.every((c) => c.args?.[0] === OWNER)).toBe(true);
-});
+  it('keys on the chain as well as the address', async () => {
+    // AaveV3Strategies is one CREATE3 address on Base and Arbitrum. Keyed on the address alone,
+    // one chain would be handed the other's allowlist.
+    const c = client()
 
-it("getDelegationAllowance reads borrowAllowance(owner, delegatee)", async () => {
-  const client = stubClient({ borrowAllowance: 4200n });
-  expect(await getDelegationAllowance(client, VDEBT, OWNER, CONTRACT)).toBe(4200n);
-  expect(client.calls[0].address).toBe(VDEBT);
-  expect(client.calls[0].args).toEqual([OWNER, CONTRACT]);
-});
+    await readContractState(c as never, 8453, STRATEGIES)
+    await readContractState(c as never, 42161, STRATEGIES)
+
+    expect(c.calls()).toBe(4)
+  })
+
+  it('shares one request between runs racing on a cold key', async () => {
+    // The promise is cached, not the value, so the second caller joins the first's request
+    // rather than issuing its own.
+    const c = client()
+
+    await Promise.all([
+      readContractState(c as never, 8453, STRATEGIES),
+      readContractState(c as never, 8453, STRATEGIES),
+    ])
+
+    expect(c.calls()).toBe(2)
+  })
+
+  it('re-reads once the entry is older than a minute', async () => {
+    const c = client()
+
+    await readContractState(c as never, 8453, STRATEGIES)
+    vi.advanceTimersByTime(60_001)
+    await readContractState(c as never, 8453, STRATEGIES)
+
+    expect(c.calls()).toBe(4)
+  })
+
+  it('drops a failed read so the next run retries instead of replaying the failure', async () => {
+    const readContract = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('rpc down'))
+      .mockResolvedValue(0n)
+    const c = { readContract }
+
+    await expect(readContractState(c as never, 8453, STRATEGIES)).rejects.toThrow('rpc down')
+    // Second attempt is not the cached rejection.
+    await expect(readContractState(c as never, 8453, STRATEGIES)).resolves.toBeTruthy()
+  })
+
+  it('forgets everything on an explicit refresh', async () => {
+    const c = client()
+
+    await readContractState(c as never, 8453, STRATEGIES)
+    forgetContractState()
+    await readContractState(c as never, 8453, STRATEGIES)
+
+    expect(c.calls()).toBe(4)
+  })
+})

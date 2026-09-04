@@ -5,10 +5,13 @@ import {
   validateSwapTx,
   selectBuildableRoute,
   effectiveOut,
+  expectedOutcome,
   rankRoutes,
   applyPin,
   COMPATIBLE_ADAPTERS,
   TX_GAS_CAP_2_24,
+  MAX_CALLDATA_BYTES,
+  MAX_MEASURED_ROUTES,
 } from './deleverage'
 import type { QuoteResponse, TransactionPayload } from '../adapters/types'
 
@@ -117,6 +120,87 @@ describe('validateSwapTx — per-transaction gas cap', () => {
   })
 })
 
+describe('validateSwapTx — calldata size', () => {
+  const ok = { to: '0xR', spender: '0xR', value: '0' }
+  const calldata = (bytes: number) => '0x' + 'ab'.repeat(bytes)
+
+  it('rejects a route carrying more calldata than the limit', () => {
+    // Measured on Base at 1M USDC: KyberSwap's 25KB route needed 18.1M gas against a 16.78M
+    // cap while quoting 12.5M, so the gas check above lets it through and the chain does not.
+    expect(validateSwapTx({ ...ok, data: calldata(MAX_CALLDATA_BYTES + 1) }, true)).toContain('calldata')
+  })
+
+  it('leaves a route at the limit alone', () => {
+    expect(validateSwapTx({ ...ok, data: calldata(MAX_CALLDATA_BYTES) }, true)).toBeNull()
+  })
+
+  it('leaves the ordinary route alone', () => {
+    // Every aggregator here but KyberSwap ships a kilobyte or two, so this must never fire on
+    // them — a limit that rejects the normal case is a limit that removes the whole field.
+    expect(validateSwapTx({ ...ok, data: calldata(2048) }, true)).toBeNull()
+  })
+})
+
+describe('selectBuildableRoute — capping the measured field', () => {
+  const quote = (out: string) => ({ amountOut: out }) as never
+  const tx = (out: string) => ({
+    to: '0xR', spender: '0xR', data: '0xdead', value: '0', amountOut: out,
+  })
+
+  it('does NOT drop on rank alone, which is the bug the band replaced', async () => {
+    // A real Base field: the third and fourth quotes 0.0001 apart while the third measured 0.05%
+    // under its own quote. Cutting at three by rank dropped the fourth on a margin far smaller
+    // than the error being measured away, and it may well have won.
+    const candidates = ['1005200', '1005100', '1005000', '1004900'].map(quote)
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+    })
+
+    expect(build).toHaveBeenCalledTimes(4)
+  })
+
+  it('still bounds a field where everything is inside the band', async () => {
+    // The ceiling is what stops a deep pair, where every route quotes within a hair of the best,
+    // from costing a simulation per route forever.
+    const candidates = Array.from({ length: MAX_MEASURED_ROUTES + 2 }, (_, i) =>
+      quote(String(1_000_000 - i)),
+    )
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    const r = await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+      label: (c) => `route-${(c as { amountOut: string }).amountOut}`,
+    })
+
+    expect(build).toHaveBeenCalledTimes(MAX_MEASURED_ROUTES)
+    const firstDropped = 1_000_000 - MAX_MEASURED_ROUTES
+    expect(r.rejected).toContain(
+      `route-${firstDropped}: outside the top ${MAX_MEASURED_ROUTES} by quote`,
+    )
+  })
+
+  it('does not let a rejected candidate use up one of the slots', async () => {
+    // The caller's own bar runs first and costs nothing, so a candidate that fails it should
+    // not deny a build to the next one down.
+    const candidates = ['1000000', '999900', '999800', '999700'].map(quote)
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    const r = await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+      reject: (c) => ((c as { amountOut: string }).amountOut === '1000000' ? 'no good' : null),
+    })
+
+    // The band is re-anchored on the best SURVIVING quote, not on the one that was thrown out.
+    expect(r.measurements.map((m) => (m.candidate as { amountOut: string }).amountOut))
+      .toEqual(['999900', '999800', '999700'])
+  })
+})
+
 describe('selectBuildableRoute — gas cap fallthrough', () => {
   it('falls through an over-cap route to the next candidate', async () => {
     const built: Record<string, { to: string; spender: string; data: string; value: string; gasEstimate: string }> = {
@@ -182,6 +266,46 @@ describe('applyPin', () => {
   })
 })
 
+
+describe('expectedOutcome', () => {
+  const tx: TransactionPayload = { to: '0xR', spender: '0xR', data: '0xaa', value: '0', amountOut: '100' }
+  const QUOTED = 105n
+
+  it('reports the simulation, and says so', () => {
+    expect(expectedOutcome(tx, { ok: true, amountOut: 97n, gasUsed: 1 }, QUOTED)).toEqual({
+      amount: 97n,
+      basis: 'simulated',
+    })
+  })
+
+  it('falls to the build when the simulator could not be asked', () => {
+    expect(expectedOutcome(tx, null, QUOTED)).toEqual({ amount: 100n, basis: 'built' })
+  })
+
+  it('falls to the quote only when the build returned no amount at all', () => {
+    expect(expectedOutcome({ ...tx, amountOut: undefined }, null, QUOTED)).toEqual({
+      amount: QUOTED,
+      basis: 'quoted',
+    })
+  })
+
+  it('marks a zero-amount build as quoted rather than reporting zero', () => {
+    // A build claiming nothing is not a build worth measuring a fill against. Reporting 0 here
+    // would make `minOut` zero and every fill percentage infinite.
+    expect(expectedOutcome({ ...tx, amountOut: '0' }, null, QUOTED)).toEqual({
+      amount: QUOTED,
+      basis: 'quoted',
+    })
+  })
+
+  it('agrees with effectiveOut on the amount wherever both apply', () => {
+    // The two must not drift: ranking uses one and the slippage floor uses the other, and a
+    // route ranked on a different number than it is floored against is the bug this prevents.
+    const sim = { ok: true as const, amountOut: 97n, gasUsed: 1 }
+    expect(expectedOutcome(tx, sim, QUOTED).amount).toBe(effectiveOut(tx, sim))
+    expect(expectedOutcome(tx, null, QUOTED).amount).toBe(effectiveOut(tx, null))
+  })
+})
 
 describe('effectiveOut', () => {
   const tx: TransactionPayload = { to: '0xR', spender: '0xR', data: '0xaa', value: '0', amountOut: '100' }

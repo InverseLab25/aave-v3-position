@@ -20,7 +20,7 @@ import {
 import type { TxOutcome } from '../../lib/txOutcome'
 import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../../lib/settle'
 import { getChainConfig } from '../../config/chains'
-import { adjustedFees, pinnedGasLimit } from '../../utils/gas'
+import { adjustedFees, gasFromMeasuredSwap, pinnedGasLimit } from '../../utils/gas'
 import { getPoolDataProvider, getReserveTokens } from '../../lib/aaveStatics'
 import { decodeStrategiesError } from '../../lib/strategiesErrors'
 import type { StrategiesRemedy } from '../../lib/strategiesErrors'
@@ -153,7 +153,7 @@ export async function approveMargin(ctx: {
     )
     await deps().writeContract({
       address: marginAsset, abi: ERC20_ABI, functionName: 'approve',
-      args: [input.contract, input.marginAmount], gas: approveGas,
+      args: [input.contract, input.marginAmount], chainId, gas: approveGas,
       ...(await adjustedFees(client)),
     })
     setStep('idle')
@@ -329,21 +329,29 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
         router: effectivePreview.router, swapData: effectivePreview.swapData,
         delegation: authorisation.delegation,
       })
-      // Estimated here, never left to the wallet: an unpinned limit on a flash-loan open is an
+      // Always ours, never left to the wallet: an unpinned limit on a flash-loan open is an
       // out-of-gas revert with the margin already approved and the delegation already spent.
-      // A failed estimate throws before the write, and `prepared.current` is only cleared after
-      // a successful send — so the signature survives and a retry costs no new prompt.
-      const openGas = await pinnedGasLimit(
-        () =>
-          client.estimateContractGas({
-            address: input.contract, abi: aaveV3StrategiesAbi,
-            functionName: plan.functionName, args: plan.args, account: owner,
-          } as Parameters<typeof client.estimateContractGas>[0]),
-        { chainId, label: 'open' },
-      )
+      //
+      // Built from the swap the simulator already measured wherever there is one. `eth_estimateGas`
+      // would execute this same transaction against this same state a second time to learn a
+      // number we have — and it is the slowest call on the confirm path. Estimating is the
+      // fallback for a route nothing could simulate, where there is nothing else to go on.
+      //
+      // Either way it throws before the write, and `prepared.current` is only cleared after a
+      // successful send, so the signature survives and a retry costs no new prompt.
+      const openGas = effectivePreview.swapGasUsed
+        ? gasFromMeasuredSwap(effectivePreview.swapGasUsed, { chainId, label: 'open' })
+        : await pinnedGasLimit(
+            () =>
+              client.estimateContractGas({
+                address: input.contract, abi: aaveV3StrategiesAbi,
+                functionName: plan.functionName, args: plan.args, account: owner,
+              } as Parameters<typeof client.estimateContractGas>[0]),
+            { chainId, label: 'open' },
+          )
       const hash = await deps().writeContract({
         address: input.contract, abi: aaveV3StrategiesAbi,
-        functionName: plan.functionName, args: plan.args, gas: openGas,
+        functionName: plan.functionName, args: plan.args, chainId, gas: openGas,
         ...(await adjustedFees(client)),
       })
       sent = hash
@@ -376,9 +384,13 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
       client,
       hash: sent,
       wallet: owner,
+      // The swap ran inside the Strategies contract, so its transfers are the ones that describe
+      // the fill — Socket and the 0x Settler under it emit no swap event to read instead.
+      executor: input.contract,
       // The swap funds the collateral leg: borrowed debt in, collateral out.
       pair: { srcToken: effectivePreview.debtAsset, dstToken: effectivePreview.collateral },
       expectedOut: effectivePreview.expectedOut,
+      basis: effectivePreview.expectedBasis,
       minOut: effectivePreview.minOut,
       // Abandoned while this was in flight. Whatever it says belongs to a screen that is gone.
       isCurrent: () => currentSend.current === sent,

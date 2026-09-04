@@ -156,7 +156,19 @@ function Row({ entry, chainId, realizedUsd }: {
       {/* 4. Slippage / Performance */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', whiteSpace: 'nowrap' }}>
         {entry.fill?.delta !== undefined && entry.fill.delta !== null && swap && swap.dstDecimals !== null && !isDisplayZero(entry.fill.delta, swap.dstDecimals) && (
-          <span style={{ 
+          <span
+            // No room for a label at this size, so the comparison it is against goes in the
+            // tooltip. Without it a badge measured against a simulation and one measured
+            // against an aggregator's own arithmetic look identical, and they are not the
+            // same claim — see `expectedOutcome`.
+            title={
+              entry.fill.basis === 'simulated'
+                ? 'Against what the route measured in simulation'
+                : entry.fill.basis === 'built'
+                  ? "Against the aggregator's own figure for the built route — nothing simulated it"
+                  : "Against the aggregator's quote — neither simulated nor rebuilt"
+            }
+            style={{ 
             fontSize: T.fontSize.xs,
             fontWeight: 500,
             padding: '2px 6px',

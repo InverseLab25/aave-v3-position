@@ -1,4 +1,12 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
+import type { OutBasis } from '../lib/deleverage'
+
+/** What each rung of `expectedOutcome` means, in the user's terms. */
+const BASIS_NOTE: Record<OutBasis, string> = {
+  simulated: 'Measured by simulating this exact route against live chain state',
+  built: "The aggregator's own figure for the built route — nothing simulated it",
+  quoted: "The aggregator's quote — neither simulated nor rebuilt",
+}
 import { useTabVisible } from '../hooks/useTabVisible'
 import { FlipRateButton } from './FlipRateButton'
 import { useWriteContract, useConnection, useChainId, useConfig } from 'wagmi'
@@ -966,13 +974,45 @@ export function ClosePositionModal({
                       directly under the expected one. */}
                   {preview.rate != null && (
                     <div className="info-row">
-                      <span className="info-row-label">Expected rate</span>
+                      <span className="info-row-label" title={BASIS_NOTE[preview.expectedBasis]}>
+                        {preview.expectedBasis === 'simulated' ? 'Simulated rate' : 'Expected rate'}
+                      </span>
                       <span className="info-row-value">
                         {(() => {
                           const r = rateFlipped ? preview.rate.inverse : preview.rate
                           return `1 ${r.unit} = ${formatAmount(r.rate)} ${r.quote}`
                         })()}
                         <FlipRateButton onClick={() => setRateFlipped(!rateFlipped)} />
+                      </span>
+                    </div>
+                  )}
+                  {/* The aggregator's claim next to the measurement, and only when the two print
+                      differently — identical rows read as two sources agreeing when there is one. */}
+                  {preview.quotedRate != null && preview.rate != null &&
+                    formatAmount(preview.quotedRate.rate) !== formatAmount(preview.rate.rate) && (
+                    <div className="info-row">
+                      <span
+                        className="info-row-label"
+                        title="What the aggregator said this route would return, before it was simulated"
+                      >
+                        Quoted rate
+                      </span>
+                      <span className="info-row-value" style={{ opacity: 0.7 }}>
+                        {(() => {
+                          const q = rateFlipped ? preview.quotedRate!.inverse : preview.quotedRate!
+                          return `1 ${q.unit} = ${formatAmount(q.rate)} ${q.quote}`
+                        })()}
+                      </span>
+                    </div>
+                  )}
+                  {/* Only when it is NOT the measured one. Simulated is the ordinary case and
+                      saying so on every close would be noise; the other two mean the simulator
+                      could not be reached, which shows up nowhere else. */}
+                  {preview.rate != null && preview.expectedBasis !== 'simulated' && (
+                    <div className="info-row">
+                      <span className="info-row-label" />
+                      <span className="info-row-value" style={{ fontSize: '0.75rem', opacity: 0.7 }}>
+                        Not simulated — the aggregator's own estimate
                       </span>
                     </div>
                   )}

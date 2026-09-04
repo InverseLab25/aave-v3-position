@@ -3,11 +3,12 @@ import { getChainConfig, getStrategiesAddress } from '../../config/chains'
 import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { COMPATIBLE_ADAPTERS, CloseError, applyPin, effectiveOut, rankRoutes } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
+import { quoteField } from '../../adapters'
 import { selectRoute } from '../../lib/closePlan'
 import { simulateSwap } from '../../adapters/simulate'
 import { deriveDebtRepay } from '../../lib/closePlan'
-import { aaveV3StrategiesAbi, FULL_CLOSE } from '../../lib/strategies-sdk'
+import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
 import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS, SIZING_ROUNDS } from './constants'
@@ -114,18 +115,18 @@ export async function buildPlan(
       //    domain needs it, but it depends on `aToken` — so awaiting it on its own put a serial
       //    hop between the two parallel groups, costing a whole round-trip on a cold cache to
       //    fetch one string nothing else was waiting for.
-      const [isPaused, allowedRouterList, debt, collAmount, nonce, aTokenName] = await Promise.all([
-        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'paused' }),
-        // The whole allowlist in one read: the contract stores it in an enumerable set
-        // precisely so integrators can filter routes up front rather than probing per route.
-        publicClient.readContract({ address: strategies, abi: aaveV3StrategiesAbi, functionName: 'getAllowedRouters' }),
+      const [{ paused: isPaused, routers: allowedRouterList }, debt, collAmount, nonce, aTokenName] = await Promise.all([
+        // Cached across runs, shared with the open — see `readContractState`. The whole allowlist
+        // in one read: the contract stores it in an enumerable set precisely so integrators can
+        // filter routes up front rather than probing per route.
+        readContractState(publicClient, chainId, strategies),
         publicClient.readContract({ address: vDebt, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: erc20Abi, functionName: 'balanceOf', args: [address] }),
         publicClient.readContract({ address: aToken, abi: NONCES_ABI, functionName: 'nonces', args: [address] }),
         getATokenName(publicClient, chainId, aToken),
       ])
 
-      if (isPaused !== 0n) {
+      if (isPaused) {
         throw new CloseError('deployment', 'One-click close is paused on this deployment')
       }
       const allowedRouters = new Set(allowedRouterList.map((r) => r.toLowerCase()))
@@ -184,16 +185,26 @@ export async function buildPlan(
         // that came back empty needs explaining.
         let throttled = false
         const ranked = rankRoutes(
-          await Promise.all(
-            adapters.map((a) =>
-              a
-                .getQuote(collateral, debtAsset, amountIn.toString(), slippagePercent, chainId, signal)
-                .catch((e: unknown) => {
+          (
+            await Promise.all(
+              adapters.map((a) =>
+                // Every route each adapter offers, quoted for the contract that executes them.
+                // Socket returns one per underlying aggregator; the rest return one each.
+                quoteField(a, {
+                  fromAsset: collateral,
+                  toAsset: debtAsset,
+                  amountIn: amountIn.toString(),
+                  slippage: slippagePercent,
+                  chainId,
+                  caller: strategies,
+                  signal,
+                }).catch((e: unknown) => {
                   if (e instanceof AggregatorHttpError && e.retryable) throttled = true
-                  return null
+                  return []
                 }),
-            ),
-          ),
+              ),
+            )
+          ).flat(),
         )
         // Only when NOTHING priced: one throttled adapter alongside one that answered is a
         // complete answer, and `sizeSwap` should get on with it.
@@ -205,7 +216,7 @@ export async function buildPlan(
         }
         offers = ranked
 
-        const usable = applyPin(ranked, preferredAggregator, (q) => q.aggregator)
+        const usable = applyPin(ranked, preferredAggregator, routeKey)
         // Named as the pin's failure rather than the pair's: the pair priced fine, and the fix
         // is to pin something else or nothing at all.
         if (usable.length === 0 && ranked.length > 0) {
@@ -270,8 +281,8 @@ export async function buildPlan(
           `No usable swap route for the close. Tried: ${measured.rejected.join('; ') || 'none'}`,
         )
       }
-      const measuredOut = effectiveOut(measured.tx, measured.sim)
-      const expectedOut = measuredOut > 0n ? measuredOut : sized.expectedOut
+      const expectation = expectedOutcome(measured.tx, measured.sim, sized.expectedOut)
+      const expectedOut = expectation.amount
       const minDebtOut = (expectedOut * slipNum) / 10000n
       const covered = expectedOut >= debt
 
@@ -322,6 +333,9 @@ export async function buildPlan(
         // route reported is the one that measured best rather than the one that quoted best.
         best: measured.chosen,
         expectedOut,
+        expectedBasis: expectation.basis,
+        quotedOut: sized.expectedOut,
+        swapGasUsed: measured.sim ? BigInt(measured.sim.gasUsed) : null,
         minDebtOut,
         // After the spread: these are the plan's answers, not the sizing pass's.
         debt: debtRepaid,

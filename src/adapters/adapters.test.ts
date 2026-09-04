@@ -448,6 +448,13 @@ describe('Socket — same-chain routing', () => {
   const WETH_B = { underlyingAsset: '0x4200000000000000000000000000000000000006', symbol: 'WETH', decimals: 18 }
   const USDC_B = { underlyingAsset: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', symbol: 'USDC', decimals: 6 }
   const ALLOWANCE_HOLDER = '0x50c4E75a512F2A14A7b304787Adf79C4531A5909'
+  const CALLER = '0x253FaC550bae1EE9B4680b3735DC38a3f6eCd600'
+  const STRATEGIES = '0x75b1ab12e47aaee4e1033100de1992e735c32c9c'
+  /** The arguments every `getQuotes` case shares. */
+  const ask = (over: Record<string, unknown> = {}) => ({
+    fromAsset: WETH_B, toAsset: USDC_B, amountIn: '1000000000000000000',
+    slippage: 0.5, chainId: 8453, caller: CALLER, ...over,
+  })
 
   /** One route, in the shape `/v3/swap/quote` answers with. */
   const route = (over: Record<string, unknown> = {}) => ({
@@ -488,6 +495,98 @@ describe('Socket — same-chain routing', () => {
     expect(q?.rawAmountOutUsd).toBe('2480')
   })
 
+  it('offers every route separately, best output first', async () => {
+    // One Socket request answers with a route per underlying aggregator. Keeping only the best
+    // throws away the field the solver is supposed to rank: its 0x route and its Bitget route
+    // are as different from each other as Nordstern is from either.
+    mocks.fetchQuoteJson.mockResolvedValue({
+      result: {
+        input: { amount: '1000000000000000000', valueInUsd: 2475 },
+        routes: [
+          route({ routeDetails: { dexDetails: { protocol: { displayName: 'Fynd' } } } }),
+          route({ output: { amount: '2480000000' }, routeDetails: { dexDetails: { protocol: { displayName: '0x' } } } }),
+        ],
+      },
+    })
+
+    const qs = await socketAdapter.getQuotes!(ask())
+
+    expect(qs.map((q) => q.amountOut)).toEqual(['2480000000', '2472325837'])
+    // All still `Socket`, because that is the key COMPATIBLE_ADAPTERS matches on. The row is
+    // told apart by the protocol underneath.
+    expect(qs.every((q) => q.aggregator === 'Socket')).toBe(true)
+    // The venue is the row's identity now, not a subtitle: it keys the measurement and the pin.
+    expect(qs.map((q) => q.routeId)).toEqual(['0x', 'Fynd'])
+  })
+
+  it('asks once for the whole field', async () => {
+    // Per-route requests would multiply the slowest call in the loop by the size of the field.
+    mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route(), route(), route()] } })
+
+    await socketAdapter.getQuotes!(ask())
+
+    expect(mocks.fetchQuoteJson).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries each route transaction, so building costs no request', async () => {
+    // The quote is already addressed to the real caller here, unlike `getQuote`'s placeholder
+    // round, so its calldata is executable as returned. Re-asking would spend the most
+    // expensive call in the loop again for an answer already in hand.
+    mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route()] } })
+
+    const [q] = await socketAdapter.getQuotes!(ask())
+    vi.clearAllMocks()
+    const tx = await socketAdapter.buildTransaction(q, 0.5, CALLER, 8453)
+
+    expect(mocks.limitedFetch).not.toHaveBeenCalled()
+    expect(tx).toMatchObject({ to: ALLOWANCE_HOLDER, data: '0xfeed', spender: ALLOWANCE_HOLDER })
+  })
+
+  it('re-asks when the transaction in hand was addressed to someone else', async () => {
+    // Socket bakes the caller into the calldata and reverts with CallerNotSignedUser for anyone
+    // else, so a prebuilt route is only reusable by the caller it was quoted for.
+    mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route()] } })
+    const [q] = await socketAdapter.getQuotes!(ask())
+
+    mocks.limitedFetch.mockResolvedValue({ ok: true, json: async () => ({ result: { routes: [route()] } }) })
+    await socketAdapter.buildTransaction(q, 0.5, '0x9999999999999999999999999999999999999999', 8453)
+
+    expect(mocks.limitedFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves out routes that carry no EVM transaction', async () => {
+    // Socket also answers for Solana and friends. A route with nothing this app can submit is
+    // not a candidate, and including it would have it ranked and then rejected at build.
+    mocks.fetchQuoteJson.mockResolvedValue({
+      result: { routes: [route({ txData: { kind: 'svm_instructions' } }), route()] },
+    })
+
+    const qs = await socketAdapter.getQuotes!(ask())
+
+    expect(qs).toHaveLength(1)
+  })
+
+  it('leaves out routes that have already expired', async () => {
+    mocks.fetchQuoteJson.mockResolvedValue({
+      result: { routes: [route({ expiresAt: Math.floor(Date.now() / 1000) - 1 }), route()] },
+    })
+
+    const qs = await socketAdapter.getQuotes!(ask())
+
+    expect(qs).toHaveLength(1)
+  })
+
+  it('never sends contractCaller, which the endpoint discards', async () => {
+    // Proven against the live public endpoint: the calldata comes back byte-identical with and
+    // without the parameter, quoteId aside, and a contract executing it still reverts with
+    // CallerNotSignedUser. Sending it only made the case look handled.
+    mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route()] } })
+
+    await socketAdapter.getQuotes!(ask({ caller: STRATEGIES }))
+
+    expect(mocks.fetchQuoteJson.mock.calls[0][0] as string).not.toContain('contractCaller')
+  })
+
   it('quotes same-chain only, with the caller on both ends of the trade', async () => {
     mocks.fetchQuoteJson.mockResolvedValue({ result: { routes: [route()] } })
 
@@ -498,8 +597,9 @@ describe('Socket — same-chain routing', () => {
     expect(url).toContain('destinationChainId=8453')
     // A decimal percentage, not basis points.
     expect(url).toContain('slippage=0.5')
-    // Socket simulates each DEX route and drops the reverting ones.
-    expect(url).toContain('simulatedQuotesRequired=true')
+    // Off: Socket's own simulation runs serially before it answers, and this app measures its
+    // own top candidates anyway.
+    expect(url).toContain('simulatedQuotesRequired=false')
     expect(url).toContain('quoteType=EXACT_INPUT')
   })
 
@@ -514,7 +614,8 @@ describe('Socket — same-chain routing', () => {
     const q = await socketAdapter.getQuote(WETH_B, USDC_B, '1000000000000000000', 0.5, 8453)
     expect(q?.amountOut).toBe('2472325837')
     // Socket routes through other aggregators; the row names the one underneath.
-    expect(q?.routeDetails).toMatchObject({ type: 'socket', info: 'Kyberswap' })
+    expect(q?.routeId).toBe('Kyberswap')
+    expect(q?.routeDetails).toMatchObject({ type: 'socket', info: 'Routed via Socket' })
   })
 
   it('does not quote on a chain Socket does not serve', async () => {

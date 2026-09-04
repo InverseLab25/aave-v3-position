@@ -2,10 +2,41 @@ import { useState } from 'react'
 import { FlipRateButton } from '../FlipRateButton'
 import { formatUnits } from 'viem'
 import { T } from '../../styles/theme'
+import type { OutBasis } from '../../lib/deleverage'
+
+/** What each rung of `expectedOutcome` means, in the user's terms. */
+const BASIS_NOTE: Record<OutBasis, string> = {
+  simulated: 'Measured by simulating this exact route against live chain state',
+  built: "The aggregator's own figure for the built route — nothing simulated it",
+  quoted: "The aggregator's quote — neither simulated nor rebuilt",
+}
 
 interface RouteDetailsProps {
-  /** The aggregator's own `amountOut` for this route, in COLLATERAL units, before slippage. */
+  /**
+   * What the route is expected to return, in COLLATERAL units, before slippage.
+   *
+   * Usually the simulation's measurement rather than the aggregator's own claim — see
+   * `expectedOutcome` for the ladder and {@link expectedBasis} for which rung this one is.
+   */
   expectedOut: bigint
+  /**
+   * Whose word {@link expectedOut} is on.
+   *
+   * Shown because the two readings are not equally good and the rate alone cannot say which it
+   * is. A simulated figure was measured against live state with router fees already inside it;
+   * a built or quoted one is the aggregator's arithmetic about its own route, which nothing
+   * checked. The user is deciding whether to sign against this number, so it is worth saying.
+   */
+  expectedBasis: OutBasis
+  /**
+   * What the aggregator quoted for this route, in COLLATERAL units, before anything measured it.
+   *
+   * Shown next to the measured figure rather than instead of it. The gap between the two is the
+   * aggregator's own optimism, and it is the only thing on this panel that says whether its
+   * numbers can be taken at face value — an aggregator quoting 0.4% over what its route really
+   * does is worth seeing before signing, not after.
+   */
+  quotedOut: bigint
   /** The floor the contract enforces on the swap, in COLLATERAL units: `expectedOut` less slippage. */
   minOut: bigint
   /**
@@ -27,11 +58,16 @@ interface RouteDetailsProps {
  * reads at four decimals, while its inverse lands near 0.0005, where four decimals is nothing at
  * all — enough to print the expected and guaranteed rows as the same string and hide the very gap
  * the two rows exist to show. Below 1 the precision is counted in significant digits instead.
+ *
+ * FIXED width either side of that split, minimum equal to maximum. These rows exist to be read
+ * against each other, and a range lets `toLocaleString` trim trailing zeros per value — 2456.7090
+ * printed as "2,456.709" directly above 2459.1682 at its full four, which reads as two numbers of
+ * different precision rather than as the same rate moved slightly.
  */
 function rate(value: number): string {
   return value >= 1
-    ? value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })
-    : value.toLocaleString(undefined, { minimumSignificantDigits: 4, maximumSignificantDigits: 6 })
+    ? value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })
+    : value.toLocaleString(undefined, { minimumSignificantDigits: 6, maximumSignificantDigits: 6 })
 }
 
 function amount(value: bigint, decimals: number, places: number): string {
@@ -41,10 +77,10 @@ function amount(value: bigint, decimals: number, places: number): string {
   })
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
+function Row({ label, title, children }: { label: string; title?: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: T.space[3], alignItems: 'baseline' }}>
-      <span style={{ color: T.textMuted }}>{label}</span>
+      <span style={{ color: T.textMuted }} title={title}>{label}</span>
       <span style={{ textAlign: 'right' }}>{children}</span>
     </div>
   )
@@ -58,7 +94,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
  * here.
  */
 export function RouteDetails({
-  expectedOut, minOut, swapIn,
+  expectedOut, expectedBasis, quotedOut, minOut, swapIn,
   collateralSymbol, debtSymbol, collateralDecimals, debtDecimals,
   slippageBps,
 }: RouteDetailsProps) {
@@ -88,6 +124,22 @@ export function RouteDetails({
   // sit in the second row, and it answered a different question: it moved for reasons that had
   // nothing to do with this swap, so the gap between the two was never purely slippage.
   const expected = ratio(expectedOut, perDebt)
+  // Only where a measurement actually displaced the quote. On the `built` and `quoted` rungs
+  // `expectedOut` IS the quote, and printing it twice under two labels would invent a second
+  // source that does not exist.
+  const quotedRaw = expectedBasis === 'simulated' ? ratio(quotedOut, perDebt) : null
+  const quotedRate = quotedRaw !== null && rate(quotedRaw) !== rate(expected ?? 0) ? quotedRaw : null
+  /**
+   * How far the measurement landed from the quote, as a percentage of the quote.
+   *
+   * Signed against the OUTPUT, not against whichever way the rate is currently flipped: a route
+   * returning less than quoted is negative however the user is reading the pair. Deriving it
+   * from the displayed rate instead would flip its sign with the button.
+   */
+  const drift =
+    quotedRate !== null && quotedOut > 0n
+      ? Number(((expectedOut - quotedOut) * 1_000_000n) / quotedOut) / 10_000
+      : null
   const guaranteed = ratio(minOut, perDebt)
   // Slippage cuts the collateral the swap returns, so it drags a collateral-per-debt quote down
   // and pushes its inverse up. The sign tracks the orientation rather than always claiming a
@@ -112,12 +164,41 @@ export function RouteDetails({
       )}
 
       {expected !== null && (
-        <Row label="Expected rate">
+        <Row label={expectedBasis === 'simulated' ? 'Simulated rate' : 'Expected rate'} title={BASIS_NOTE[expectedBasis]}>
           <span style={{ color: T.textSubtle }}>
             1 {base} = {rate(expected)} {quoted}
             <FlipRateButton onClick={() => setFlipped(f => !f)} />
           </span>
         </Row>
+      )}
+
+      {/* The aggregator's own claim, alongside the measurement, and only when a measurement
+          actually replaced it and the two differ enough to print differently. Identical rows
+          would read as two sources agreeing when there is only one number. */}
+      {expected !== null && quotedRate !== null && (
+        <Row
+          label="Quoted rate"
+          title="What the aggregator said this route would return, before it was simulated"
+        >
+          <span style={{ color: T.textMuted }}>
+            1 {base} = {rate(quotedRate)} {quoted}
+            {drift !== null && (
+              <span style={{ marginLeft: T.space[2], color: drift < 0 ? T.danger : T.textMuted }}>
+                {drift > 0 ? '+' : ''}{drift.toFixed(2)}%
+              </span>
+            )}
+          </span>
+        </Row>
+      )}
+
+      {/* Only when it is NOT the measured one. Simulated is the normal case and saying so on every
+          open would be noise; the other two mean the simulator could not be reached, which the
+          user cannot see anywhere else and which makes this rate a weaker promise. */}
+      {expected !== null && expectedBasis !== 'simulated' && (
+        <div style={{ fontSize: T.fontSize.xs, color: T.textMuted }}>
+          Not simulated — this rate is the aggregator's own estimate. The guaranteed rate below is
+          still enforced on chain.
+        </div>
       )}
 
       {/* The floor, not the estimate: this is the rate the transaction reverts below, so it is the
