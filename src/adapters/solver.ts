@@ -74,6 +74,9 @@ async function turnstileToken(): Promise<string> {
   }
   return new Promise((ok, fail) => {
     const el = document.body.appendChild(document.createElement('div'));
+    // Invisible widgets render nothing here. A Managed one shows a checkbox when Cloudflare wants
+    // a click, and it has to be somewhere the user can see it or the challenge just times out.
+    el.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:10000';
     // Turnstile keeps retrying a failed widget on its own; tear it down first so it doesn't
     // go looking for a container we've already removed.
     let id: string | undefined = undefined; // the stub in tests calls back before render returns
