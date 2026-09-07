@@ -67,7 +67,8 @@ class FakeSocket {
   send(raw: string) {
     const m = JSON.parse(raw) as Record<string, unknown>
     this.sent.push(m)
-    if (m.stop || FakeSocket.hold) return
+    // A stream subscription (`every`) gets nothing back until the test pushes routes at it.
+    if (m.stop || m.every || FakeSocket.hold) return
     const reply = FakeSocket.replies.shift() ?? { error: 'nothing queued' }
     queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ id: m.id, ...reply }) }))
   }
@@ -159,7 +160,7 @@ describe('solverAdapter.getQuotes', () => {
     await solverAdapter.getQuotes!(args)
     await solverAdapter.getQuotes!(args)
     expect(sockets()).toHaveLength(1)
-    expect(sockets()[0].sent).toHaveLength(2)
+    expect(sockets()[0].sent.filter((m) => !m.every)).toHaveLength(2)
 
     sockets()[0].expire()
     const again = await solverAdapter.getQuotes!(args)
@@ -219,6 +220,58 @@ describe('solverAdapter.getQuotes', () => {
   it('answers empty when a provider actually looked and found no route', async () => {
     stubServer([{ ...done([]), rejected: [{ provider: 'socket', code: 'TIMEOUT' }, { provider: 'nordstern', code: 'NO_LIQUIDITY' }] }])
     expect(await solverAdapter.getQuotes!(args)).toEqual([])
+  })
+
+  describe('streaming', () => {
+    /** Pushes a server message onto the newest socket, as the stream would. */
+    const push = (m: object) => sockets().at(-1)!.onmessage?.({ data: JSON.stringify(m) })
+    const streamId = () => sockets().at(-1)!.sent.find((m) => m.every)?.id as string
+
+    it('starts a one-second stream once a trade is asked for twice, and answers the repeat from it', async () => {
+      stubServer([done([route()]), done([route()]), done([route()])])
+      await solverAdapter.getQuotes!(args)
+      expect(sockets().at(-1)!.sent.some((m) => m.every)).toBe(false) // a one-off is not streamed
+
+      await solverAdapter.getQuotes!(args) // second ask: stream requested, one-shot still answers (no routes yet)
+      const sub = sockets().at(-1)!.sent.find((m) => m.every)!
+      expect(sub.every).toBe(1000)
+      expect(sub).toMatchObject({ chainId: 8453, tokenIn: WETH, tokenOut: USDC, caller: CONTRACT, owner: OWNER })
+
+      push({ id: streamId(), route: route({ venue: 'Kyberswap', measuredOut: '2600000000' }) })
+      push({ id: streamId(), route: route({ venue: '0x', measuredOut: '2700000000' }) })
+      push({ id: streamId(), provider: 'socket', cycle: true, rejected: [], expiresAt: Date.now() + 30_000 })
+      const sent = sockets().at(-1)!.sent.length
+      const quotes = await solverAdapter.getQuotes!(args)
+      expect(sockets().at(-1)!.sent.length).toBe(sent) // answered from the stream, no request
+      expect(quotes.map((q) => q.routeId)).toEqual(['Socket · 0x', 'Socket · Kyberswap']) // best measured first
+    })
+
+    it("replaces a provider's routes at its cycle, so a venue that stopped passing drops out", async () => {
+      stubServer([done([route()]), done([route()])])
+      await solverAdapter.getQuotes!(args)
+      await solverAdapter.getQuotes!(args)
+      const id = streamId()
+      push({ id, route: route({ venue: 'Kyberswap' }) })
+      push({ id, provider: 'socket', cycle: true, rejected: [], expiresAt: Date.now() + 30_000 })
+      expect((await solverAdapter.getQuotes!(args)).map((q) => q.routeId)).toEqual(['Socket · Kyberswap'])
+      push({ id, route: route({ venue: '0x' }) })
+      push({ id, provider: 'socket', cycle: true, rejected: [], expiresAt: Date.now() + 30_000 })
+      expect((await solverAdapter.getQuotes!(args)).map((q) => q.routeId)).toEqual(['Socket · 0x'])
+    })
+
+    it('stops a stream nobody has asked about for a while', async () => {
+      vi.useFakeTimers()
+      try {
+        stubServer([done([route()]), done([route()])])
+        await solverAdapter.getQuotes!(args)
+        await solverAdapter.getQuotes!(args)
+        const id = streamId()
+        await vi.advanceTimersByTimeAsync(8_001)
+        expect(sockets().at(-1)!.sent.at(-1)).toEqual({ id, stop: true })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it('answers nothing on a chain the solver does not serve, without asking it', async () => {

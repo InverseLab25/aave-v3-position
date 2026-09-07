@@ -53,11 +53,11 @@ const SLIPPAGE_SUGGESTION_CAP = 1
  * Gap between one quote settling and the next being requested.
  *
  * This is a REST period, not a period. Actual cadence is roughly
- * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts: a cheap pair refreshes
- * every ~3.5s, a 200 WETH split route every ~10s. Refreshing faster than a quote takes cannot
- * produce fresher numbers, it only produces more overlapping requests.
+ * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts. The solver keeps re-quoting
+ * a trade it has been asked for twice, once a second, and answers a repeat ask from that with
+ * no request, so a second here is what keeps the figures within a second or two of the chain.
  */
-const QUOTE_REFRESH_MS = 3000
+const QUOTE_REFRESH_MS = 1000
 
 /**
  * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
@@ -148,14 +148,17 @@ export function ClosePositionModal({
    * sizing). Setting it higher converts the surplus into the debt asset and sends it to the
    * wallet, which is the point when the collateral is expected to fall.
    */
-  const [collateralInStr, setCollateralInStr] = useState<string>('')
-  const [isCollateralMax, setIsCollateralMax] = useState<boolean>(false)
+  // Both default to MAX: swap the whole collateral, repay the whole debt. A fixed size is one
+  // quote at that size, so the preview is one live trade the solver keeps fresh, rather than
+  // the estimate-and-refine rounds that each probe a different size.
+  const [collateralInStr, setCollateralInStr] = useState<string>(suppliedAssets[0] ? String(suppliedAssets[0].amount) : '')
+  const [isCollateralMax, setIsCollateralMax] = useState<boolean>(!!suppliedAssets[0])
   /**
    * How much debt to repay. Empty means the whole thing. Anything smaller is a partial close:
    * the position stays open with less debt and less collateral behind it.
    */
-  const [debtInStr, setDebtInStr] = useState<string>('')
-  const [isDebtMax, setIsDebtMax] = useState<boolean>(false)
+  const [debtInStr, setDebtInStr] = useState<string>(String(borrowedAsset.amount))
+  const [isDebtMax, setIsDebtMax] = useState<boolean>(true)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   /**
@@ -645,7 +648,10 @@ export function ClosePositionModal({
                 // The settled panel belongs to the pair it was produced for. Carried across a
                 // change of collateral it captions the new pair with the old one's numbers.
                 clearOutcome()
-                setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null)
+                const next = suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null
+                setSelectedCollateral(next)
+                // MAX follows the collateral: the string is display only, 'all' resolves on chain.
+                if (isCollateralMax) setCollateralInStr(next ? String(next.amount) : '')
               }}
               style={{ appearance: 'none', backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2364748b%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px top 50%', backgroundSize: '10px auto' }}
             >

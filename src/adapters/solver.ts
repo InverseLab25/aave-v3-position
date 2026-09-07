@@ -103,6 +103,7 @@ let session: Promise<{ token: string; expiresAt: number }> | null = null;
 
 export function resetSolverSession(): void {
   session = null;
+  asked.clear();
   socket?.then((c) => c.ws.close(), () => {});
   socket = null;
 }
@@ -137,8 +138,64 @@ async function sessionToken(): Promise<string> {
  * the server shares one in-flight run between every subscriber asking for the same trade.
  * Opened lazily, dropped on close; the next quote reopens it.
  */
-type Conn = { ws: WebSocket; pending: Map<string, { ok: (a: SolverAnswer) => void; fail: (e: Error) => void }> };
+type Conn = {
+  ws: WebSocket;
+  pending: Map<string, { ok: (a: SolverAnswer) => void; fail: (e: Error) => void }>;
+  /** Live subscriptions by trade, and the same by request id for the messages that feed them. */
+  streams: Map<string, Stream>;
+  byId: Map<string, Stream>;
+};
+/** When each trade was last asked for, so a repeat ask can be told from a one-off. Outlives the socket. */
+const asked = new Map<string, number>();
 let socket: Promise<Conn> | null = null;
+
+/**
+ * A trade the server keeps re-quoting: each provider runs its own loop, quote, simulate, push,
+ * wait STREAM_EVERY_MS, again. Routes arrive one at a time and are swapped in per provider at
+ * its `cycle`, so a venue that stopped passing drops out on the next pass rather than lingering.
+ * Nobody reading it for STREAM_IDLE_MS stops it.
+ */
+interface Stream {
+  id: string;
+  /** Committed routes per provider, with the deadline of the pass that produced them. */
+  routes: Map<string, { list: SolverRoute[]; deadline: number }>;
+  /** Routes of the pass in progress, per provider. */
+  pass: Map<string, SolverRoute[]>;
+  idle: ReturnType<typeof setTimeout>;
+}
+const STREAM_EVERY_MS = 1000;
+/** Longer than the slowest poller's gap (the close preview: ~3s plus a quote), shorter than a forgotten tab. */
+const STREAM_IDLE_MS = 8000;
+
+function stopStream(conn: Conn, key: string): void {
+  const s = conn.streams.get(key);
+  if (!s) return;
+  clearTimeout(s.idle);
+  conn.streams.delete(key);
+  conn.byId.delete(s.id);
+  if (conn.ws.readyState === WebSocket.OPEN) conn.ws.send(JSON.stringify({ id: s.id, stop: true }));
+}
+
+/**
+ * The stream for this trade, or null until it has been asked for twice in quick succession. A
+ * poller asks for the same trade over and over; the sizing loops ask for each probe size once
+ * and move on, and a stream per probe would leave a trail of loops on the server. Every ask
+ * pushes the idle stop back.
+ */
+function streamFor(conn: Conn, key: string, body: object, repeat: boolean): Stream | null {
+  let s = conn.streams.get(key);
+  if (!s) {
+    if (!repeat) return null;
+    const id = `s${++seq}`;
+    s = { id, routes: new Map(), pass: new Map(), idle: setTimeout(() => {}, 0) };
+    conn.streams.set(key, s);
+    conn.byId.set(id, s);
+    conn.ws.send(JSON.stringify({ id, ...body, every: STREAM_EVERY_MS }));
+  }
+  clearTimeout(s.idle);
+  s.idle = setTimeout(() => stopStream(conn, key), STREAM_IDLE_MS);
+  return s;
+}
 let gen = 0;
 let seq = 0;
 
@@ -148,12 +205,30 @@ function connect(): Promise<Conn> {
     const url = `${solverUrl()}/ws`;
     const ws = new WebSocket(`${url.replace(/^http/, 'ws')}?token=${encodeURIComponent(await sessionToken())}`);
     // Per connection, so a socket closing late can only fail its own requests, never its successor's.
-    const pending: Conn['pending'] = new Map();
+    const conn: Conn = { ws, pending: new Map(), streams: new Map(), byId: new Map() };
+    const { pending } = conn;
     ws.onmessage = (e) => {
-      const m = JSON.parse(String(e.data)) as { id?: string; error?: string; done?: boolean } & Partial<SolverAnswer>;
+      const m = JSON.parse(String(e.data)) as {
+        id?: string; error?: string; done?: boolean; route?: SolverRoute; cycle?: boolean; provider?: string;
+      } & Partial<SolverAnswer>;
+      const s = m.id ? conn.byId.get(m.id) : undefined;
+      if (s) {
+        if (m.route) {
+          const list = s.pass.get(m.route.provider) ?? [];
+          list.push(m.route);
+          s.pass.set(m.route.provider, list);
+        } else if (m.cycle && m.provider) {
+          s.routes.set(m.provider, { list: s.pass.get(m.provider) ?? [], deadline: m.expiresAt ?? Date.now() });
+          s.pass.delete(m.provider);
+        } else if (m.error) {
+          // Refused (rate limited, bad request): the one-shot path reports why on the next ask.
+          for (const [key, x] of conn.streams) if (x === s) stopStream(conn, key);
+        }
+        return;
+      }
       const p = m.id ? pending.get(m.id) : undefined;
       if (!p) return;
-      // Per-route pushes ({ id, route }) are skipped: the caller ranks the whole field once, at `done`.
+      // Per-route pushes ({ id, route }) on a one-shot are skipped: the caller ranks the whole field once, at `done`.
       if (m.error) {
         pending.delete(m.id!);
         p.fail(new AggregatorHttpError(m.error === 'rate limited' ? 429 : m.error === 'bad request' ? 400 : 503, url));
@@ -168,12 +243,16 @@ function connect(): Promise<Conn> {
       if (e.code === 4001) session = null;
       for (const p of pending.values()) p.fail(new AggregatorHttpError(e.code === 4001 ? 401 : 503, url));
       pending.clear();
+      // The streams died with the socket; the next ask on a fresh one restarts them.
+      for (const s of conn.streams.values()) clearTimeout(s.idle);
+      conn.streams.clear();
+      conn.byId.clear();
     };
     await new Promise<void>((ok, fail) => {
       ws.onopen = () => ok();
       ws.onerror = () => fail(new AggregatorHttpError(503, url));
     });
-    return { ws, pending };
+    return conn;
   })();
   socket.catch(() => { socket = null; });
   return socket;
@@ -205,6 +284,65 @@ export function solverMeasurement(quote: QuoteResponse): SimulationResult | null
   return { ok: true, amountOut: BigInt(r.measuredOut), gasUsed: Number(r.gasUsed) };
 }
 
+/**
+ * The trade's live routes, or null when the stream has none yet (or the socket is down, which
+ * the one-shot is left to report). Committed routes only, unexpired, ranked by the server's
+ * measurement, since each provider's pass lands on its own clock.
+ */
+async function streamRoutes(body: object, signal?: AbortSignal): Promise<SolverRaw[] | null> {
+  const key = JSON.stringify(body);
+  const now = Date.now();
+  const repeat = now - (asked.get(key) ?? 0) <= STREAM_IDLE_MS;
+  for (const [k, t] of asked) if (now - t > STREAM_IDLE_MS) asked.delete(k);
+  asked.set(key, now);
+  // Only over a socket the one-shot path has already opened: a stream never dials on its own.
+  if (!socket) return null;
+  let conn: Conn;
+  try { conn = await socket; } catch { return null; }
+  if (signal?.aborted) return null;
+  const s = streamFor(conn, key, body, repeat);
+  if (!s) return null;
+  const live: SolverRaw[] = [];
+  for (const { list, deadline } of s.routes.values()) {
+    if (deadline <= now) continue;
+    for (const r of list) if (!r.expiresAt || r.expiresAt > now) live.push({ ...r, deadline });
+  }
+  if (!live.length) return null;
+  return live.sort((a, b) => (BigInt(b.measuredOut) > BigInt(a.measuredOut) ? 1 : -1));
+}
+
+/**
+ * This adapter is the `aggregator` (it is what builds the route); the provider and its venue
+ * name the ROW. A repeated name gets a suffix rather than silently sharing a key with the
+ * route before it.
+ */
+function toQuotes(routes: SolverRaw[], amountIn: string, toAsset: { decimals: number; priceInUsd?: string | number | null }): QuoteResponse[] {
+  const taken = new Set<string>();
+  return routes.map((r) => {
+    const name = (NAMES[r.provider] ?? r.provider) + (r.venue ? ` · ${r.venue}` : '');
+    let routeId = name;
+    let n = 2;
+    while (taken.has(routeId)) routeId = `${name} ${n++}`;
+    taken.add(routeId);
+    const outUnits = Number(r.quotedOut) / 10 ** toAsset.decimals;
+    const amountOutUsd = toAsset.priceInUsd ? outUnits * Number(toAsset.priceInUsd) : 0;
+    return {
+      aggregator: 'Solver',
+      routeId,
+      amountIn,
+      // The provider's own claim. What it MEASURED comes back through `solverMeasurement`,
+      // so sizing keeps running on the quote and selection on the measurement, as today.
+      amountOut: r.quotedOut,
+      amountOutUsd: amountOutUsd.toFixed(2),
+      gasEstimate: r.gasUsed,
+      gasUsd: '0',
+      netReturnUsd: amountOutUsd,
+      rawQuote: r satisfies SolverRaw,
+      routeDetails: { type: 'solver', info: 'Quoted and simulated by the solver' },
+    };
+  });
+}
+
 export const solverAdapter: Adapter = {
   name: 'Solver',
   supportsExecution: true,
@@ -227,6 +365,12 @@ export const solverAdapter: Adapter = {
       slippageBps: Math.round(slippage * 100),
     };
     try {
+      // Every ask keeps the trade's stream alive; once it has routes they are what is
+      // answered, at most a second and a quote old, with no request made. Until then, and
+      // whenever the stream is empty, the one-shot below asks and says why if nothing prices.
+      const live = await streamRoutes(body, signal);
+      if (live) return toQuotes(live, amountIn, toAsset);
+
       let answer: SolverAnswer;
       try {
         answer = await quoteOverSocket(body, signal);
@@ -246,33 +390,7 @@ export const solverAdapter: Adapter = {
         throw new AggregatorHttpError(503, `${solverUrl()}/ws`);
       }
 
-      // This adapter is the `aggregator` (it is what builds the route); the provider and its
-      // venue name the ROW. A repeated name gets a suffix rather than silently sharing a key
-      // with the route before it.
-      const taken = new Set<string>();
-      return answer.routes.map((r) => {
-        const name = (NAMES[r.provider] ?? r.provider) + (r.venue ? ` · ${r.venue}` : '');
-        let routeId = name;
-        let n = 2;
-        while (taken.has(routeId)) routeId = `${name} ${n++}`;
-        taken.add(routeId);
-        const outUnits = Number(r.quotedOut) / 10 ** toAsset.decimals;
-        const amountOutUsd = toAsset.priceInUsd ? outUnits * Number(toAsset.priceInUsd) : 0;
-        return {
-          aggregator: 'Solver',
-          routeId,
-          amountIn,
-          // The provider's own claim. What it MEASURED comes back through `solverMeasurement`,
-          // so sizing keeps running on the quote and selection on the measurement, as today.
-          amountOut: r.quotedOut,
-          amountOutUsd: amountOutUsd.toFixed(2),
-          gasEstimate: r.gasUsed,
-          gasUsd: '0',
-          netReturnUsd: amountOutUsd,
-          rawQuote: { ...r, deadline: answer.expiresAt } satisfies SolverRaw,
-          routeDetails: { type: 'solver', info: 'Quoted and simulated by the solver' },
-        };
-      });
+      return toQuotes(answer.routes.map((r) => ({ ...r, deadline: answer.expiresAt })), amountIn, toAsset);
     } catch (e) {
       if ((e as Error)?.name === 'AbortError' || signal?.aborted) return [];
       throw e;

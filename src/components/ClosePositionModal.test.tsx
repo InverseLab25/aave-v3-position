@@ -294,10 +294,17 @@ describe('ClosePositionModal — the two-press flow', () => {
 describe('ClosePositionModal — collateralIn is what reaches the hook', () => {
   const lastPreviewArg = () => previewFn.mock.calls.at(-1)?.[0]
 
-  it('sends undefined when the field is empty — the debt sizes the swap', async () => {
+  it("sends 'all' by default — the whole collateral is one live trade, not a sizing loop", async () => {
     mount()
     await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    expect(lastPreviewArg()?.collateralIn).toBeUndefined()
+    expect(lastPreviewArg()?.collateralIn).toBe('all')
+  })
+
+  it('sends undefined once the field is reset — the debt sizes the swap', async () => {
+    mount()
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+    fireEvent.click(screen.getAllByText('RESET').at(-1)!)
+    await waitFor(() => expect(lastPreviewArg()?.collateralIn).toBeUndefined())
   })
 
   it('parses a typed amount at the collateral decimals', async () => {
@@ -473,10 +480,17 @@ describe('ClosePositionModal — debtIn is what reaches the hook', () => {
   const lastPreviewArg = () => previewFn.mock.calls.at(-1)?.[0]
   const debtField = () => screen.getByPlaceholderText(/whole debt/i)
 
-  it('sends undefined when the field is empty — the whole debt is repaid', async () => {
+  it("sends 'all' by default — the whole debt is repaid", async () => {
     mount()
     await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    expect(lastPreviewArg()?.debtIn).toBeUndefined()
+    expect(lastPreviewArg()?.debtIn).toBe('all')
+  })
+
+  it('sends undefined once the field is reset — still the whole debt, sized by the hook', async () => {
+    mount()
+    await waitFor(() => expect(previewFn).toHaveBeenCalled())
+    fireEvent.click(screen.getByLabelText('Repay RESET'))
+    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBeUndefined())
   })
 
   it('parses a typed repay amount at the debt decimals', async () => {
