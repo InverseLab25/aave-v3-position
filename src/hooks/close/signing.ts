@@ -132,11 +132,16 @@ interface FreshRouteContext {
   log: (m: string) => void
 }
 
-export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
+export async function buildFreshRoute(
+  p: ClosePlan,
+  ctx: FreshRouteContext,
+  /** The held permits, so the solver can build the transaction itself on this ask. */
+  permits?: { permit: PermitArgs; revoke: RevokeArgs },
+) {
   const { chainId, signatures, log } = ctx
   const input = { slippagePercent: ctx.slippagePercent }
         log('Refreshing the swap route before submitting…')
-        const candidates = await p.quoteAt(p.requiredIn)
+        const candidates = await p.quoteAt(p.requiredIn, permits)
         const { router, swapData, chosen, tx, sim, rejected } = await selectRoute({
           candidates,
           adapters: p.adapters,

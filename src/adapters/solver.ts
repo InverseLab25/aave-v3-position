@@ -1,3 +1,4 @@
+import type { Address, Hex } from 'viem';
 import type { Adapter, QuoteResponse, TransactionPayload } from './types';
 import type { SimulationResult } from './simulate';
 import { AggregatorHttpError } from './http';
@@ -30,7 +31,6 @@ interface SolverRoute {
   data: string;
   value: string;
   spender: string;
-  receiver: string;
   quotedOut: string;
   measuredOut: string;
   gasUsed: string;
@@ -40,6 +40,8 @@ interface SolverRoute {
   close?: { debtRepaid: string; collateralWithdrawn: string; returnedToUser: string };
   /** Off the PositionOpened event, when the route was run as the whole open. */
   open?: { collateralSupplied: string; debtBorrowed: string; margin: string };
+  /** Only when signatures were sent: the whole transaction, signatures and minOut inside, gas with 25% on. */
+  tx?: { to: string; data: string; value: string; gas: string };
 }
 
 interface SolverAnswer {
@@ -299,6 +301,13 @@ export function solverClose(quote: QuoteResponse): { debtRepaid: bigint; collate
   return { debtRepaid: BigInt(c.debtRepaid), collateralWithdrawn: BigInt(c.collateralWithdrawn), returnedToUser: BigInt(c.returnedToUser) };
 }
 
+/** The transaction the solver built from the signatures it was sent, or null when it was sent none. */
+export function solverTx(quote: QuoteResponse): { to: Address; data: Hex; value: bigint; gas: bigint } | null {
+  const t = (quote.rawQuote as Partial<SolverRaw> | undefined)?.tx;
+  if (!t) return null;
+  return { to: t.to as Address, data: t.data as Hex, value: BigInt(t.value), gas: BigInt(t.gas) };
+}
+
 /** What the whole open did with this route, or null when only the swap was simulated. */
 export function solverOpen(quote: QuoteResponse): { collateralSupplied: bigint; debtBorrowed: bigint; margin: bigint } | null {
   const o = (quote.rawQuote as Partial<SolverRaw> | undefined)?.open;
@@ -412,7 +421,9 @@ export const solverAdapter: Adapter = {
         throw new AggregatorHttpError(503, `${solverUrl()}/ws`);
       }
 
-      if (answer.routes.length && socket) socket.then((c) => streamFor(c, JSON.stringify(body), body, true), () => {});
+      // A signed ask is the send itself, so there is nothing to keep fresh after it.
+      const signed = !!(close?.permit || open?.delegation);
+      if (answer.routes.length && socket && !signed) socket.then((c) => streamFor(c, JSON.stringify(body), body, true), () => {});
       return toQuotes(answer.routes.map((r) => ({ ...r, deadline: answer.expiresAt })), amountIn, toAsset);
     } catch (e) {
       if ((e as Error)?.name === 'AbortError' || signal?.aborted) return [];

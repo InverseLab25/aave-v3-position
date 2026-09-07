@@ -287,7 +287,7 @@ export function useDeleverageClose() {
 
         const route = await buildFreshRoute(p, {
           chainId, slippagePercent: input.slippagePercent, signatures, log,
-        })
+        }, permits)
         const { hash, builtOut, minOut } = await submitClose(p, route, permits, {
           address, chainId, config, publicClient, walletClient, input, log, setStep,
         })

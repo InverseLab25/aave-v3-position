@@ -127,6 +127,9 @@ export interface Adapter {
   buildTransaction: (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number) => Promise<TransactionPayload>;
 }
 
+/** A signature as the solver takes it: decimal strings for the numbers, hex for r and s. */
+export interface SolverSig { deadline: string; r: string; s: string; v: number }
+
 export interface QuotesRequest {
   fromAsset: Asset;
   toAsset: Asset;
@@ -156,13 +159,17 @@ export interface QuotesRequest {
    * whole close through the Strategies contract instead of as a bare swap, and reports what
    * it repaid, withdrew and returned. Amounts are wei strings, or 'all'.
    */
-  close?: { user: string; collateralToWithdraw: 'all' | string; debtRepay: 'all' | string };
+  close?: {
+    user: string; collateralToWithdraw: 'all' | string; debtRepay: 'all' | string;
+    /** On the final ask only: the solver then returns the transaction to send, signatures inside. */
+    permit?: SolverSig & { amount: string }; revokePermit?: SolverSig;
+  };
   /**
    * Whose open this swap sits inside, when it does. The solver then runs each route as the
    * whole open through the Strategies contract, with the margin's balance and allowance
    * overridden for the wallet so it works before the approve. `amountIn` is what the contract
    * swaps; without `flashAmount` each route is flashed its own quote less 1%.
    */
-  open?: { user: string; margin: 'debt' | 'collateral'; marginAmount: string; flashAmount?: string };
+  open?: { user: string; margin: 'debt' | 'collateral'; marginAmount: string; flashAmount?: string; delegation?: SolverSig };
   signal?: AbortSignal;
 }

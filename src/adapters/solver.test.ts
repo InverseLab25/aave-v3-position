@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AggregatorHttpError } from './http'
-import { onSolverUpdate, resetSolverSession, solverAdapter, solverClose, solverMeasurement, solverOpen } from './solver'
+import { onSolverUpdate, resetSolverSession, solverAdapter, solverClose, solverMeasurement, solverOpen, solverTx } from './solver'
 
 const OWNER = '0x1111111111111111111111111111111111111111'
 const CONTRACT = '0x2222222222222222222222222222222222222222'
@@ -24,7 +24,6 @@ const route = (over: Record<string, unknown> = {}) => ({
   data: '0xdeadbeef',
   value: '0',
   spender: '0x3333333333333333333333333333333333333333',
-  receiver: OWNER,
   quotedOut: '2500000000',
   measuredOut: '2499000000',
   gasUsed: '180000',
@@ -137,7 +136,7 @@ describe('solverAdapter.getQuotes', () => {
   })
 
   it('maps each route onto a quote the existing pipeline can rank, pin and build', async () => {
-    stubServer([done([route(), route({ provider: 'nordstern', venue: undefined, receiver: CONTRACT, quotedOut: '2400000000', measuredOut: '2401000000' })])])
+    stubServer([done([route(), route({ provider: 'nordstern', venue: undefined, quotedOut: '2400000000', measuredOut: '2401000000' })])])
     const quotes = await solverAdapter.getQuotes!(args)
 
     expect(quotes.map((q) => [q.aggregator, q.routeId, q.amountOut])).toEqual([
@@ -311,11 +310,25 @@ describe('solverAdapter.getQuotes', () => {
     expect(solverClose(q)).toBeNull()
   })
 
+  it('sends the signatures on the final ask, takes the transaction back, and streams nothing for it', async () => {
+    const tx = { to: CONTRACT, data: '0xfeed', value: '0', gas: '7500000' }
+    stubServer([done([route({ tx })])])
+    const sig = { deadline: '1800000000', r: `0x${'aa'.repeat(32)}`, s: `0x${'bb'.repeat(32)}`, v: 27 }
+    const close = { user: OWNER, collateralToWithdraw: 'all' as const, debtRepay: 'all' as const, permit: { amount: '5', ...sig }, revokePermit: sig }
+    const [q] = await solverAdapter.getQuotes!({ ...args, close })
+
+    expect(sockets()[0].sent[0]).toMatchObject({ close })
+    expect(solverTx(q)).toEqual({ to: CONTRACT, data: '0xfeed', value: 0n, gas: 7500000n })
+    // A signed ask is the send itself: nothing to keep fresh afterwards.
+    expect(sockets()[0].sent.some((m) => m.every)).toBe(false)
+  })
+
   it('reports no close for a route that was only simulated as a swap', async () => {
     stubServer([done([route()])])
     const [q] = await solverAdapter.getQuotes!(args)
     expect(sockets()[0].sent[0].close).toBeUndefined()
     expect(solverClose(q)).toBeNull()
+    expect(solverTx(q)).toBeNull()
   })
 
   it('answers nothing on a chain the solver does not serve, without asking it', async () => {

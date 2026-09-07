@@ -461,6 +461,7 @@ const route = (builtOut: bigint) => ({
 describe('close() — signatures, reuse and the degradation baseline', () => {
   let signTypedData: ReturnType<typeof vi.fn>
   let writeContract: ReturnType<typeof vi.fn>
+  let sendTransaction: ReturnType<typeof vi.fn>
   let estimateContractGas: ReturnType<typeof vi.fn>
   let waitForTransactionReceipt: ReturnType<typeof vi.fn>
   let selectRoute: ReturnType<typeof vi.fn>
@@ -473,10 +474,11 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     forgetContractState()
     signTypedData = vi.fn().mockResolvedValue(SIG)
     writeContract = vi.fn().mockResolvedValue('0xhash')
+    sendTransaction = vi.fn().mockResolvedValue('0xhash')
     estimateContractGas = vi.fn().mockResolvedValue(900_000n)
     waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success' })
 
-    mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData, writeContract } })
+    mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData, writeContract, sendTransaction } })
     nonce = 7n
     mocks.usePublicClient.mockReturnValue({
       readContract: vi.fn(async ({ address, functionName }: { address: string; functionName: string }) => {
@@ -508,6 +510,33 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
   })
 
   const mount = () => renderHook(() => useDeleverageClose()).result
+
+  it('hands the held permits to the final re-quote and sends the transaction the solver built, as is', async () => {
+    // A MAX close is a fully known transaction, so it is quoted as the wallet's own close.
+    const input = { ...baseInput, collateralIn: 'all' as const }
+    const getQuotes = vi.fn().mockResolvedValue([quote(SIZED.expectedOut)])
+    mocks.leverageAdapters.mockReturnValue([{ name: 'Solver', getQuote: vi.fn(), getQuotes }])
+    const r = mount()
+    await r.current.close(input)
+    const tx = { to: DELEVERAGER, data: '0xfeed', value: '0', gas: '7500000' }
+    selectRoute.mockResolvedValue({
+      ...route(SIZED.expectedOut),
+      chosen: { ...quote(SIZED.expectedOut), rawQuote: { tx } },
+    } as never)
+
+    const out = await r.current.close(input)
+
+    expect(out.status).toBe('success')
+    // The final ask carried both signatures.
+    expect(getQuotes.mock.calls.at(-1)![0].close).toMatchObject({
+      user: USER, collateralToWithdraw: 'all', debtRepay: 'all',
+      permit: { amount: expect.any(String), v: expect.any(Number), r: SIG.slice(0, 66) },
+      revokePermit: { r: SIG.slice(0, 66) },
+    })
+    expect(sendTransaction).toHaveBeenCalledWith(expect.objectContaining({ to: DELEVERAGER, data: '0xfeed', gas: 7500000n }))
+    expect(writeContract).not.toHaveBeenCalled()
+    expect(estimateContractGas).not.toHaveBeenCalled()
+  })
 
   it('builds calldata once on the first press, not twice', async () => {
     // `buildPlan` builds and measures the field itself now, and throws with this very message

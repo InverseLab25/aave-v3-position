@@ -9,6 +9,7 @@ import { selectRoute } from '../../lib/closePlan'
 import { solverClose, solverMeasurement } from '../../adapters/solver'
 import { deriveDebtRepay, stableAmount } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
+import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
 import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS } from './constants'
@@ -185,12 +186,22 @@ export async function buildPlan(
        * known after the quote. Those stay bare swaps, measured as before.
        */
       // ponytail: sized and derived closes are not whole-close simulated; re-quote the settled size with `close` if that matters.
-      const closeOf = (amountIn: bigint) =>
+      const closeOf = (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) =>
         address && (collateralIn === 'all' || (collateralIn !== undefined && explicitRepay !== null))
-          ? { user: address, collateralToWithdraw: collateralIn === 'all' ? 'all' as const : amountIn.toString(), debtRepay: explicitRepay === null ? 'all' as const : explicitRepay.toString() }
+          ? {
+              user: address,
+              collateralToWithdraw: collateralIn === 'all' ? 'all' as const : amountIn.toString(),
+              debtRepay: explicitRepay === null ? 'all' as const : explicitRepay.toString(),
+              ...(signed
+                ? {
+                    permit: { amount: signed.permit.value.toString(), deadline: signed.permit.deadline.toString(), r: signed.permit.r, s: signed.permit.s, v: signed.permit.v },
+                    revokePermit: { deadline: signed.revoke.deadline.toString(), r: signed.revoke.r, s: signed.revoke.s, v: signed.revoke.v },
+                  }
+                : {}),
+            }
           : undefined
 
-      const quoteAt = async (amountIn: bigint) => {
+      const quoteAt = async (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) => {
         // An aggregator that refused to answer is not evidence about the pair. Tracked per call
         // rather than per plan, because the sizing loop quotes several times and only the round
         // that came back empty needs explaining.
@@ -209,7 +220,7 @@ export async function buildPlan(
                   chainId,
                   caller: strategies,
                   owner: address,
-                  close: closeOf(amountIn),
+                  close: closeOf(amountIn, signed),
                   signal,
                 }).catch((e: unknown) => {
                   if (e instanceof AggregatorHttpError && e.retryable) throttled = true

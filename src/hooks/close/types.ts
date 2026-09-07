@@ -2,6 +2,7 @@ import type { Address } from 'viem'
 import type { OutBasis } from '../../lib/deleverage'
 import type { StatedRate } from '../../lib/swapRoute'
 import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
+import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'
 
 /*//////////////////////////////////////////////////////////////
@@ -124,7 +125,8 @@ export interface ClosePlan {
   /** 10000 − slippageBps, for re-deriving a candidate's guaranteed output. */
   slipNum: bigint
   /** Re-quote at a given size, so close() can rebuild calldata from a CURRENT quote. */
-  quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
+  /** With `signed`, the ask is the final one: the solver returns the transaction to send. */
+  quoteAt: (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) => Promise<QuoteResponse[]>
   /** Lowercased router allowlist, read once per plan. */
   allowedRouters: Set<string>
 }
