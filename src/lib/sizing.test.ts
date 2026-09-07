@@ -31,7 +31,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt: linear(500n), // 10 coll -> 5000 debt, debt is 1000
     })
 
@@ -48,7 +47,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt: linear(50n), // 10 coll -> 500 debt, short of the 1000 debt
     })
 
@@ -63,7 +61,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt: async () => [],
     }).catch((e) => e)
 
@@ -90,7 +87,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     })
 
@@ -111,7 +107,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     })
 
@@ -127,7 +122,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     }).catch((e) => e)
 
@@ -143,7 +137,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     }).catch((e) => e)
 
@@ -164,7 +157,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     })
 
@@ -181,7 +173,6 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
     }
 
     it('quotes exactly the requested amount and does not solve for a size', async () => {
@@ -252,11 +243,12 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
     }
 
-    /** A seed generous enough to clear `needed` on a market priced at 500. */
-    const goodSeed = ((NEEDED * 10000n) / SLIP_NUM / 500n) * 2n
+    /** Exactly what clears `needed` on a market priced at 500, before any margin. */
+    const exactNeed = (NEEDED * 10000n + SLIP_NUM - 1n) / SLIP_NUM / 500n + 1n
+    /** What the oracle seed produces when it agrees with the route: the exact size plus 0.3%. */
+    const goodSeed = exactNeed + (exactNeed * 30n) / 10000n + 1n
 
     it('answers in a single call when the seed already clears the requirement', async () => {
       const quoteAt = vi.fn(linear(500n))
@@ -270,14 +262,51 @@ describe('sizeSwap', () => {
       expect(result.requiredIn).toBe(goodSeed)
     })
 
-    it('falls back to the full probe when the seed comes up short', async () => {
+    it('shrinks a seed that over-swaps, off the price the route quoted', async () => {
+      // Twice what the route needs. Accepting it converts collateral the user did not ask to
+      // sell; the seed's own buy price says how much is enough, and that size is quoted next.
       const quoteAt = vi.fn(linear(500n))
-      // Far too small to repay the debt — the oracle disagreeing with the route must cost a
-      // round, not produce an undersized swap.
+      const result = await sizeSwap({ ...base, quoteAt, seedIn: goodSeed * 2n })
+
+      expect(quoteAt).toHaveBeenCalledTimes(2)
+      expect(result.requiredIn).toBeLessThan(goodSeed * 2n)
+      expect(result.guaranteed).toBe(true)
+      expect(result.minDebtOut).toBeGreaterThanOrEqual(NEEDED)
+    })
+
+    it("re-sizes off the seed's own price when it comes up short, without a full probe", async () => {
+      const quoteAt = vi.fn(linear(500n))
+      // Far too small to repay the debt. The oracle disagreeing with the route costs one
+      // re-size at the price the route quoted, never an undersized swap.
       const result = await sizeSwap({ ...base, quoteAt, seedIn: COLL / 1000n })
 
-      expect(quoteAt.mock.calls.length).toBeGreaterThan(1)
-      expect(quoteAt).toHaveBeenCalledWith(COLL) // the probe still happens
+      expect(quoteAt).toHaveBeenCalledTimes(2)
+      expect(quoteAt).not.toHaveBeenCalledWith(COLL)
+      expect(result.guaranteed).toBe(true)
+      expect(result.minDebtOut).toBeGreaterThanOrEqual(NEEDED)
+    })
+
+    it('drains when the price says more collateral is needed than there is', async () => {
+      // Priced so the whole balance barely misses: the re-size lands past the balance, and
+      // the answer is the full-collateral quote with `covered` read off it.
+      const quoteAt = vi.fn(linear(100n)) // 10 coll -> 1000 debt, exactly the debt, short of `needed`
+      const result = await sizeSwap({ ...base, quoteAt, seedIn: COLL / 2n })
+
+      expect(quoteAt).toHaveBeenLastCalledWith(COLL)
+      expect(result.requiredIn).toBe(COLL)
+      expect(result.covered).toBe(true)
+      expect(result.guaranteed).toBe(false)
+    })
+
+    it('sizes off the measured output when the caller supplies one', async () => {
+      // The quote claims 500 but measures 400. The measurement is the buy price that matters,
+      // so the re-size follows it and the guarantee is judged on it.
+      const quoteAt = vi.fn(linear(500n))
+      const outOf = (q: QuoteResponse) => (BigInt(q.amountOut) * 4n) / 5n
+      const result = await sizeSwap({ ...base, quoteAt, seedIn: goodSeed, outOf })
+
+      expect(quoteAt).toHaveBeenCalledTimes(2)
+      expect(result.expectedOut).toBe(outOf(result.best))
       expect(result.guaranteed).toBe(true)
       expect(result.minDebtOut).toBeGreaterThanOrEqual(NEEDED)
     })
@@ -369,12 +398,10 @@ describe('sizeSwap', () => {
       debt: DEBT,
       needed: NEEDED,
       slipNum: SLIP_NUM,
-      rounds: 3,
       quoteAt,
     })
 
-    // One full-collateral quote to gauge price, one verification at the sized amount.
-    // The conservative estimate means refinement rounds should not fire on a linear market.
+    // With no seed, one full-collateral quote to gauge price, then one at the sized amount.
     expect(quoteAt).toHaveBeenCalledTimes(2)
   })
 })

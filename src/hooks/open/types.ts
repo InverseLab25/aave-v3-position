@@ -132,9 +132,6 @@ export const DEBOUNCE_MS = 400
  * out costs only the settled figures, and the hash is already on screen.
  */
 
-/** Solve, then at most one correction. Pricing is non-linear; a third round buys nothing. */
-export const MAX_REFINE_ROUNDS = 2
-
 /**
  * `ready` is the gate: approved and delegated, nothing sent. The user is looking at the position
  * with the wallet work already behind them, and the send waits on a second press.

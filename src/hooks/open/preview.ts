@@ -9,14 +9,14 @@ import {
 } from '../../lib/leverage'
 import { solveBorrow } from '../../lib/solveBorrow'
 import { routeCostPercent } from '../../lib/swapRoute'
-import { getAdaptersForChain } from '../../adapters'
+import { leverageAdapters } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import type { Adapter, QuoteResponse } from '../../adapters/types'
-import { getChainConfig, getTxGasCap } from '../../config/chains'
-import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
+import { getTxGasCap } from '../../config/chains'
+import { applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
-import { simulateSwap, swapSimulationInput } from '../../adapters/simulate'
-import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
+import { solverMeasurement } from '../../adapters/solver'
+import { type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
  * What the debounced preview run needs from the hook.
@@ -79,7 +79,7 @@ interface PreviewRunContext {
 /** One debounced quote-and-size pass. Everything the preview shows is decided here. */
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
-    input, pinned, forInput, client, chainId, cancelled, signal, forPair,
+    input, pinned, forInput, client, chainId, owner, cancelled, signal, forPair,
     setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes, setMeasured,
   } = ctx
 
@@ -96,7 +96,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
        * The last round's field, reported ONCE at the end of the run — hence declared out here,
        * where `finally` can reach it.
        *
-       * `solveBorrow` calls `quoteAll` up to three times, and only the final round's list is the
+       * `solveBorrow` calls `quoteAll` once or twice, and only the final round's list is the
        * one the preview is built from. Reporting each round as it landed re-rendered the panel
        * and the modal twice over to show numbers that were about to be replaced. Null until a
        * round has actually happened, so a run that fails before quoting leaves the previous list
@@ -160,12 +160,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         }
 
         const allowed = new Set(routers.map((r) => r.toLowerCase()))
-        // Same filter the close flow uses, and for the same reason: `supportsExecution` only
-        // says the adapter returns a transaction, not that this contract can execute it. See
-        // COMPATIBLE_ADAPTERS — quoting the rest gets them ranked and sized against, then
-        // rejected at build, which surfaces as a "rate moved" the user cannot act on.
-        const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
-          .filter((a) => (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name))
+        // The solver, which quotes every provider and simulates each route server-side. There is
+        // deliberately no browser fallback behind it.
+        const adapters = leverageAdapters()
 
         const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
         const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
@@ -205,6 +202,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
                   slippage: slippagePercent,
                   chainId,
                   caller: input.contract,
+                  owner,
                   signal,
                 })
                 return quotes.map((q) => ({ a, q }))
@@ -293,7 +291,6 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
             flashAmount,
             debtMargin,
             slipNum: BPS - input.slippageBps,
-            rounds: MAX_REFINE_ROUNDS,
             collateralPriceUsd: coll.priceUsd,
             debtPriceUsd: debt.priceUsd,
             collateralDecimals: coll.decimals,
@@ -302,6 +299,9 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
               candidates = await quoteAll(swapIn)
               return candidates.map((c) => c.q)
             },
+            // The solver measured every route from the contract, so the buy price the borrow is
+            // sized on is what the route pays, not what its provider claims.
+            outOf: (q) => solverMeasurement(q)?.amountOut ?? BigInt(q.amountOut),
           })
           if (cancelled()) return
           if (!solution.ok) {
@@ -317,23 +317,13 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
           build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
           isAllowlisted: (router) => allowed.has(router.toLowerCase()),
-          label: (c) => c.a.name,
+          label: (c) => routeKey(c.q),
           txGasCap: getTxGasCap(chainId),
           cancelled,
           // The contract makes this swap mid-flash-loan, so it is the sender and the recipient.
-          // The open direction is debt -> collateral, the mirror of the close.
-          simulate: (c, tx) =>
-            simulateSwap(
-              swapSimulationInput({
-                chainId,
-                caller: input.contract,
-                tokenIn: debtAsset,
-                tokenOut: collateral,
-                amountIn: c.q.amountIn,
-                tx,
-              }),
-              signal,
-            ),
+          // The solver already measured every route that way on the server, so the result is
+          // read off the quote rather than simulated again here.
+          simulate: (c) => Promise.resolve(solverMeasurement(c.q)),
         })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
         // superseded attempt writes a no-route error that a reverted input would make current.
@@ -442,7 +432,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           projection,
           router: build.built.to as Address,
           swapData: build.built.data as Hex,
-          aggregator: build.adapter.name,
+          aggregator: routeKey(build.quote),
           priceImpactPercent: routeCostPercent(build.quote.rawAmountInUsd, build.quote.rawAmountOutUsd),
         })
       } catch {

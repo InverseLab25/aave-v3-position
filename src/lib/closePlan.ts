@@ -308,8 +308,11 @@ export async function selectRoute({
   tokenIn: string
   /** Bought by the swap. The debt asset on a close, the new long on a flip. */
   tokenOut: string
-  /** Injected so the selection stays testable without a live simulator. */
-  simulate?: (input: SimulationInput) => Promise<SimulationResult | null>
+  /**
+   * Injected so the selection stays testable without a live simulator. The candidate rides
+   * along for a source whose measurement was taken elsewhere and travels with the quote.
+   */
+  simulate?: (input: SimulationInput, candidate: QuoteResponse) => Promise<SimulationResult | null>
 }): Promise<RouteSelection> {
   // The walk itself is shared with the open flow, so the allowlist and calldata checks stay
   // identical between them. What is specific here is the bar each candidate has to clear:
@@ -340,6 +343,7 @@ export async function selectRoute({
               amountIn: c.amountIn,
               tx,
             }),
+            c,
           )
       : undefined,
   })

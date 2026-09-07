@@ -8,7 +8,6 @@ const BASE: Omit<SolveBorrowInput, 'quoteAt'> = {
   flashAmount: 10n ** 18n, // 1 WETH to repay
   debtMargin: 0n,
   slipNum: 9_950n, // 0.5% slippage
-  rounds: 3,
   collateralPriceUsd: 200_000_000_000n,
   debtPriceUsd: 100_000_000n,
   collateralDecimals: 18,
@@ -48,14 +47,45 @@ it('solves the borrow that repays the flash, in one round when the oracle agrees
   expect(r.solved.borrowAmount).toBe(r.solved.swapIn)
 })
 
-it('refines upward when the route prices worse than the oracle', async () => {
-  // 20% worse than oracle: the seed cannot clear the flash and must be scaled up.
+it('re-sizes once, off the buy price the route quoted, when it prices worse than the oracle', async () => {
+  // 20% worse than oracle: the seed cannot clear the flash. The route's own price says how much
+  // more is needed, so the second quote is at that size and is the last.
   const quoteAt = routerAt((ORACLE_RATE_WAD * 80n) / 100n)
   const r = await solveBorrow({ ...BASE, quoteAt })
 
   expect(r.ok).toBe(true)
   if (!r.ok) return
-  expect(quoteAt.mock.calls.length).toBeGreaterThan(1)
+  expect(quoteAt).toHaveBeenCalledTimes(2)
+  expect(r.solved.minCollateralOut).toBeGreaterThanOrEqual(BASE.flashAmount)
+  // At most the margin over what the price says is needed: not a whole oracle-sized step.
+  const need = (BASE.flashAmount * 10_000n * 10n ** 18n) / (BASE.slipNum * ((ORACLE_RATE_WAD * 80n) / 100n))
+  expect(r.solved.swapIn).toBeLessThanOrEqual((need * 10_040n) / 10_000n)
+})
+
+it('shrinks the borrow when the route prices better than the oracle', async () => {
+  // 5% better than oracle: the seed over-borrows, and the surplus would be debt the user did
+  // not need. The buy price says so, and the second quote is at the smaller size.
+  const quoteAt = routerAt((ORACLE_RATE_WAD * 105n) / 100n)
+  const r = await solveBorrow({ ...BASE, quoteAt })
+
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  expect(quoteAt).toHaveBeenCalledTimes(2)
+  expect(r.solved.borrowAmount).toBeLessThan(seedBorrow(BASE)!)
+  expect(r.solved.minCollateralOut).toBeGreaterThanOrEqual(BASE.flashAmount)
+})
+
+it('sizes off the measured output when the caller supplies one', async () => {
+  // The quote claims the oracle rate, but what it MEASURES is 20% less. The measurement is the
+  // buy price that matters, so the re-size follows it and the guarantee is judged on it.
+  const quoteAt = routerAt(ORACLE_RATE_WAD)
+  const outOf = (q: QuoteResponse) => (BigInt(q.amountOut) * 80n) / 100n
+  const r = await solveBorrow({ ...BASE, quoteAt, outOf })
+
+  expect(r.ok).toBe(true)
+  if (!r.ok) return
+  expect(quoteAt).toHaveBeenCalledTimes(2)
+  expect(r.solved.expectedOut).toBe(outOf(r.solved.best))
   expect(r.solved.minCollateralOut).toBeGreaterThanOrEqual(BASE.flashAmount)
 })
 
@@ -109,7 +139,7 @@ it('reports no route rather than returning a stale quote', async () => {
   expect(r).toMatchObject({ ok: false, error: 'NO_ROUTE' })
 })
 
-it('gives up rather than looping forever when the route will not converge', async () => {
+it('gives up after one correction when the route will not cover the flash', async () => {
   // Output is constant regardless of input, so scaling up never helps.
   const quoteAt = vi.fn(async (amountIn: bigint): Promise<QuoteResponse[]> => [{
     aggregator: 'KyberSwap',
@@ -120,10 +150,10 @@ it('gives up rather than looping forever when the route will not converge', asyn
     rawQuote: {},
   } as unknown as QuoteResponse])
 
-  const r = await solveBorrow({ ...BASE, rounds: 2, quoteAt })
+  const r = await solveBorrow({ ...BASE, quoteAt })
   expect(r).toMatchObject({ ok: false, error: 'NOT_CONVERGING' })
-  // Bounded: it does not keep asking forever.
-  expect(quoteAt.mock.calls.length).toBeLessThanOrEqual(3)
+  // The seed and one re-size: there is no third guess worth paying for.
+  expect(quoteAt).toHaveBeenCalledTimes(2)
 })
 
 it('refuses when the debt-asset margin alone already covers the swap', async () => {

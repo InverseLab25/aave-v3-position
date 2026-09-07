@@ -1,17 +1,17 @@
 import { erc20Abi, formatUnits, parseUnits, type Address, type PublicClient } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../../config/chains'
-import { getAdaptersForChain } from '../../adapters'
+import { leverageAdapters } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { COMPATIBLE_ADAPTERS, CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
+import { CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
 import { selectRoute } from '../../lib/closePlan'
-import { simulateSwap } from '../../adapters/simulate'
+import { solverMeasurement } from '../../adapters/solver'
 import { deriveDebtRepay } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
-import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS, SIZING_ROUNDS } from './constants'
+import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS } from './constants'
 import type { QuoteResponse } from '../../adapters/types'
 import type { ClosePlan, CloseInput } from './types'
 
@@ -169,10 +169,8 @@ export async function buildPlan(
         targetRepay < debt ? targetRepay : (targetRepay * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
 
       // 3. Quote and size.
-      logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
-      const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
-        (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
-      )
+      logFn('Fetching swap routes from the solver…')
+      const adapters = leverageAdapters()
       /**
        * The last round's full field, kept for the picker. Written on every round rather than
        * only the first, so the list is priced at the size the plan actually settled on.
@@ -197,6 +195,7 @@ export async function buildPlan(
                   slippage: slippagePercent,
                   chainId,
                   caller: strategies,
+                  owner: address,
                   signal,
                 }).catch((e: unknown) => {
                   if (e instanceof AggregatorHttpError && e.retryable) throttled = true
@@ -233,8 +232,10 @@ export async function buildPlan(
         debt: targetRepay,
         needed: targetNeeded,
         slipNum,
-        rounds: SIZING_ROUNDS,
         quoteAt,
+        // The solver measured every route from the contract, so the buy price the swap is
+        // sized on is what the route pays, not what its provider claims.
+        outOf: (q) => solverMeasurement(q)?.amountOut ?? BigInt(q.amountOut),
         fixedIn: collateralIn === 'all' ? collAmount : collateralIn,
         // Aave's own oracle prices ride along on both assets, so the first guess is free.
         // Without it every refresh pays for a full-collateral probe just to learn the rate.
@@ -273,7 +274,8 @@ export async function buildPlan(
         slipNum,
         tokenIn: collateralAddr,
         tokenOut: debtAddr,
-        simulate: simulateSwap,
+        // Measured on the server, from the contract, for this exact calldata.
+        simulate: (_, c) => Promise.resolve(solverMeasurement(c)),
       })
       if (!measured.chosen || !measured.tx) {
         throw new CloseError(
