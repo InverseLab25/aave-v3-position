@@ -259,6 +259,24 @@ describe('ClosePositionModal — the two-press flow', () => {
     await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(before))
   })
 
+  it('keeps the last preview when a refresh finds the aggregator stalled', async () => {
+    mount()
+    await waitFor(() => expect(isEnabled()).toBe(true))
+    previewFn.mockResolvedValueOnce({ preview: null, error: { kind: 'aggregator', message: 'stalled' } })
+
+    fireEvent.click(screen.getByText(/Refresh/))
+
+    await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(1))
+    await waitFor(() => expect(isEnabled()).toBe(true))
+    expect(screen.queryByText('Could not reach the price aggregator')).toBeNull()
+  })
+
+  it('still reports a stalled aggregator when there is no preview to keep', async () => {
+    previewFn.mockResolvedValue({ preview: null, error: { kind: 'aggregator', message: 'stalled' } })
+    mount()
+    await waitFor(() => expect(screen.getByText('Could not reach the price aggregator')).toBeTruthy())
+  })
+
   it('offers a wider tolerance when the aggregator refused on output', async () => {
     closeFn.mockResolvedValue({ hash: null, status: 'error', slippageTooTight: true })
     mount()

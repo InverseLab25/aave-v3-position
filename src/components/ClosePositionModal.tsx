@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, type CSSProperties } from 'react'
+import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react'
 import type { OutBasis } from '../lib/deleverage'
 
 /** What each rung of `expectedOutcome` means, in the user's terms. */
@@ -133,6 +133,9 @@ export function ClosePositionModal({
   const [isComplete, setIsComplete] = useState<boolean>(false)
 
   const [preview, setPreview] = useState<ClosePreview | null>(null)
+  // Read inside the quote effect without re-arming it on every preview.
+  const previewRef = useRef<ClosePreview | null>(null)
+  useEffect(() => { previewRef.current = preview }, [preview])
   /**
    * The aggregator the user pinned in the route list, or null while the ranking decides. Held
    * across re-quotes on purpose — a pin overrides the ranking until it is taken off.
@@ -308,8 +311,13 @@ export function ClosePositionModal({
           signal: controller.signal,
         })
         if (isMounted) {
-          setPreview(p.preview)
-          setPreviewError(p.error)
+          // A stall at the aggregator mid-poll must not swap a live preview for an error: the
+          // next refresh asks again. With nothing on screen yet, the error is all there is.
+          const stall = !p.preview && p.error?.kind === 'aggregator' && previewRef.current !== null
+          if (!stall) {
+            setPreview(p.preview)
+            setPreviewError(p.error)
+          }
           // Only when this run actually priced something. A failed one leaves the last roster
           // standing rather than replacing it with nothing.
           if (p.preview) setQuotedRoutes({ pair: routesPairKey, list: p.preview.routes })

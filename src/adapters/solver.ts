@@ -42,7 +42,12 @@ interface SolverAnswer {
   /** ms epoch: the earliest of every route's window and the server's own max age. */
   expiresAt: number;
   routes: SolverRoute[];
+  /** Why each candidate was dropped. Only the codes matter here. */
+  rejected?: { code: string }[];
 }
+
+/** Rejections that say nothing about the pair: the provider did not answer, or was not asked. */
+const STALL = new Set(['TIMEOUT', 'HTTP_ERROR', 'RATE_LIMITED']);
 
 /** What rides in `rawQuote`: the route as served, plus the answer's own deadline. */
 type SolverRaw = SolverRoute & { deadline: number };
@@ -233,6 +238,12 @@ export const solverAdapter: Adapter = {
         if (!(e instanceof AggregatorHttpError) || (e.status !== 401 && e.status !== 503) || signal?.aborted) throw e;
         session = null;
         answer = await quoteOverSocket(body, signal);
+      }
+      // Empty because nobody answered in time is the aggregator stalling on this one call, not
+      // a pair with no route. Reported the way a down server is, so the close flow keeps its
+      // last preview and retries instead of declaring the pair unclosable.
+      if (answer.routes.length === 0 && answer.rejected?.length && answer.rejected.every((r) => STALL.has(r.code))) {
+        throw new AggregatorHttpError(503, `${solverUrl()}/ws`);
       }
 
       // This adapter is the `aggregator` (it is what builds the route); the provider and its

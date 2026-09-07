@@ -209,6 +209,18 @@ describe('solverAdapter.getQuotes', () => {
     expect((err as AggregatorHttpError).retryable).toBe(true)
   })
 
+  it('reports every provider timing out as a retryable aggregator failure, not as no route', async () => {
+    stubServer([{ ...done([]), rejected: [{ provider: 'socket', code: 'TIMEOUT' }, { provider: 'nordstern', code: 'TIMEOUT' }] }])
+    const err = await solverAdapter.getQuotes!(args).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(AggregatorHttpError)
+    expect((err as AggregatorHttpError).retryable).toBe(true)
+  })
+
+  it('answers empty when a provider actually looked and found no route', async () => {
+    stubServer([{ ...done([]), rejected: [{ provider: 'socket', code: 'TIMEOUT' }, { provider: 'nordstern', code: 'NO_LIQUIDITY' }] }])
+    expect(await solverAdapter.getQuotes!(args)).toEqual([])
+  })
+
   it('answers nothing on a chain the solver does not serve, without asking it', async () => {
     const calls = stubServer([])
     expect(await solverAdapter.getQuotes!({ ...args, chainId: 1 })).toEqual([])
