@@ -156,7 +156,6 @@ it('does not re-quote when a background refetch moves prices and balances', asyn
     useLeverageOpen({
       ...base,
       maxSupply: base.maxSupply + BigInt(tick),
-      marginBalance: base.marginBalance + BigInt(tick),
       existingCollateralUsd: BigInt(tick),
       reserves: {
         ...base.reserves,
@@ -176,6 +175,25 @@ it('does not re-quote when a background refetch moves prices and balances', asyn
   await settle()
 
   expect(mocks.readContractState).toHaveBeenCalledTimes(1)
+})
+
+it('re-quotes when the wallet balance changes', async () => {
+  function Funded() {
+    const [balance, setBalance] = useState(100n * 10n ** 18n)
+    useLeverageOpen({ ...makeInput(), marginBalance: balance })
+    useEffect(() => {
+      const t = setTimeout(() => setBalance(50n * 10n ** 18n), 1000)
+      return () => clearTimeout(t)
+    }, [])
+    return null
+  }
+
+  render(<Funded />)
+  await settle()
+  await act(async () => { vi.advanceTimersByTime(1000) })
+  await settle()
+
+  expect(mocks.readContractState).toHaveBeenCalledTimes(2)
 })
 
 it('does not quote while the panel is out of view', async () => {

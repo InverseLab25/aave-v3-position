@@ -172,6 +172,8 @@ export function inputKey(i: LeverageOpenInput): string {
   return [
     i.contract, i.direction, i.marginAsset, i.subject, i.quote,
     i.marginAmount, i.sizedBy, i.supplyAmount, i.borrowAmount, i.slippageBps,
+    // The wallet's balance moves only when funds do, and a move can make the margin unaffordable.
+    i.marginBalance,
     i.reserves.collateral.address, i.reserves.collateral.decimals,
     i.reserves.debt.address, i.reserves.debt.decimals,
     // Resolves once, from null. Folded in so a preview computed before the reserve config
