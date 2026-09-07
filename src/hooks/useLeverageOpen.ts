@@ -19,7 +19,6 @@ import {
   withinAdoptionBand,
 } from '../lib/delegationCache'
 import type { TxOutcome } from '../lib/txOutcome'
-import { clearQuoteCache } from '../adapters/http'
 import type { QuoteResponse } from '../adapters/types'
 import type { StrategiesRemedy } from '../lib/strategiesErrors'
 import {
@@ -142,7 +141,6 @@ export function useLeverageOpen(
    * the cache is dropped and the next pass goes to the network.
    */
   const hardRefresh = useCallback(() => {
-    clearQuoteCache()
     // The pause flag and the allowlist too: someone pressing refresh after the owner changed one
     // is asking to see it, and the cache would otherwise hold the old answer for up to a minute.
     forgetContractState()

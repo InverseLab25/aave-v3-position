@@ -1,8 +1,7 @@
 import { parseSignature, type Address } from 'viem'
 import type { WalletClient } from 'viem'
-import { clearQuoteCache } from '../../adapters/http'
-import { CloseError, buildPermitTypedData, effectiveOut } from '../../lib/deleverage'
-import { simulateSwap } from '../../adapters/simulate'
+import { CloseError, buildPermitTypedData, effectiveOut, routeKey } from '../../lib/deleverage'
+import { solverMeasurement } from '../../adapters/solver'
 import {
   reuseBlocker,
   selectRoute,
@@ -137,7 +136,6 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
   const { chainId, signatures, log } = ctx
   const input = { slippagePercent: ctx.slippagePercent }
         log('Refreshing the swap route before submitting…')
-        clearQuoteCache() // the reuse window outlasts a fast signing; force the network
         const candidates = await p.quoteAt(p.requiredIn)
         const { router, swapData, chosen, tx, sim, rejected } = await selectRoute({
           candidates,
@@ -151,7 +149,7 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
           slipNum: p.slipNum,
           tokenIn: p.collateralAddr,
           tokenOut: p.debtAddr,
-          simulate: simulateSwap,
+          simulate: (_, c) => Promise.resolve(solverMeasurement(c)),
         })
 
         if (!router || !swapData || !chosen || !tx) {
@@ -201,8 +199,8 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
             `The route got ${Math.abs(degradation).toFixed(2)}% worse than the quote you reviewed, so nothing was submitted. The numbers have been refreshed — press again to accept the new ones.`,
           )
         }
-        if (chosen.aggregator !== p.best.aggregator) {
-          log(`${p.best.aggregator} unusable — falling back to ${chosen.aggregator}.`)
+        if (routeKey(chosen) !== routeKey(p.best)) {
+          log(`${routeKey(p.best)} unusable — falling back to ${routeKey(chosen)}.`)
         }
         return { router, swapData, chosen, builtOut, quotedOut: BigInt(chosen.amountOut), outputChangePercent: tx.outputChangePercent }
 }

@@ -20,7 +20,6 @@ const V_DEBT = '0x5555555555555555555555555555555555555555' as Address
 const CHAIN_ID = 8453
 
 const mocks = vi.hoisted(() => ({
-  clearQuoteCache: vi.fn(),
   getPauseState: vi.fn(),
   getAllowedRouters: vi.fn(),
   readContractState: vi.fn(),
@@ -28,7 +27,7 @@ const mocks = vi.hoisted(() => ({
   getPermitContext: vi.fn(),
   getPoolDataProvider: vi.fn(),
   getReserveTokens: vi.fn(),
-  getAdaptersForChain: vi.fn(),
+  leverageAdapters: vi.fn(),
   usePublicClient: vi.fn(),
   useChainId: vi.fn(),
   useConnection: vi.fn(),
@@ -52,22 +51,7 @@ vi.mock('../lib/aaveStatics', () => ({
 // of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
 vi.mock('../adapters', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getAdaptersForChain: mocks.getAdaptersForChain,
-}))
-// Unreachable simulator, which is the fallback path: every route is then judged on its BUILT
-// output, exactly as it was before simulation existed. Left that way on purpose — these tests
-// are about delegation and signature reuse, and a measured output would silently change the
-// numbers they assert on. The real thing goes through the shared HTTP gate, whose setTimeout
-// never fires under this file's fake timers, so leaving it unmocked hangs the preview instead.
-vi.mock('../adapters/simulate', async (orig) => ({
-  ...(await orig<Record<string, unknown>>()),
-  simulateSwap: vi.fn(async () => null),
-}))
-// Partial: `AggregatorHttpError` has to stay the real class — the throttling tests branch on
-// `instanceof` — while the cache drop needs to be observable.
-vi.mock('../adapters/http', async (orig) => ({
-  ...(await orig<Record<string, unknown>>()),
-  clearQuoteCache: mocks.clearQuoteCache,
+  leverageAdapters: mocks.leverageAdapters,
 }))
 vi.mock('wagmi', () => ({
   usePublicClient: mocks.usePublicClient,
@@ -284,7 +268,7 @@ beforeEach(() => {
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue([ROUTER])
   mocks.readContractState.mockResolvedValue({ paused: false, routers: [ROUTER] })
-  mocks.getAdaptersForChain.mockReturnValue([fakeAdapter()])
+  mocks.leverageAdapters.mockReturnValue([fakeAdapter()])
   mocks.getPoolDataProvider.mockResolvedValue('0x0000000000000000000000000000000000000123')
   mocks.getReserveTokens.mockResolvedValue({ vDebt: V_DEBT })
   // No standing delegation, so every attempt needs a signature unless one is held.
@@ -471,7 +455,7 @@ it('separates an aggregator that is refusing to answer from a pair that has no r
   adapter.getQuote = vi.fn(async () => {
     throw new AggregatorHttpError(429, 'https://aggregator-api.kyberswap.com/base/api/v1/routes')
   })
-  mocks.getAdaptersForChain.mockReturnValue([adapter])
+  mocks.leverageAdapters.mockReturnValue([adapter])
 
   await mount()
 
@@ -482,7 +466,7 @@ it('separates an aggregator that is refusing to answer from a pair that has no r
 it('still says NO_ROUTE when the aggregator answers and simply has nothing', async () => {
   const adapter = fakeAdapter()
   adapter.getQuote = vi.fn(async () => null)
-  mocks.getAdaptersForChain.mockReturnValue([adapter])
+  mocks.leverageAdapters.mockReturnValue([adapter])
 
   await mount()
 
@@ -498,7 +482,7 @@ it('reports the aggregators that priced the pair, so the user can pin one of the
 it('blames the pin, not the pair, when the pinned aggregator did not price it', async () => {
   // The pair priced fine — the pin is what left nothing to size against, and the remedy is to
   // unpin rather than to go looking for liquidity.
-  mocks.getAdaptersForChain.mockReturnValue([fakeAdapter()])
+  mocks.leverageAdapters.mockReturnValue([fakeAdapter()])
 
   await mount(makeInput({ preferredAggregator: 'Nordstern' }))
 
@@ -670,7 +654,7 @@ it('re-prices from the network when the user asks for a newer price', async () =
   // the 4s reuse window too — otherwise pressing it inside that window returns the same numbers
   // the user pressed it to get away from.
   const adapter = fakeAdapter()
-  mocks.getAdaptersForChain.mockReturnValue([adapter])
+  mocks.leverageAdapters.mockReturnValue([adapter])
   await mount()
   const quotedBefore = vi.mocked(adapter.getQuote).mock.calls.length
 
@@ -680,7 +664,6 @@ it('re-prices from the network when the user asks for a newer price', async () =
   await settle()
 
   expect(vi.mocked(adapter.getQuote).mock.calls.length).toBeGreaterThan(quotedBefore)
-  expect(mocks.clearQuoteCache).toHaveBeenCalled()
 })
 
 it('reports an open the chain reverted as an error, not as done', async () => {
@@ -803,7 +786,7 @@ it('keeps the priced routes on screen while a refresh is in flight', async () =>
     await new Promise<void>((r) => { release = r })
     return (adapter.getQuote as (...a: unknown[]) => unknown)(...args)
   }) }
-  mocks.getAdaptersForChain.mockReturnValue([slow])
+  mocks.leverageAdapters.mockReturnValue([slow])
 
   await act(async () => {
     hook().refresh()
@@ -823,14 +806,14 @@ it('keeps the route list on screen when the user pins one of them', async () => 
   // the pair, which is all this list says.
   const socket = fakeAdapter()
   const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern', getQuote: nordsternQuote }
-  mocks.getAdaptersForChain.mockReturnValue([socket, nordstern])
+  mocks.leverageAdapters.mockReturnValue([socket, nordstern])
   await mount()
   expect(hook().routes.length).toBe(2)
 
   // The re-quote the pin provokes, held open so the assertion lands mid-flight.
   let release: (() => void) | undefined
   const hold = async () => { await new Promise<void>((r) => { release = r }) }
-  mocks.getAdaptersForChain.mockReturnValue([
+  mocks.leverageAdapters.mockReturnValue([
     { ...socket, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return socket.getQuote(...a) }) },
     { ...nordstern, getQuote: vi.fn(async (...a: Parameters<Adapter['getQuote']>) => { await hold(); return nordstern.getQuote(...a) }) },
   ])
@@ -853,7 +836,7 @@ it('reports what each route measured, not only what it quoted', async () => {
   // aggregator's own claim about its own route, which nothing on this path can check.
   const socket = fakeAdapter()
   const nordstern: Adapter = { ...fakeAdapter(), name: 'Nordstern', getQuote: nordsternQuote }
-  mocks.getAdaptersForChain.mockReturnValue([socket, nordstern])
+  mocks.leverageAdapters.mockReturnValue([socket, nordstern])
 
   await mount()
 
@@ -878,7 +861,7 @@ it('still lists the field when sizing never converges', async () => {
       rawQuote: {},
     })) as unknown as Adapter['getQuote'],
   }
-  mocks.getAdaptersForChain.mockReturnValue([stubborn])
+  mocks.leverageAdapters.mockReturnValue([stubborn])
 
   await mount()
 

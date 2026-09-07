@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   getPriceOracle: vi.fn(),
   getReserveTokens: vi.fn(),
   getATokenName: vi.fn(),
-  getAdaptersForChain: vi.fn(),
+  leverageAdapters: vi.fn(),
   selectRoute: vi.fn(),
   readContract: vi.fn(),
   estimateContractGas: vi.fn(async () => 1_200_000n),
@@ -53,7 +53,7 @@ vi.mock('../lib/aaveStatics', () => ({
 // of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
 vi.mock('../adapters', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getAdaptersForChain: mocks.getAdaptersForChain,
+  leverageAdapters: mocks.leverageAdapters,
 }))
 // Partial, deliberately: only `selectRoute` reaches the network. canReuseSignature and
 // reuseBlocker stay real — those ARE the decisions under test.
@@ -190,7 +190,7 @@ beforeEach(() => {
   mocks.getATokenName.mockResolvedValue('Aave Ethereum WETH')
   // Prices the swap at a constant 1994 USDC/WETH, so the second sizing round sees a real rate
   // for the input it actually asked about.
-  mocks.getAdaptersForChain.mockReturnValue([
+  mocks.leverageAdapters.mockReturnValue([
     {
       name: 'mock',
       supportsExecution: true,

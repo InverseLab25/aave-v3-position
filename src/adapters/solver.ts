@@ -1,0 +1,278 @@
+import type { Adapter, QuoteResponse, TransactionPayload } from './types';
+import type { SimulationResult } from './simulate';
+import { AggregatorHttpError } from './http';
+
+/**
+ * The solver: one server-side request that quotes every provider, simulates each route from the
+ * Strategies contract and returns them ranked, with calldata attached. See ~/project/defi-solver.
+ *
+ * The only route source, for every flow: the leverage open and close, the flip and the plain
+ * swap screen. `caller` names who will execute the route, and the server simulates from there.
+ * The frontend still runs `validateSwapTx` on what comes back, so a wrong or compromised server
+ * can only hand the wallet calldata the contract would reject anyway.
+ *
+ * Fails closed: an unreachable solver is reported as an aggregator outage, never worked around
+ * by quoting from the browser. The keys live on the server and nowhere else.
+ */
+
+const solverUrl = () => import.meta.env.VITE_SOLVER_URL as string | undefined;
+
+/** What the server serves. Anything else answers empty without a request, like Socket does. */
+export const SOLVER_CHAINS = new Set([8453, 42161]);
+
+/** Provider ids as the server names them, mapped to the names the rest of the app already uses. */
+const NAMES: Record<string, string> = { zerox: '0x', socket: 'Socket', nordstern: 'Nordstern' };
+
+interface SolverRoute {
+  provider: string;
+  venue?: string;
+  to: string;
+  data: string;
+  value: string;
+  spender: string;
+  receiver: string;
+  quotedOut: string;
+  measuredOut: string;
+  gasUsed: string;
+  /** ms epoch. */
+  expiresAt?: number;
+}
+
+interface SolverAnswer {
+  /** ms epoch: the earliest of every route's window and the server's own max age. */
+  expiresAt: number;
+  routes: SolverRoute[];
+}
+
+/** What rides in `rawQuote`: the route as served, plus the answer's own deadline. */
+type SolverRaw = SolverRoute & { deadline: number };
+
+interface Turnstile {
+  render: (el: HTMLElement, opts: {
+    sitekey: string;
+    callback: (token: string) => void;
+    'error-callback'?: () => void;
+  }) => string;
+}
+
+/**
+ * One Turnstile token. The script is loaded on first use, the widget rendered into a throwaway
+ * element: in invisible mode the user sees nothing and the callback fires on its own.
+ */
+async function turnstileToken(): Promise<string> {
+  const g = globalThis as { turnstile?: Turnstile };
+  if (!g.turnstile) {
+    await new Promise<void>((ok, fail) => {
+      const s = document.createElement('script');
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      s.async = true;
+      s.onload = () => ok();
+      s.onerror = () => fail(new Error('Turnstile failed to load'));
+      document.head.append(s);
+    });
+  }
+  return new Promise((ok, fail) => {
+    const el = document.body.appendChild(document.createElement('div'));
+    g.turnstile!.render(el, {
+      sitekey: (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ?? '',
+      callback: (t) => { el.remove(); ok(t); },
+      'error-callback': () => { el.remove(); fail(new Error('Turnstile rejected')); },
+    });
+  });
+}
+
+/**
+ * The session token, in memory only. Never localStorage: it is a bearer credential against our
+ * own quota. One in flight at a time, so a burst of quotes costs one Turnstile pass, not five.
+ */
+let session: Promise<{ token: string; expiresAt: number }> | null = null;
+
+export function resetSolverSession(): void {
+  session = null;
+  socket?.then((c) => c.ws.close(), () => {});
+  socket = null;
+}
+
+/** A fetch whose transport failure reads as the solver being down, which the panel knows how to say. */
+async function post(path: string, body: string, headers: Record<string, string>, signal?: AbortSignal): Promise<Response> {
+  const url = `${solverUrl()}${path}`;
+  try {
+    return await fetch(url, { method: 'POST', body, signal, headers: { 'content-type': 'application/json', ...headers } });
+  } catch (e) {
+    if ((e as Error)?.name === 'AbortError') throw e;
+    throw new AggregatorHttpError(503, url);
+  }
+}
+
+async function sessionToken(): Promise<string> {
+  // A minute of slack against clock skew: past that the server would refuse the upgrade, and
+  // a refused upgrade looks like the server being down.
+  const live = await session?.catch(() => null);
+  if (live && live.expiresAt < Date.now() + 60_000) session = null;
+  session ??= (async () => {
+    const res = await post('/session', JSON.stringify({ turnstileToken: await turnstileToken() }), {});
+    if (!res.ok) throw new AggregatorHttpError(res.status, `${solverUrl()}/session`);
+    return (await res.json()) as { token: string; expiresAt: number };
+  })();
+  session.catch(() => { session = null; });
+  return (await session).token;
+}
+
+/**
+ * Quotes ride one websocket per session rather than a POST each: no handshake per quote, and
+ * the server shares one in-flight run between every subscriber asking for the same trade.
+ * Opened lazily, dropped on close; the next quote reopens it.
+ */
+type Conn = { ws: WebSocket; pending: Map<string, { ok: (a: SolverAnswer) => void; fail: (e: Error) => void }> };
+let socket: Promise<Conn> | null = null;
+let gen = 0;
+let seq = 0;
+
+function connect(): Promise<Conn> {
+  socket ??= (async () => {
+    const mine = ++gen;
+    const url = `${solverUrl()}/ws`;
+    const ws = new WebSocket(`${url.replace(/^http/, 'ws')}?token=${encodeURIComponent(await sessionToken())}`);
+    // Per connection, so a socket closing late can only fail its own requests, never its successor's.
+    const pending: Conn['pending'] = new Map();
+    ws.onmessage = (e) => {
+      const m = JSON.parse(String(e.data)) as { id?: string; error?: string; done?: boolean } & Partial<SolverAnswer>;
+      const p = m.id ? pending.get(m.id) : undefined;
+      if (!p) return;
+      // Per-route pushes ({ id, route }) are skipped: the caller ranks the whole field once, at `done`.
+      if (m.error) {
+        pending.delete(m.id!);
+        p.fail(new AggregatorHttpError(m.error === 'rate limited' ? 429 : m.error === 'bad request' ? 400 : 503, url));
+      } else if (m.done) {
+        pending.delete(m.id!);
+        p.ok(m as SolverAnswer);
+      }
+    };
+    ws.onclose = (e) => {
+      if (gen === mine) socket = null;
+      // 4001 is the server closing at session expiry; anything else is the transport.
+      if (e.code === 4001) session = null;
+      for (const p of pending.values()) p.fail(new AggregatorHttpError(e.code === 4001 ? 401 : 503, url));
+      pending.clear();
+    };
+    await new Promise<void>((ok, fail) => {
+      ws.onopen = () => ok();
+      ws.onerror = () => fail(new AggregatorHttpError(503, url));
+    });
+    return { ws, pending };
+  })();
+  socket.catch(() => { socket = null; });
+  return socket;
+}
+
+function quoteOverSocket(body: object, signal?: AbortSignal): Promise<SolverAnswer> {
+  return new Promise((ok, fail) => {
+    connect().then(({ ws, pending }) => {
+      if (signal?.aborted) return fail(new DOMException('aborted', 'AbortError'));
+      const id = `q${++seq}`;
+      pending.set(id, { ok, fail });
+      signal?.addEventListener('abort', () => {
+        if (!pending.delete(id)) return;
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id, stop: true }));
+        fail(new DOMException('aborted', 'AbortError'));
+      }, { once: true });
+      ws.send(JSON.stringify({ id, ...body }));
+    }, fail);
+  });
+}
+
+/**
+ * The server's measurement for a solver quote, in the shape the browser's simulator reports.
+ * Null for a quote that carries none, which `effectiveOut` reads as "not measured".
+ */
+export function solverMeasurement(quote: QuoteResponse): SimulationResult | null {
+  const r = quote.rawQuote as Partial<SolverRaw> | undefined;
+  if (r?.measuredOut === undefined) return null;
+  return { ok: true, amountOut: BigInt(r.measuredOut), gasUsed: Number(r.gasUsed) };
+}
+
+export const solverAdapter: Adapter = {
+  name: 'Solver',
+  supportsExecution: true,
+
+  // The placeholder-caller round makes no sense here: every solver quote is built for the
+  // contract. Quote through `getQuotes`, which every leverage flow already does.
+  getQuote: async () => null,
+
+  getQuotes: async ({ fromAsset, toAsset, amountIn, slippage, chainId, caller, owner, signal }): Promise<QuoteResponse[]> => {
+    if (!SOLVER_CHAINS.has(chainId)) return [];
+    const body = {
+      chainId,
+      // Socket signs and pays its route for this wallet. Without one connected, the contract
+      // stands in, which is exactly the server's own warm-up probe.
+      owner: owner ?? caller,
+      caller,
+      tokenIn: fromAsset.underlyingAsset,
+      tokenOut: toAsset.underlyingAsset,
+      amountIn,
+      slippageBps: Math.round(slippage * 100),
+    };
+    try {
+      let answer: SolverAnswer;
+      try {
+        answer = await quoteOverSocket(body, signal);
+      } catch (e) {
+        // A refused upgrade and a rotated session both surface as the socket dropping. One
+        // fresh session, one retry, and no loop. 503 past that is "every provider was rate
+        // limited" or the server down, 400 "the pair is unsupported": the existing error types
+        // already tell those apart as retryable and not.
+        if (!(e instanceof AggregatorHttpError) || (e.status !== 401 && e.status !== 503) || signal?.aborted) throw e;
+        session = null;
+        answer = await quoteOverSocket(body, signal);
+      }
+
+      // This adapter is the `aggregator` (it is what builds the route); the provider and its
+      // venue name the ROW. A repeated name gets a suffix rather than silently sharing a key
+      // with the route before it.
+      const taken = new Set<string>();
+      return answer.routes.map((r) => {
+        const name = (NAMES[r.provider] ?? r.provider) + (r.venue ? ` · ${r.venue}` : '');
+        let routeId = name;
+        let n = 2;
+        while (taken.has(routeId)) routeId = `${name} ${n++}`;
+        taken.add(routeId);
+        const outUnits = Number(r.quotedOut) / 10 ** toAsset.decimals;
+        const amountOutUsd = toAsset.priceInUsd ? outUnits * Number(toAsset.priceInUsd) : 0;
+        return {
+          aggregator: 'Solver',
+          routeId,
+          amountIn,
+          // The provider's own claim. What it MEASURED comes back through `solverMeasurement`,
+          // so sizing keeps running on the quote and selection on the measurement, as today.
+          amountOut: r.quotedOut,
+          amountOutUsd: amountOutUsd.toFixed(2),
+          gasEstimate: r.gasUsed,
+          gasUsd: '0',
+          netReturnUsd: amountOutUsd,
+          rawQuote: { ...r, deadline: answer.expiresAt } satisfies SolverRaw,
+          routeDetails: { type: 'solver', info: 'Quoted and simulated by the solver' },
+        };
+      });
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError' || signal?.aborted) return [];
+      throw e;
+    }
+  },
+
+  buildTransaction: async (quote): Promise<TransactionPayload> => {
+    const r = quote.rawQuote as SolverRaw;
+    // Refused here rather than on chain: past its window a route reverts, and finding that out
+    // costs the user the gas. The preview re-quotes every few seconds, so this is rarely hit.
+    if (Math.min(r.expiresAt ?? Infinity, r.deadline) <= Date.now()) {
+      throw new Error('Solver: route expired before it could be submitted');
+    }
+    return {
+      to: r.to,
+      data: r.data,
+      value: r.value,
+      spender: r.spender,
+      amountOut: r.measuredOut,
+      gasEstimate: r.gasUsed,
+    };
+  },
+};

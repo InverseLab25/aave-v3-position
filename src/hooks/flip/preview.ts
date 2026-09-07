@@ -1,9 +1,9 @@
 import { type Address, type PublicClient } from 'viem'
 import { getChainConfig, getFlipperAddress } from '../../config/chains'
-import { getAdaptersForChain, quoteField } from '../../adapters'
-import type { QuoteResponse } from '../../adapters/types'
+import { leverageAdapters, quoteField } from '../../adapters'
+import type { Adapter, QuoteResponse } from '../../adapters/types'
 import { selectRoute } from '../../lib/closePlan'
-import { simulateSwap } from '../../adapters/simulate'
+import { solverMeasurement } from '../../adapters/solver'
 import { aaveV3FlipperAbi, sizeFlip, WAD, type FlipSize } from '../../lib/strategies-sdk'
 import { QUOTE_ROUNDS, RATE_BUFFER_BPS } from '../flip/constants'
 import { FlipError, type FlipInput, type FlipPreview, type Position } from '../flip/types'
@@ -46,7 +46,7 @@ export async function previewFlip(
       if (pos.collateralAmount === 0n) throw new FlipError('No collateral to flip')
 
       const slipNum = BigInt(Math.round((100 - input.slippagePercent) * 100))
-      const adapters = getAdaptersForChain(cfg.adapters ?? [])
+      const adapters = leverageAdapters()
 
       // Which routers the contract will accept. A quote through anything else is wasted work,
       // and the rejection is only visible after `buildTransaction` names the router.
@@ -110,7 +110,7 @@ export async function previewFlip(
 export async function quoteAndSelect(p: {
   input: FlipInput
   chainId: number
-  adapters: ReturnType<typeof getAdaptersForChain>
+  adapters: Adapter[]
   allowedRouters: Set<string>
   flipper: Address
   flashAmount: bigint
@@ -130,7 +130,8 @@ export async function quoteAndSelect(p: {
     slipNum: p.slipNum,
     tokenIn: p.input.fromAsset.underlyingAsset,
     tokenOut: p.input.toAsset.underlyingAsset,
-    simulate: simulateSwap,
+    // Measured on the server from the Flipper itself: the quote named it as `caller`.
+    simulate: (_, c) => Promise.resolve(solverMeasurement(c)),
   })
 }
 
@@ -162,7 +163,7 @@ function unwrapSize(r: ReturnType<typeof sizeFlip>): FlipSize {
  * a refusal is not evidence about the pair, and `selectRoute` reports what it rejected and why.
  */
 async function quoteAll(
-  adapters: ReturnType<typeof getAdaptersForChain>,
+  adapters: Adapter[],
   input: FlipInput,
   amountIn: bigint,
   chainId: number,

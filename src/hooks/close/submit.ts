@@ -3,7 +3,6 @@ import type { Config } from 'wagmi'
 import { estimateFeesPerGas } from 'wagmi/actions'
 import { calculateAdjustedFees, gasFromMeasuredSwap, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
 import { assertWalletChain } from '../../lib/walletChain'
-import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
 import { computeMinOut, deriveDebtRepay, isSlippageShapedFailure, planWithdrawal } from '../../lib/closePlan'
 import { aaveV3StrategiesAbi, FULL_CLOSE, planClose } from '../../lib/strategies-sdk'
@@ -210,7 +209,6 @@ export async function submitClose(
           // Deliberately NOT retried. Re-submitting automatically would spend gas against
           // numbers the user has not seen. The refreshed preview goes back in front of them,
           // and the held signature survives, so their next press costs no wallet prompt.
-          clearQuoteCache()
           // `pinnedGasLimit` wraps the node's error; the revert reason is on the cause.
           const src = e instanceof GasEstimateError ? (e.cause ?? e) : e
           const detail = (src as { shortMessage?: string }).shortMessage ?? (src as Error).message

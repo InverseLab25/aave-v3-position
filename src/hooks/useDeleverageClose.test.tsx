@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   getPoolDataProvider: vi.fn(),
   getReserveTokens: vi.fn(),
   getATokenName: vi.fn(),
-  getAdaptersForChain: vi.fn(),
+  leverageAdapters: vi.fn(),
   sizeSwap: vi.fn(),
   oracleSeed: vi.fn(),
   readContract: vi.fn(),
@@ -55,14 +55,7 @@ vi.mock('../lib/aaveStatics', () => ({
 // of routes the flow ranks, and stubbing it out would test a fan-out that does not exist.
 vi.mock('../adapters', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getAdaptersForChain: mocks.getAdaptersForChain,
-}))
-// Partial: `AggregatorHttpError` has to be the real class, because the hook branches on
-// `instanceof` to tell a throttled aggregator from a pair with no route.
-vi.mock('../adapters/http', async (orig) => ({
-  ...(await orig<Record<string, unknown>>()),
-  clearQuoteCache: vi.fn(),
-  fetchQuoteJson: vi.fn(),
+  leverageAdapters: mocks.leverageAdapters,
 }))
 vi.mock('../lib/sizing', () => ({ sizeSwap: mocks.sizeSwap, oracleSeed: mocks.oracleSeed }))
 // Partial, deliberately: only `selectRoute` reaches the network (it builds router calldata).
@@ -162,7 +155,7 @@ beforeEach(() => {
   mocks.getPoolDataProvider.mockResolvedValue('0x7777777777777777777777777777777777777777')
   mocks.getReserveTokens.mockResolvedValue({ aToken: ATOKEN, vDebt: VDEBT })
   mocks.getATokenName.mockResolvedValue('Aave Ethereum WETH')
-  mocks.getAdaptersForChain.mockReturnValue([{ name: 'Socket', getQuote: vi.fn() }])
+  mocks.leverageAdapters.mockReturnValue([{ name: 'Socket', getQuote: vi.fn() }])
   mocks.oracleSeed.mockReturnValue(parseUnits('7', 18))
   mocks.sizeSwap.mockResolvedValue(SIZED)
   // The preview builds and measures the field now, so every path through it goes through
@@ -231,7 +224,7 @@ describe('buildPlan — validation before any signature is requested', () => {
   it('names a throttled aggregator rather than blaming the pair', async () => {
     // The close used to swallow every quote failure into null, so being rate-limited arrived as
     // "this pair cannot be closed" — which is both wrong and unactionable.
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       {
         name: 'Socket',
         getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(429, 'https://socket/routes')),
@@ -248,7 +241,7 @@ describe('buildPlan — validation before any signature is requested', () => {
 
   it('leaves an answered-but-empty quote to the ordinary no-route path', async () => {
     // A refusal is not a verdict on the pair; an actual empty answer is.
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(null) },
     ])
     let ranked: unknown[] | null = null
@@ -264,7 +257,7 @@ describe('buildPlan — validation before any signature is requested', () => {
   })
 
   it('proceeds when one adapter is throttled but another still prices it', async () => {
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       {
         name: 'OpenOcean',
         getQuote: vi.fn().mockRejectedValue(new AggregatorHttpError(503, 'https://oo/quote')),
@@ -279,7 +272,7 @@ describe('buildPlan — validation before any signature is requested', () => {
   })
 
   it('lists every aggregator that answered, so the picker has something to offer', async () => {
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
     sizeSwapCallingQuoteAt()
@@ -292,7 +285,7 @@ describe('buildPlan — validation before any signature is requested', () => {
   it('names the pinned aggregator when it is the one that cannot serve the swap', async () => {
     // The pair priced fine — one route answered and was dropped by the pin. Reporting this as a
     // pair problem would send the user hunting for liquidity that is right there.
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
     sizeSwapCallingQuoteAt()
@@ -472,7 +465,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
       estimateContractGas,
     })
     // The single adapter behind the real `quoteAt`, so buildFreshRoute re-quotes for real.
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
 
@@ -753,7 +746,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     const REQUOTED = parseUnits('20520', 6)
     const BUILT = parseUnits('20500', 6)
     mocks.sizeSwap.mockResolvedValue({ ...SIZED, expectedOut: REQUOTED, best: quote(REQUOTED) })
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
     ])
     selectRoute.mockResolvedValue(route(BUILT))
@@ -774,7 +767,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     await r.current.close(baseInput)
 
     const BUILT = parseUnits('20900', 6) // 21000 -> 20900 is -0.48%
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(BUILT)) },
     ])
     selectRoute.mockResolvedValue(route(BUILT))
@@ -825,7 +818,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
       expectedOut: OUT,
       minDebtOut: parseUnits('5970', 6),
     })
-    mocks.getAdaptersForChain.mockReturnValue([
+    mocks.leverageAdapters.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(OUT)) },
     ])
     selectRoute.mockResolvedValue(route(OUT))

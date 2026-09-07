@@ -1,5 +1,4 @@
 import { useState, lazy, Suspense } from 'react'
-import type { SuppliedAsset } from './hooks/useAavePositions'
 import { useChainId } from 'wagmi'
 import { WalletConnect } from './components/WalletConnect'
 import { AavePosition } from './components/AavePosition'
@@ -10,25 +9,22 @@ const DexDiscovery = lazy(() =>
 )
 import { getChainConfig } from './config/chains'
 import { useViewMode } from './hooks/useViewMode'
-import { useNativePrice } from './hooks/useNativePrice'
 import { useAavePositions } from './hooks/useAavePositions'
 
 function App() {
   const { viewAddress, viewChainId } = useViewMode()
   const connectedChainId = useChainId()
   const chainId = viewChainId ?? connectedChainId
-  // Pinned to the chain being VIEWED, not the connected one, and re-quoted whenever that changes.
-  // Null on a chain with no quote route, and the wrapped-native fallback below takes over.
-  const apiNativePrice = useNativePrice(chainId)
   const chainConfig = getChainConfig(chainId)
-  const { suppliedAssets } = useAavePositions({ viewAddress, viewChainId })
+  const { availableReserves } = useAavePositions({ viewAddress, viewChainId })
 
   const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
   // The wrapped token is the native one prefixed with W on every chain here — WETH, WBNB, WPOL,
   // WAVAX — so the label follows the chain instead of claiming ETH everywhere.
   const nativeSymbol = nativeWrappedSymbol.replace(/^W/, '')
-  const wrappedNativeAsset = suppliedAssets.find((a: SuppliedAsset) => a.symbol.toUpperCase() === nativeWrappedSymbol)
-  const nativePrice = apiNativePrice !== null ? apiNativePrice : (wrappedNativeAsset ? Number(wrappedNativeAsset.priceInUsd) : 0)
+  // Aave's oracle for the wrapped native, which trades at par with the native itself.
+  const wrappedNativeAsset = availableReserves.find((a) => a.symbol.toUpperCase() === nativeWrappedSymbol)
+  const nativePrice = wrappedNativeAsset ? Number(wrappedNativeAsset.priceInUsd) : 0
 
   const isViewMode = !!viewAddress
   const [selectedTab, setSelectedTab] = useState<'aave' | 'dex'>('aave')
@@ -124,7 +120,6 @@ function App() {
           <AavePosition
             viewAddress={viewAddress}
             viewChainId={viewChainId}
-            apiNativePrice={apiNativePrice}
             active={activeTab === 'aave'}
           />
         </div>

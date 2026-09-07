@@ -17,7 +17,6 @@ import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { healthFactor, evaluateHf } from '../utils/health'
 
-import { clearQuoteCache } from '../adapters/http'
 import type { CloseErrorKind } from '../lib/deleverage'
 import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
@@ -501,7 +500,6 @@ export function ClosePositionModal({
     if (isProcessing || isQuoting) return
 
     const requote = () => {
-      clearQuoteCache()
       setRefreshTick((t) => t + 1)
     }
     const visible = () => !paused && document.visibilityState === 'visible'
@@ -877,12 +875,7 @@ export function ClosePositionModal({
               }}>
                 <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Estimated Output</h4>
                 <button
-                  // Refresh exists to get prices newer than the ones on screen, so it has to
-                  // drop the quote-reuse window as well as re-run the effect.
-                  onClick={() => {
-                    clearQuoteCache()
-                    setRefreshTick((t) => t + 1)
-                  }}
+                  onClick={() => setRefreshTick((t) => t + 1)}
                   disabled={isQuoting}
                   className="btn-ghost"
                   title="Re-fetch the latest quote and prices"

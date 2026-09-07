@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAavePositions } from '../hooks/useAavePositions';
 import { useConnection, useReadContract, useBalance } from 'wagmi';
 import { parseUnits, formatUnits, erc20Abi } from 'viem';
-import { getAdaptersForChain } from '../adapters';
+import { leverageAdapters, quoteField } from '../adapters';
+import { SOLVER_CHAINS } from '../adapters/solver';
 import { NATIVE_ADDRESS, isNativeAddress } from '../adapters/native';
 import { getChainConfig } from '../config/chains';
 import { ConfirmSwapModal } from './ConfirmSwapModal';
@@ -15,9 +16,9 @@ export function DexDiscovery() {
   const { address, chain } = useConnection();
   const chainConfig = getChainConfig(chainId);
 
-  const adapters = useMemo(() => {
-    return getAdaptersForChain(chainConfig?.adapters ?? []);
-  }, [chainConfig]);
+  // The solver, alone: it quotes every provider and simulates each route from this wallet.
+  const adapter = leverageAdapters()[0];
+  const supported = SOLVER_CHAINS.has(chainId);
 
   /**
    * Aave's oracle price per underlying, keyed by lower-cased address.
@@ -39,7 +40,7 @@ export function DexDiscovery() {
     // Expose the chain's native currency (ETH/BNB/POL/…) as a first-class swap token,
     // but only where swaps are actually supported. The native symbol/decimals come from
     // the connected chain, falling back to the wrapped-native default (WETH → ETH).
-    if (!chainConfig || (chainConfig.adapters?.length ?? 0) === 0) return base;
+    if (!chainConfig || !supported) return base;
     const nativeSymbol = chain?.nativeCurrency?.symbol
       ?? chainConfig.defaultTokens?.[0]?.symbol?.replace(/^W/, '')
       ?? 'ETH';
@@ -54,7 +55,7 @@ export function DexDiscovery() {
       source: 'default',
     };
     return [nativeToken, ...base];
-  }, [chainConfig, chain, priceOf]);
+  }, [chainConfig, chain, priceOf, supported]);
 
   // Merge Aave positions with default tokens, deduped by address
   const allFromTokens = useMemo<Token[]>(() => {
@@ -105,8 +106,7 @@ export function DexDiscovery() {
   const [builtTxs, setBuiltTxs] = useState<Record<string, TransactionPayload>>({});
   const [isBuildingTx, setIsBuildingTx] = useState<Record<string, boolean>>({});
 
-  const fetchingRef = useRef<Record<string, boolean>>({});
-  const lastFetchRef = useRef<Record<string, number>>({});
+  const fetchingRef = useRef(false);
 
   // Derive current selection with fallback to the first sensible token.
   // User selections (from the select dropdowns) override the fallback via *Override state.
@@ -182,7 +182,7 @@ export function DexDiscovery() {
     setAmountStr('');
   };
 
-  const isValidInput = parseFloat(amountStr) > 0 && !!fromAsset && !!toAsset && adapters.length > 0;
+  const isValidInput = parseFloat(amountStr) > 0 && !!fromAsset && !!toAsset && supported && !!address;
 
   const fetchAllQuotes = () => {
     if (!isValidInput || !fromAsset || !toAsset) return;
@@ -194,39 +194,23 @@ export function DexDiscovery() {
       return;
     }
 
-    const now = Date.now();
     const firedFor = requestKey;
+    if (fetchingRef.current || !address) return;
+    fetchingRef.current = true;
 
-    adapters.forEach(adapter => {
-      if (fetchingRef.current[adapter.name]) return;
-
-      const lastFetch = lastFetchRef.current[adapter.name] || 0;
-      // The adapter's own floor where it has one — a fact about its endpoint's quota rather
-      // than about this screen, and it was a growing list of names here.
-      const throttleMs = adapter.minQuoteIntervalMs ?? 1000;
-      if (now - lastFetch < throttleMs - 100) return; // Allow 100ms jitter
-
-      lastFetchRef.current[adapter.name] = now;
-      fetchingRef.current[adapter.name] = true;
-
-      adapter.getQuote(fromAsset, toAsset, amountIn, slippage, chainId)
-        .then(res => {
-          if (res && isCurrent(firedFor)) {
-            setQuoteMap(prev => ({ ...prev, [adapter.name]: res }));
-            setErrors(prev => {
-              const newErrs = { ...prev };
-              delete newErrs[adapter.name];
-              return newErrs;
-            });
-          }
-        })
-        .catch(err => {
-          if (isCurrent(firedFor)) setErrors(prev => ({ ...prev, [adapter.name]: err.message || 'Failed' }));
-        })
-        .finally(() => {
-          fetchingRef.current[adapter.name] = false;
-        });
-    });
+    quoteField(adapter, { fromAsset, toAsset, amountIn, slippage, chainId, caller: address, owner: address })
+      .then(routes => {
+        if (!isCurrent(firedFor)) return;
+        // Replaced, not merged: a venue the solver stopped offering has to leave the list.
+        setQuoteMap(Object.fromEntries(routes.map(r => [r.routeId!, r])));
+        setErrors({});
+      })
+      .catch(err => {
+        if (isCurrent(firedFor)) setErrors({ Solver: err.message || 'Failed' });
+      })
+      .finally(() => {
+        fetchingRef.current = false;
+      });
   };
 
   const isTxActive = Object.values(builtTxs).some(Boolean) || Object.values(isBuildingTx).some(Boolean);
@@ -266,8 +250,6 @@ export function DexDiscovery() {
   const refreshActiveQuote = async () => {
     if (!activeAggregator || !address || !fromAsset || !toAsset) return;
     if (swapStarted) return; // frozen once the user has committed — never rebuild under them
-    const adapter = adapters.find(a => a.name === activeAggregator);
-    if (!adapter) return;
     let amountIn: string;
     try {
       amountIn = parseUnits(amountStr, fromAsset.decimals).toString();
@@ -276,7 +258,8 @@ export function DexDiscovery() {
     }
     setIsRefreshingActive(true);
     try {
-      const freshQuote = await adapter.getQuote(fromAsset, toAsset, amountIn, slippage, chainId);
+      const routes = await quoteField(adapter, { fromAsset, toAsset, amountIn, slippage, chainId, caller: address, owner: address });
+      const freshQuote = routes.find(r => r.routeId === activeAggregator);
       if (!freshQuote) return;
       setQuoteMap(prev => ({ ...prev, [activeAggregator]: freshQuote }));
       // Rebuild the tx from the fresh quote so slippage/router/deadline are current.
@@ -305,20 +288,13 @@ export function DexDiscovery() {
   useEffect(() => {
     if (!activeAggregator || swapStarted) return;
     const tick = () => refreshActiveQuoteRef.current();
-    // Never faster than the aggregator's own floor. This path bypasses the per-adapter throttle
-    // in `fetchAllQuotes` entirely, so on an endpoint that wants five seconds between quotes it
-    // was asking every two — and building on top of that.
-    const every = Math.max(
-      adapters.find((a) => a.name === activeAggregator)?.minQuoteIntervalMs ?? 0,
-      2000,
-    );
     const kickoff = setTimeout(tick, 0);
-    const id = setInterval(tick, every);
+    const id = setInterval(tick, 2000);
     return () => {
       clearTimeout(kickoff);
       clearInterval(id);
     };
-  }, [activeAggregator, swapStarted, adapters]);
+  }, [activeAggregator, swapStarted]);
 
   const clearTx = (aggregatorName: string) => {
     setSwapStarted(false); // reopening a fresh review — allow auto-refresh again
@@ -333,8 +309,7 @@ export function DexDiscovery() {
   // runs from an onClick, and it reads the clock to stamp when the quote was refreshed.
   const buildTx = useCallback(async (aggregatorName: string) => {
     const quote = quoteMap[aggregatorName];
-    const adapter = adapters.find(a => a.name === aggregatorName);
-    if (!quote || !adapter || !address) return;
+    if (!quote || !address) return;
 
     setSwapStarted(false); // fresh review starts unfrozen
     setIsBuildingTx(prev => ({ ...prev, [aggregatorName]: true }));
@@ -353,7 +328,7 @@ export function DexDiscovery() {
     } finally {
       setIsBuildingTx(prev => ({ ...prev, [aggregatorName]: false }));
     }
-  }, [quoteMap, adapters, address, slippage, chainId]);
+  }, [quoteMap, adapter, address, slippage, chainId]);
 
   const formatAddress = (addr: string) => {
     if (!addr) return '';
@@ -380,22 +355,21 @@ export function DexDiscovery() {
           <h1>Meta-Aggregator Discovery</h1>
         </div>
         <p style={{ color: 'var(--text-secondary)', marginBottom: '30px' }}>
-          Compare routes across {adapters.length} Aggregators in real-time. Auto-refreshes every 1s. Sorted by highest asset return.
+          Every route the solver quoted and simulated from your wallet, best measured return first. Auto-refreshes every 1s.
         </p>
 
-        {/* No adapters on this chain */}
-        {adapters.length === 0 && (
+        {/* The solver serves Base and Arbitrum only */}
+        {!supported && (
           <div style={{ padding: '40px', textAlign: 'center', color: '#d97706', backgroundColor: '#fffbeb', borderRadius: '8px', border: '1px solid #fbbf24' }}>
-            <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>⚠️ No DEX Aggregators Available</div>
+            <div style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>⚠️ Swaps Not Available Here</div>
             <div style={{ fontSize: '14px' }}>
-              DEX aggregators are not supported on <strong>{chainConfig?.name ?? 'this network'}</strong>.
-              Switch to Ethereum Mainnet to use DEX Discovery.
+              Swaps are not supported on <strong>{chainConfig?.name ?? 'this network'}</strong>.
+              Switch to Base or Arbitrum to use DEX Discovery.
             </div>
           </div>
         )}
 
-        {/* Main content when adapters exist */}
-        {adapters.length > 0 && (
+        {supported && (
           <div className="dex-grid">
 
             {/* COLUMN 1: Config */}
@@ -567,10 +541,9 @@ export function DexDiscovery() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                   {validRoutes.map((route, idx) => {
                     const isBest = idx === 0;
-                    const txData = builtTxs[route.aggregator];
-                    const isLoadingTx = isBuildingTx[route.aggregator];
-                    const adapter = adapters.find(a => a.name === route.aggregator);
-                    const canExecute = adapter?.supportsExecution ?? false;
+                    const key = route.routeId!;
+                    const txData = builtTxs[key];
+                    const isLoadingTx = isBuildingTx[key];
 
                     const slippageBps = BigInt(Math.floor(slippage * 100));
                     const minOutputBigInt = (BigInt(route.amountOut) * (10000n - slippageBps)) / 10000n;
@@ -579,7 +552,7 @@ export function DexDiscovery() {
                     const isInsufficientBalance = parseFloat(amountStr) > fromBalance;
 
                     return (
-                      <div key={route.aggregator} style={{
+                      <div key={key} style={{
                         padding: '12px 14px',
                         border: isBest ? '2px solid var(--success-color)' : '1px solid var(--border-color)',
                         borderRadius: '8px',
@@ -588,9 +561,8 @@ export function DexDiscovery() {
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                           <div style={{ fontWeight: 'bold', fontSize: '15px' }}>
-                            {route.aggregator}
+                            {key}
                             {isBest && <span style={{ marginLeft: '10px', fontSize: '12px', backgroundColor: 'var(--success-color)', color: 'white', padding: '3px 8px', borderRadius: '12px' }}>BEST RETURN</span>}
-                            {!canExecute && <span style={{ marginLeft: '10px', fontSize: '11px', backgroundColor: '#6b7280', color: 'white', padding: '2px 6px', borderRadius: '4px' }}>Quote Only</span>}
                           </div>
                         </div>
 
@@ -692,7 +664,7 @@ export function DexDiscovery() {
                             toAsset={toAsset}
                             amountIn={amountStr}
                             slippage={slippage}
-                            onClose={() => clearTx(route.aggregator)}
+                            onClose={() => clearTx(key)}
                             isRefreshing={isRefreshingActive}
                             lastRefreshedAt={activeQuoteRefreshedAt}
                             onRefresh={refreshActiveQuote}
@@ -700,27 +672,25 @@ export function DexDiscovery() {
                           />
                         ) : (
                           <button
-                            onClick={() => buildTx(route.aggregator)}
-                            disabled={isLoadingTx || !canExecute || isInsufficientBalance}
+                            onClick={() => buildTx(key)}
+                            disabled={isLoadingTx || isInsufficientBalance}
                             style={{
                               width: '100%',
                               padding: '10px',
-                              backgroundColor: (canExecute && !isInsufficientBalance) ? '#3b82f6' : '#9ca3af',
+                              backgroundColor: !isInsufficientBalance ? '#3b82f6' : '#9ca3af',
                               color: '#fff',
                               border: 'none',
                               borderRadius: '4px',
                               fontWeight: 'bold',
-                              cursor: (canExecute && !isInsufficientBalance) ? 'pointer' : 'not-allowed',
+                              cursor: !isInsufficientBalance ? 'pointer' : 'not-allowed',
                               opacity: isLoadingTx ? 0.7 : 1
                             }}
                           >
-                            {!canExecute
-                              ? 'Execution Not Supported'
-                              : isInsufficientBalance
-                                ? `Insufficient ${fromAsset.symbol} Balance`
-                                : isLoadingTx
-                                  ? 'Building Transaction...'
-                                  : `Approve & Swap (Slippage: ${slippage}%)`}
+                            {isInsufficientBalance
+                              ? `Insufficient ${fromAsset.symbol} Balance`
+                              : isLoadingTx
+                                ? 'Building Transaction...'
+                                : `Approve & Swap (Slippage: ${slippage}%)`}
                           </button>
                         )}
 

@@ -22,7 +22,6 @@ const mocks = vi.hoisted(() => ({
   useAdjustedGas: vi.fn(),
   useDeleverageClose: vi.fn(),
   simulateAndWrite: vi.fn(),
-  clearQuoteCache: vi.fn(),
 }))
 
 vi.mock('wagmi', () => ({
@@ -39,7 +38,6 @@ vi.mock('../config/chains', async (orig) => ({
 vi.mock('../hooks/useAdjustedGas', () => ({ useAdjustedGas: mocks.useAdjustedGas }))
 vi.mock('../hooks/useDeleverageClose', () => ({ useDeleverageClose: mocks.useDeleverageClose }))
 vi.mock('../utils/contract', () => ({ simulateAndWrite: mocks.simulateAndWrite }))
-vi.mock('../adapters/http', () => ({ clearQuoteCache: mocks.clearQuoteCache }))
 vi.mock('./ExplorerLink', () => ({ ExplorerLink: () => null }))
 
 import { ClosePositionModal } from './ClosePositionModal'
