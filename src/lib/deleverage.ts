@@ -246,11 +246,11 @@ export function applyPin<T>(
 export const TX_GAS_CAP_2_24 = 16_777_216n
 
 /**
- * Most gas a route may quote and still be measured, on any chain.
+ * Most gas a route may quote and still be measured, on a chain with a per-transaction cap.
  *
- * 14M. The simulation runs under 16M, and the contract spends its own on top of the swap, so a
- * route quoting more than this cannot be measured and could not be sent on a capped chain
- * either. Refusing it here saves the simulation.
+ * 14M. The simulation there runs under 16M, and the contract spends its own on top of the
+ * swap, so a route quoting more could neither be measured nor sent. Refusing it saves the
+ * simulation. Uncapped chains (Arbitrum, 40M) are not held to it.
  */
 export const MAX_ROUTE_GAS = 14_000_000n
 
@@ -304,8 +304,8 @@ export function validateSwapTx(
     if (txGasCap !== undefined && gas > txGasCap) {
       return `route needs ${gas} gas; this chain caps a transaction at ${txGasCap}`
     }
-    if (gas > MAX_ROUTE_GAS) {
-      return `route needs ${gas} gas, over the ${MAX_ROUTE_GAS} a route may quote`
+    if (txGasCap !== undefined && gas > MAX_ROUTE_GAS) {
+      return `route needs ${gas} gas, over the ${MAX_ROUTE_GAS} a route may quote on this chain`
     }
   }
   return null

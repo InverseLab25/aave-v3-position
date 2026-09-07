@@ -15,7 +15,7 @@ vi.mock('../config/rpc', () => ({
     ({ 8453: 'https://base.example/key', 42161: 'https://arbitrum.example/key' })[chainId],
 }))
 
-import { simulateSwap, swapSimulationInput, SIMULATION_GAS, clearSlotCache } from './simulate'
+import { simulateSwap, swapSimulationInput, SIMULATION_GAS, SIMULATION_GAS_UNCAPPED, simulationGas, clearSlotCache } from './simulate'
 
 const CALLER = '0x253FaC550bae1EE9B4680b3735DC38a3f6eCd600'
 const USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
@@ -152,6 +152,12 @@ describe('simulateSwap', () => {
     // Above anything validation lets through, and never above what the chain would send.
     expect(BigInt(SIMULATION_GAS)).toBeGreaterThan(MAX_ROUTE_GAS)
     expect(BigInt(SIMULATION_GAS)).toBeLessThanOrEqual(TX_GAS_CAP_2_24)
+  })
+
+  it('gives an uncapped chain the 40M a route there may need', () => {
+    expect(simulationGas(8453)).toBe(SIMULATION_GAS)
+    expect(simulationGas(1)).toBe(SIMULATION_GAS)
+    expect(simulationGas(42161)).toBe(SIMULATION_GAS_UNCAPPED)
   })
 
   it('skips validation so the caller needs no gas of its own', async () => {

@@ -1,17 +1,22 @@
 import { keccak256, encodeAbiParameters } from 'viem'
 import { limitedFetch } from './http'
 import { simulationRpc } from '../config/rpc'
+import { getTxGasCap } from '../config/chains'
 import type { TransactionPayload } from './types'
 
 /**
- * Gas limit every simulation runs under.
+ * Gas limit a simulation runs under on a chain with a per-transaction cap.
  *
- * Just under the 2^24 per-transaction cap Base and Ethereum enforce. A route needing more
- * could never be sent anyway, so there is nothing to learn by measuring it; the ones that could
- * have needed it — KyberSwap at 33.9M for 1M USDC on Base — are refused before simulation by
- * `validateSwapTx`, on their calldata size and their quoted gas.
+ * Just under the 2^24 Base and Ethereum enforce. A route needing more could never be sent
+ * anyway, so there is nothing to learn by measuring it; the ones that could have needed it —
+ * KyberSwap at 33.9M for 1M USDC on Base — are refused before simulation by `validateSwapTx`,
+ * on their calldata size and their quoted gas.
  */
 export const SIMULATION_GAS = 16_000_000
+/** On a chain with no cap. Arbitrum accepts 40M in one transaction, so a route may need it. */
+export const SIMULATION_GAS_UNCAPPED = 40_000_000
+export const simulationGas = (chainId: number): number =>
+  getTxGasCap(chainId) === undefined ? SIMULATION_GAS_UNCAPPED : SIMULATION_GAS
 
 /** What a simulation that actually ran reports back. */
 export interface SimulationResult {
@@ -255,7 +260,7 @@ export async function simulateSwap(
                   from: input.from,
                   to: input.to,
                   data: input.data,
-                  gas: '0x' + SIMULATION_GAS.toString(16),
+                  gas: '0x' + simulationGas(input.chainId).toString(16),
                 },
               ],
             },

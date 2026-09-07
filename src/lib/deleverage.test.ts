@@ -106,10 +106,10 @@ describe('validateSwapTx — per-transaction gas cap', () => {
       .toMatch(/gas/i)
   })
 
-  it('applies the route ceiling on a chain with no cap too', () => {
-    // Arbitrum accepts 40M in a single transaction, but nothing over 14M is measured anywhere.
-    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toMatch(/gas/i)
-    expect(validateSwapTx({ ...ok, gasEstimate: '13000000' }, true, undefined)).toBeNull()
+  it('holds neither limit against a chain with no cap', () => {
+    // Arbitrum accepts 40M in a single transaction. An undefined cap must not become zero, and
+    // the 14M route ceiling belongs to the capped chains only.
+    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toBeNull()
   })
 
   it('skips the check when the aggregator returned no gas figure', () => {
