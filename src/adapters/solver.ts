@@ -51,8 +51,9 @@ interface Turnstile {
   render: (el: HTMLElement, opts: {
     sitekey: string;
     callback: (token: string) => void;
-    'error-callback'?: () => void;
+    'error-callback'?: () => boolean | void;
   }) => string;
+  remove: (widgetId: string) => void;
 }
 
 /**
@@ -73,10 +74,15 @@ async function turnstileToken(): Promise<string> {
   }
   return new Promise((ok, fail) => {
     const el = document.body.appendChild(document.createElement('div'));
-    g.turnstile!.render(el, {
+    // Turnstile keeps retrying a failed widget on its own; tear it down first so it doesn't
+    // go looking for a container we've already removed.
+    let id: string | undefined = undefined; // the stub in tests calls back before render returns
+    const done = () => { if (id) g.turnstile!.remove(id); el.remove(); };
+    id = g.turnstile!.render(el, {
       sitekey: (import.meta.env.VITE_TURNSTILE_SITE_KEY as string | undefined) ?? '',
-      callback: (t) => { el.remove(); ok(t); },
-      'error-callback': () => { el.remove(); fail(new Error('Turnstile rejected')); },
+      callback: (t) => { done(); ok(t); },
+      // Returning true tells Turnstile we handled it, which silences its console error.
+      'error-callback': () => { done(); fail(new Error('Turnstile rejected')); return true; },
     });
   });
 }

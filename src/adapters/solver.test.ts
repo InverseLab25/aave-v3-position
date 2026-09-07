@@ -111,6 +111,7 @@ beforeEach(() => {
   vi.stubGlobal('turnstile', {
     render: (_el: HTMLElement, opts: { callback: (t: string) => void }) => { opts.callback('tt-1'); return 'w1' },
     reset: vi.fn(),
+    remove: vi.fn(),
   })
   resetSolverSession()
 })
