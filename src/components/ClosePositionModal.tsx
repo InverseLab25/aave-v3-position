@@ -273,6 +273,10 @@ export function ClosePositionModal({
   const isSameAsset =
     selectedCollateral?.underlyingAsset?.toLowerCase() === borrowedAsset.underlyingAsset.toLowerCase()
   const closeAvailable = getStrategiesAddress(chainId) !== null
+  /** Any of the three waits: either wallet prompt, or the transaction itself. */
+  const isProcessing = isSameAsset
+    ? step === 1
+    : closeStep === 'permit' || closeStep === 'revoke' || closeStep === 'sending'
 
   // Fetch the sized-swap preview (real router numbers) whenever the inputs change.
   // The reset is done inside the async body so we never call setState synchronously
@@ -285,6 +289,8 @@ export function ClosePositionModal({
     if (paused) return
 
     let isMounted = true
+    /** The next re-quote, armed only once this one has returned. */
+    let next: ReturnType<typeof setTimeout> | undefined
     // Superseded quotes are aborted, not merely ignored. A route at size takes several seconds
     // to compute, so an abandoned one left running keeps consuming the slowest endpoint in the
     // app on behalf of a result nobody will read.
@@ -316,7 +322,19 @@ export function ClosePositionModal({
           if (p.preview) setQuotedRoutes({ pair: routesPairKey, list: p.preview.routes })
         }
       } finally {
-        if (isMounted) setIsQuoting(false)
+        if (isMounted) {
+          setIsQuoting(false)
+          // Armed HERE, once the answer is back, so the rest is measured from the return and
+          // never from the ask. Not while a close is running — a re-quote landing mid-flow
+          // would move the figures under the user — and not for a hidden tab, which is
+          // re-quoted the moment it is looked at again instead.
+          if (!isProcessing && document.visibilityState === 'visible') {
+            next = setTimeout(() => {
+              clearQuoteCache()
+              setRefreshTick((t) => t + 1)
+            }, QUOTE_REFRESH_MS)
+          }
+        }
       }
     }
 
@@ -325,9 +343,10 @@ export function ClosePositionModal({
     return () => {
       isMounted = false
       clearTimeout(timeout)
+      clearTimeout(next)
       controller.abort()
     }
-  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, pinnedRoute, isSameAsset, closeAvailable, quotePreview, refreshTick, paused, routesPairKey])
+  }, [selectedCollateral, borrowedAsset, slippage, collateralIn, debtIn, pinnedRoute, isSameAsset, closeAvailable, quotePreview, refreshTick, paused, isProcessing, routesPairKey])
 
   // Ticks only while an approval is held. Everything it writes happens inside the interval
   // callback, so the countdown never sets state as a render side effect.
@@ -471,10 +490,6 @@ export function ClosePositionModal({
     const last = logs[logs.length - 1] ?? ''
     return last.startsWith('Error:') ? last.slice('Error:'.length).trim() : null
   })()
-  /** Any of the three waits: either wallet prompt, or the transaction itself. */
-  const isProcessing = isSameAsset
-    ? step === 1
-    : closeStep === 'permit' || closeStep === 'revoke' || closeStep === 'sending'
 
   // Re-quote on a cadence, because a close plan cannot be carried forward — the router freezes
   // its output floor into the calldata at build time, so a preview left sitting stops
@@ -500,22 +515,17 @@ export function ClosePositionModal({
     if (isSameAsset || !closeAvailable || !selectedCollateral) return
     if (isProcessing || isQuoting) return
 
-    const requote = () => {
-      clearQuoteCache()
-      setRefreshTick((t) => t + 1)
-    }
-    const visible = () => !paused && document.visibilityState === 'visible'
-    const id = visible() ? setTimeout(requote, QUOTE_REFRESH_MS) : undefined
+    // The periodic re-quote is armed by the quoting run itself, from the moment its answer
+    // returns. This only re-arms a tab that was hidden when its run returned.
     const onVisibilityChange = () => {
-      if (visible()) requote()
+      if (!paused && document.visibilityState === 'visible') {
+        clearQuoteCache()
+        setRefreshTick((t) => t + 1)
+      }
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
-
-    return () => {
-      clearTimeout(id)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-    }
-  }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick, paused])
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange)
+  }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, paused])
   /**
    * Where a partial close leaves the account's health factor.
    *
