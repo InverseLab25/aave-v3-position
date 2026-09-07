@@ -184,7 +184,7 @@ export async function submitClose(
         let gas: bigint
         try {
           gas = p.swapGasUsed
-            ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close' })
+            ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close', whole: p.wholeClose })
             : await pinnedGasLimit(
                 () =>
                   publicClient.estimateContractGas({

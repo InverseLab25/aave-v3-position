@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AggregatorHttpError } from './http'
-import { onSolverUpdate, resetSolverSession, solverAdapter, solverMeasurement } from './solver'
+import { onSolverUpdate, resetSolverSession, solverAdapter, solverClose, solverMeasurement } from './solver'
 
 const OWNER = '0x1111111111111111111111111111111111111111'
 const CONTRACT = '0x2222222222222222222222222222222222222222'
@@ -288,6 +288,23 @@ describe('solverAdapter.getQuotes', () => {
         vi.useRealTimers()
       }
     })
+  })
+
+  it('asks for the whole close to be simulated when told whose close it is, and reads back what it did', async () => {
+    const closed = { debtRepaid: '2000000000', collateralWithdrawn: '1000000000000000000', returnedToUser: '499000000' }
+    stubServer([done([route({ close: closed })])])
+    const close = { user: OWNER, collateralToWithdraw: 'all' as const, debtRepay: 'all' as const }
+    const [q] = await solverAdapter.getQuotes!({ ...args, close })
+
+    expect(sockets()[0].sent[0]).toMatchObject({ close })
+    expect(solverClose(q)).toEqual({ debtRepaid: 2000000000n, collateralWithdrawn: 10n ** 18n, returnedToUser: 499000000n })
+  })
+
+  it('reports no close for a route that was only simulated as a swap', async () => {
+    stubServer([done([route()])])
+    const [q] = await solverAdapter.getQuotes!(args)
+    expect(sockets()[0].sent[0].close).toBeUndefined()
+    expect(solverClose(q)).toBeNull()
   })
 
   it('answers nothing on a chain the solver does not serve, without asking it', async () => {

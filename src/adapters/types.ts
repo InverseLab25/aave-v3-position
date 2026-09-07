@@ -151,5 +151,11 @@ export interface QuotesRequest {
    * route for a wallet; nothing in the browser adapters reads it.
    */
   owner?: string;
+  /**
+   * Whose close this swap sits inside, when it does. The solver then runs each route as the
+   * whole close through the Strategies contract instead of as a bare swap, and reports what
+   * it repaid, withdrew and returned. Amounts are wei strings, or 'all'.
+   */
+  close?: { user: string; collateralToWithdraw: 'all' | string; debtRepay: 'all' | string };
   signal?: AbortSignal;
 }

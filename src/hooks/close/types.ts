@@ -52,8 +52,15 @@ export interface ClosePlan {
   expectedBasis: OutBasis
   /** What the aggregator quoted, before anything measured it. See OpenPreview.quotedOut. */
   quotedOut: bigint
-  /** Gas the simulator measured for the swap alone. See OpenPreview.swapGasUsed. */
+  /**
+   * Gas the simulator measured: the swap alone, or the whole close when the solver ran the
+   * route through the contract (`wholeClose`). See OpenPreview.swapGasUsed.
+   */
   swapGasUsed: bigint | null
+  /** The route was simulated as the whole close, so its gas and `returnedToUser` are the transaction's. */
+  wholeClose: boolean
+  /** What the whole-close simulation forwarded to the wallet, or null when only the swap was run. */
+  returnedToUser: bigint | null
   /** AaveV3Strategies — the contract the close executes against. */
   strategies: Address
   collateralAddr: Address

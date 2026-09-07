@@ -183,7 +183,8 @@ export function useDeleverageClose() {
             debtRepaid: formatUnits(p.debt, dDec),
             debtRemaining: formatUnits(p.debtRemaining, dDec),
             debtRequired: formatUnits(p.needed, dDec),
-            debtReturned: formatUnits(p.expectedOut > p.debt ? p.expectedOut - p.debt : 0n, dDec),
+            // What the whole-close simulation actually forwarded, when there was one.
+            debtReturned: formatUnits(p.returnedToUser ?? (p.expectedOut > p.debt ? p.expectedOut - p.debt : 0n), dDec),
             collateralSwapped: formatUnits(p.requiredIn, cDec),
             collateralKeptSupplied: formatUnits(keptSupplied, cDec),
             collateralKeptSuppliedUsd:

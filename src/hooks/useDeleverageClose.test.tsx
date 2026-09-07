@@ -214,6 +214,17 @@ describe('buildPlan — validation before any signature is requested', () => {
     expect(seeds[2]).not.toBe(SIZED.requiredIn)
   })
 
+  it('reports what the whole-close simulation returned to the wallet, when the solver ran one', async () => {
+    vi.mocked(selectRoute).mockResolvedValue({
+      ...route(parseUnits('21000', 6)),
+      chosen: { ...quote(parseUnits('21000', 6)), rawQuote: { close: { debtRepaid: '20000000000', collateralWithdrawn: '7000000000000000000', returnedToUser: '987000000' } } },
+      measuredOut: { Socket: parseUnits('21000', 6) },
+    } as never)
+    const { preview } = await previewWith()
+    // Off the PositionClosed event, not expectedOut minus debt.
+    expect(preview?.debtReturned).toBe('987')
+  })
+
   it('produces a preview describing the swap on the happy path', async () => {
     const { preview, error } = await previewWith()
 

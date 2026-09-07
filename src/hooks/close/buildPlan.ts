@@ -6,7 +6,7 @@ import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
 import { CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
 import { selectRoute } from '../../lib/closePlan'
-import { solverMeasurement } from '../../adapters/solver'
+import { solverClose, solverMeasurement } from '../../adapters/solver'
 import { deriveDebtRepay, stableAmount } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
@@ -177,6 +177,19 @@ export async function buildPlan(
        */
       let offers: QuoteResponse[] = []
 
+      /**
+       * Whose close each route is simulated inside. Only when the transaction is fully known
+       * before quoting: a MAX close, or a fixed swap with an explicit repay. The sized path
+       * probes at sizes that may fall short, and a whole-close run of a short size reverts
+       * rather than pricing, which is the very answer sizing needs; a derived repay is only
+       * known after the quote. Those stay bare swaps, measured as before.
+       */
+      // ponytail: sized and derived closes are not whole-close simulated; re-quote the settled size with `close` if that matters.
+      const closeOf = (amountIn: bigint) =>
+        address && (collateralIn === 'all' || (collateralIn !== undefined && explicitRepay !== null))
+          ? { user: address, collateralToWithdraw: collateralIn === 'all' ? 'all' as const : amountIn.toString(), debtRepay: explicitRepay === null ? 'all' as const : explicitRepay.toString() }
+          : undefined
+
       const quoteAt = async (amountIn: bigint) => {
         // An aggregator that refused to answer is not evidence about the pair. Tracked per call
         // rather than per plan, because the sizing loop quotes several times and only the round
@@ -196,6 +209,7 @@ export async function buildPlan(
                   chainId,
                   caller: strategies,
                   owner: address,
+                  close: closeOf(amountIn),
                   signal,
                 }).catch((e: unknown) => {
                   if (e instanceof AggregatorHttpError && e.retryable) throttled = true
@@ -332,6 +346,8 @@ export async function buildPlan(
         quoteAt,
         offers,
         measuredOut: measured.measuredOut,
+        wholeClose: solverClose(measured.chosen) !== null,
+        returnedToUser: solverClose(measured.chosen)?.returnedToUser ?? null,
         ...sized,
         // After the spread, because these are the MEASURED figures and `sized` carries the
         // quoted ones. `best` follows too: a simulation is allowed to reorder the field, so the

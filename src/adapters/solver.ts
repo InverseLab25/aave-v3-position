@@ -36,6 +36,8 @@ interface SolverRoute {
   gasUsed: string;
   /** ms epoch. */
   expiresAt?: number;
+  /** Off the PositionClosed event, when the route was run as the whole close. */
+  close?: { debtRepaid: string; collateralWithdrawn: string; returnedToUser: string };
 }
 
 interface SolverAnswer {
@@ -288,6 +290,13 @@ export function solverMeasurement(quote: QuoteResponse): SimulationResult | null
   return { ok: true, amountOut: BigInt(r.measuredOut), gasUsed: Number(r.gasUsed) };
 }
 
+/** What the whole close did with this route, or null when only the swap was simulated. */
+export function solverClose(quote: QuoteResponse): { debtRepaid: bigint; collateralWithdrawn: bigint; returnedToUser: bigint } | null {
+  const c = (quote.rawQuote as Partial<SolverRaw> | undefined)?.close;
+  if (!c) return null;
+  return { debtRepaid: BigInt(c.debtRepaid), collateralWithdrawn: BigInt(c.collateralWithdrawn), returnedToUser: BigInt(c.returnedToUser) };
+}
+
 /**
  * The trade's live routes, or null when the stream has none yet (or the socket is down, which
  * the one-shot is left to report). Committed routes only, unexpired, ranked by the server's
@@ -352,7 +361,7 @@ export const solverAdapter: Adapter = {
   // contract. Quote through `getQuotes`, which every leverage flow already does.
   getQuote: async () => null,
 
-  getQuotes: async ({ fromAsset, toAsset, amountIn, slippage, chainId, caller, owner, signal }): Promise<QuoteResponse[]> => {
+  getQuotes: async ({ fromAsset, toAsset, amountIn, slippage, chainId, caller, owner, close, signal }): Promise<QuoteResponse[]> => {
     if (!SOLVER_CHAINS.has(chainId)) return [];
     const body = {
       chainId,
@@ -364,6 +373,7 @@ export const solverAdapter: Adapter = {
       tokenOut: toAsset.underlyingAsset,
       amountIn,
       slippageBps: Math.round(slippage * 100),
+      ...(close ? { close } : {}),
     };
     try {
       // Every ask keeps the trade's stream alive; once it has routes they are what is
