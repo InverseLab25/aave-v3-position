@@ -53,11 +53,11 @@ const SLIPPAGE_SUGGESTION_CAP = 1
  * Gap between one quote settling and the next being requested.
  *
  * This is a REST period, not a period. Actual cadence is roughly
- * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts. Same rest as the open
- * flow's confirm modal: a quote is good for thirty seconds, so asking every few seconds keeps
- * the figures close to the chain without a frame on the wire every second.
+ * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts. The solver keeps re-quoting
+ * a trade it has been asked for twice, once a second, and answers a repeat ask from that with
+ * no request, so a second here is what keeps the figures within a second or two of the chain.
  */
-const QUOTE_REFRESH_MS = 3000
+const QUOTE_REFRESH_MS = 1000
 
 /**
  * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
