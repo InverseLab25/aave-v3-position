@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { parseUnits } from 'viem'
 import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   useAdjustedGas: vi.fn(),
   useDeleverageClose: vi.fn(),
   simulateAndWrite: vi.fn(),
+  clearQuoteCache: vi.fn(),
 }))
 
 vi.mock('wagmi', () => ({
@@ -38,12 +39,8 @@ vi.mock('../config/chains', async (orig) => ({
 vi.mock('../hooks/useAdjustedGas', () => ({ useAdjustedGas: mocks.useAdjustedGas }))
 vi.mock('../hooks/useDeleverageClose', () => ({ useDeleverageClose: mocks.useDeleverageClose }))
 vi.mock('../utils/contract', () => ({ simulateAndWrite: mocks.simulateAndWrite }))
+vi.mock('../adapters/http', () => ({ clearQuoteCache: mocks.clearQuoteCache }))
 vi.mock('./ExplorerLink', () => ({ ExplorerLink: () => null }))
-/** The solver adapter's watchers, so a test can land a pass the way the stream would. */
-const watchers = new Set<() => void>()
-vi.mock('../adapters/solver', () => ({
-  onSolverUpdate: (fn: () => void) => { watchers.add(fn); return () => watchers.delete(fn) },
-}))
 
 import { ClosePositionModal } from './ClosePositionModal'
 
@@ -264,40 +261,6 @@ describe('ClosePositionModal — the two-press flow', () => {
     await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(before))
   })
 
-  it('re-quotes quietly when the solver lands a fresh pass: the numbers move, nothing says Pricing', async () => {
-    mount()
-    await waitFor(() => expect(isEnabled()).toBe(true))
-    const before = previewFn.mock.calls.length
-    let land!: (v: unknown) => void
-    previewFn.mockImplementationOnce(() => new Promise((r) => { land = r }))
-
-    act(() => { for (const w of watchers) w() })
-
-    await waitFor(() => expect(previewFn.mock.calls.length).toBe(before + 1))
-    // The server refreshed the trade on its own; the user did not ask for anything.
-    expect(screen.getByText(/Refresh/).textContent).not.toContain('Pricing')
-    expect(isEnabled()).toBe(true)
-    await act(async () => { land({ preview: okPreview(), error: null }) })
-  })
-
-  it('keeps the last preview when a refresh finds the aggregator stalled', async () => {
-    mount()
-    await waitFor(() => expect(isEnabled()).toBe(true))
-    previewFn.mockResolvedValueOnce({ preview: null, error: { kind: 'aggregator', message: 'stalled' } })
-
-    fireEvent.click(screen.getByText(/Refresh/))
-
-    await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(1))
-    await waitFor(() => expect(isEnabled()).toBe(true))
-    expect(screen.queryByText('Could not reach the price aggregator')).toBeNull()
-  })
-
-  it('still reports a stalled aggregator when there is no preview to keep', async () => {
-    previewFn.mockResolvedValue({ preview: null, error: { kind: 'aggregator', message: 'stalled' } })
-    mount()
-    await waitFor(() => expect(screen.getByText('Could not reach the price aggregator')).toBeTruthy())
-  })
-
   it('offers a wider tolerance when the aggregator refused on output', async () => {
     closeFn.mockResolvedValue({ hash: null, status: 'error', slippageTooTight: true })
     mount()
@@ -315,17 +278,10 @@ describe('ClosePositionModal — the two-press flow', () => {
 describe('ClosePositionModal — collateralIn is what reaches the hook', () => {
   const lastPreviewArg = () => previewFn.mock.calls.at(-1)?.[0]
 
-  it("sends 'all' by default — the whole collateral is one live trade, not a sizing loop", async () => {
+  it('sends undefined when the field is empty — the debt sizes the swap', async () => {
     mount()
     await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    expect(lastPreviewArg()?.collateralIn).toBe('all')
-  })
-
-  it('sends undefined once the field is reset — the debt sizes the swap', async () => {
-    mount()
-    await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    fireEvent.click(screen.getAllByText('RESET').at(-1)!)
-    await waitFor(() => expect(lastPreviewArg()?.collateralIn).toBeUndefined())
+    expect(lastPreviewArg()?.collateralIn).toBeUndefined()
   })
 
   it('parses a typed amount at the collateral decimals', async () => {
@@ -501,17 +457,10 @@ describe('ClosePositionModal — debtIn is what reaches the hook', () => {
   const lastPreviewArg = () => previewFn.mock.calls.at(-1)?.[0]
   const debtField = () => screen.getByPlaceholderText(/whole debt/i)
 
-  it("sends 'all' by default — the whole debt is repaid", async () => {
+  it('sends undefined when the field is empty — the whole debt is repaid', async () => {
     mount()
     await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    expect(lastPreviewArg()?.debtIn).toBe('all')
-  })
-
-  it('sends undefined once the field is reset — still the whole debt, sized by the hook', async () => {
-    mount()
-    await waitFor(() => expect(previewFn).toHaveBeenCalled())
-    fireEvent.click(screen.getByLabelText('Repay RESET'))
-    await waitFor(() => expect(lastPreviewArg()?.debtIn).toBeUndefined())
+    expect(lastPreviewArg()?.debtIn).toBeUndefined()
   })
 
   it('parses a typed repay amount at the debt decimals', async () => {

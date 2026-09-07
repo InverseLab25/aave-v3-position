@@ -21,9 +21,6 @@ import type { TxOutcome } from '../../lib/txOutcome'
 import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../../lib/settle'
 import { getChainConfig } from '../../config/chains'
 import { adjustedFees, gasFromMeasuredSwap, pinnedGasLimit } from '../../utils/gas'
-import { leverageAdapters, quoteField } from '../../adapters'
-import { solverTx } from '../../adapters/solver'
-import { routeKey } from '../../lib/deleverage'
 import { getPoolDataProvider, getReserveTokens } from '../../lib/aaveStatics'
 import { decodeStrategiesError } from '../../lib/strategiesErrors'
 import type { StrategiesRemedy } from '../../lib/strategiesErrors'
@@ -324,46 +321,6 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
     let sent: Hex | undefined
     try {
       setStep('sending')
-      /**
-       * The solver builds the whole transaction itself when handed the delegation: the exact
-       * open it just simulated for the route on screen, signature and minOut inside, gas
-       * measured with a margin on. Only with a signature of our own to hand over — a standing
-       * allowance is the wallet's business, and the contract takes a zero signature for it —
-       * and only for the route the user reviewed. Anything else builds locally, as before.
-       */
-      const built = await (async () => {
-        if (authorisation.signedValue === null || input.marginAsset === 'none') return null
-        const d = authorisation.delegation
-        const open = {
-          user: owner, margin: input.marginAsset, marginAmount: input.marginAmount.toString(),
-          flashAmount: effectivePreview.flashAmount.toString(),
-          delegation: { deadline: d.deadline.toString(), r: d.r, s: d.s, v: d.v },
-        }
-        const field = (
-          await Promise.all(leverageAdapters().map((a) =>
-            quoteField(a, {
-              fromAsset: { underlyingAsset: effectivePreview.debtAsset, symbol: '', decimals: input.reserves.debt.decimals },
-              toAsset: { underlyingAsset: effectivePreview.collateral, symbol: '', decimals: input.reserves.collateral.decimals },
-              amountIn: effectivePreview.swapIn.toString(),
-              slippage: Number(input.slippageBps) / 100,
-              chainId, caller: input.contract, owner, open,
-            }).catch(() => [] as const)))
-        ).flat()
-        const same = field.find((q) => routeKey(q) === effectivePreview.aggregator)
-        return same ? solverTx(same) : null
-      })()
-      if (built) {
-        const hash = await deps().sendTransaction({
-          to: built.to, data: built.data, value: built.value, chainId, gas: built.gas,
-          ...(await adjustedFees(client)),
-        })
-        sent = hash
-        currentSend.current = hash
-        setTxHash(hash)
-        setStep('done')
-        prepared.current = null
-        forget()
-      } else {
       const plan = planOpen({
         mode: resolveOpenMode(input.direction, input.marginAsset),
         volatile: input.subject, stable: input.quote,
@@ -383,7 +340,7 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
       // Either way it throws before the write, and `prepared.current` is only cleared after a
       // successful send, so the signature survives and a retry costs no new prompt.
       const openGas = effectivePreview.swapGasUsed
-        ? gasFromMeasuredSwap(effectivePreview.swapGasUsed, { chainId, label: 'open', whole: effectivePreview.wholeOpen })
+        ? gasFromMeasuredSwap(effectivePreview.swapGasUsed, { chainId, label: 'open' })
         : await pinnedGasLimit(
             () =>
               client.estimateContractGas({
@@ -406,7 +363,6 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
       // transaction be built against a nonce the first one is already spending.
       prepared.current = null
       forget()
-      }
     } catch (err) {
       console.log(err)
       const decoded = decodeStrategiesError(err)

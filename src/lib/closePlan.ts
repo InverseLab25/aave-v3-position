@@ -65,22 +65,6 @@ export interface Withdrawal {
   permitValue: bigint
 }
 
-/** Significant digits a MAX quote keeps. 1e-8 of the position: cents on a million, and hours of accrual. */
-const STABLE_DIGITS = 8
-
-/**
- * The amount a MAX close is quoted at: the balance with everything past its top digits
- * dropped. The aToken balance grows every block, so quoted as-is a MAX close is a different
- * trade on every refresh, which the solver cannot keep fresh or cache. The contract still
- * withdraws the live balance and returns the sliver the swap did not use.
- */
-export function stableAmount(x: bigint): bigint {
-  const digits = x.toString().length
-  if (digits <= STABLE_DIGITS) return x
-  const unit = 10n ** BigInt(digits - STABLE_DIGITS)
-  return (x / unit) * unit
-}
-
 /**
  * Turn a sized swap into the collateral-side numbers the contract call needs.
  *
@@ -90,14 +74,11 @@ export function stableAmount(x: bigint): bigint {
 export function planWithdrawal({
   requiredIn,
   collAmount,
-  drain = false,
 }: {
   requiredIn: bigint
   collAmount: bigint
-  /** A MAX close: drain the live balance even though the swap, quoted at a stable size, is a hair under it. */
-  drain?: boolean
 }): Withdrawal {
-  const drainAll = drain || requiredIn >= collAmount
+  const drainAll = requiredIn >= collAmount
   const ceiling = collAmount + (collAmount * REBASE_HEADROOM_BPS) / 10000n
   const withHeadroom = requiredIn + (requiredIn * PERMIT_HEADROOM_BPS) / 10000n
 
@@ -327,11 +308,8 @@ export async function selectRoute({
   tokenIn: string
   /** Bought by the swap. The debt asset on a close, the new long on a flip. */
   tokenOut: string
-  /**
-   * Injected so the selection stays testable without a live simulator. The candidate rides
-   * along for a source whose measurement was taken elsewhere and travels with the quote.
-   */
-  simulate?: (input: SimulationInput, candidate: QuoteResponse) => Promise<SimulationResult | null>
+  /** Injected so the selection stays testable without a live simulator. */
+  simulate?: (input: SimulationInput) => Promise<SimulationResult | null>
 }): Promise<RouteSelection> {
   // The walk itself is shared with the open flow, so the allowlist and calldata checks stay
   // identical between them. What is specific here is the bar each candidate has to clear:
@@ -362,7 +340,6 @@ export async function selectRoute({
               amountIn: c.amountIn,
               tx,
             }),
-            c,
           )
       : undefined,
   })

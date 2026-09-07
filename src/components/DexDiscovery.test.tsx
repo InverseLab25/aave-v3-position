@@ -4,7 +4,7 @@ import { act, render, screen, fireEvent } from '@testing-library/react'
 /**
  * DexDiscovery's own logic is token-list assembly and selection: which tokens each side offers,
  * which is selected by default, and what gets invalidated when the pair, amount or chain moves.
- * Quoting itself belongs to the solver adapter, which has its own coverage — so `leverageAdapters`
+ * Quoting itself belongs to the adapters, which have their own coverage — so `getAdaptersForChain`
  * returns a stub here and these stay about the component's decisions.
  */
 const mocks = vi.hoisted(() => ({
@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
   useReadContract: vi.fn(),
   useBalance: vi.fn(),
-  leverageAdapters: vi.fn(),
+  getAdaptersForChain: vi.fn(),
   getChainConfig: vi.fn(),
 }))
 
@@ -24,7 +24,7 @@ vi.mock('wagmi', () => ({
 }))
 vi.mock('../adapters', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  leverageAdapters: mocks.leverageAdapters,
+  getAdaptersForChain: mocks.getAdaptersForChain,
 }))
 vi.mock('../config/chains', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -56,6 +56,7 @@ const borrowed = (over: Record<string, unknown> = {}) => ({
 
 const chainConfig = (over: Record<string, unknown> = {}) => ({
   name: 'Ethereum',
+  adapters: ['KyberSwap'],
   defaultTokens: [
     { underlyingAsset: WETH, symbol: 'WETH', decimals: 18 },
     { underlyingAsset: DAI, symbol: 'DAI', decimals: 18 },
@@ -69,8 +70,7 @@ const positions = (over: Record<string, unknown> = {}) => ({
   // Where the configured default tokens get a price: they carry none of their own.
   availableReserves: [],
   isConnected: true,
-  // Base: one of the two chains the solver serves.
-  chainId: 8453,
+  chainId: 1,
   ...over,
 })
 
@@ -83,8 +83,8 @@ beforeEach(() => {
   })
   mocks.useReadContract.mockReturnValue({ data: undefined })
   mocks.useBalance.mockReturnValue({ data: undefined })
-  mocks.leverageAdapters.mockReturnValue([
-    { name: 'Solver', supportsExecution: true, getQuote: vi.fn().mockResolvedValue(null), getQuotes: vi.fn().mockResolvedValue([]), buildTransaction: vi.fn() },
+  mocks.getAdaptersForChain.mockReturnValue([
+    { name: 'KyberSwap', getQuote: vi.fn().mockResolvedValue(null) },
   ])
   mocks.getChainConfig.mockReturnValue(chainConfig())
 })
@@ -101,13 +101,14 @@ describe('DexDiscovery — token list assembly', () => {
     expect(optionsOf(fromSelect())).toEqual(['ETH', 'WETH', 'DAI'])
   })
 
-  it('shows an unsupported-network notice instead of a swap form on a chain the solver does not serve', () => {
+  it('shows an unsupported-network notice instead of a swap form when no adapter serves the chain', () => {
     // Nothing can be routed there, so the whole card — token lists included — is withheld
     // rather than offering an invitation to a dead end.
-    mocks.useAavePositions.mockReturnValue(positions({ chainId: 1 }))
+    mocks.getChainConfig.mockReturnValue(chainConfig({ adapters: [] }))
+    mocks.getAdaptersForChain.mockReturnValue([])
     render(<DexDiscovery />)
 
-    expect(screen.getByText(/Swaps are not supported/)).toBeTruthy()
+    expect(screen.getByText(/DEX aggregators are not supported/)).toBeTruthy()
     expect(screen.queryAllByRole('combobox')).toHaveLength(0)
   })
 
@@ -165,12 +166,11 @@ describe('DexDiscovery — a quote that outlived its request', () => {
     // AFTER the clear and writes itself into the fresh map, where it renders — and is formatted
     // with the new pair's decimals.
     let answer: (q: unknown) => void = () => {}
-    mocks.leverageAdapters.mockReturnValue([
+    mocks.getAdaptersForChain.mockReturnValue([
       {
-        name: 'Solver',
+        name: 'KyberSwap',
         supportsExecution: true,
-        getQuote: vi.fn().mockResolvedValue(null),
-        getQuotes: vi.fn(() => new Promise((resolve) => { answer = resolve })),
+        getQuote: vi.fn(() => new Promise((resolve) => { answer = resolve })),
         buildTransaction: vi.fn(),
       },
     ])
@@ -182,21 +182,39 @@ describe('DexDiscovery — a quote that outlived its request', () => {
     // The user moves on before the aggregator answers.
     fireEvent.change(toSelect(), { target: { value: DAI } })
     await act(async () => {
-      answer([{
-        aggregator: 'Solver',
-        routeId: 'Socket · 0x',
+      answer({
+        aggregator: 'KyberSwap',
         amountIn: '1000000000000000000',
         amountOut: '2000000000',
         amountOutUsd: '2000.00',
         gasUsd: '0',
         netReturnUsd: 2000,
         rawQuote: {},
-        routeDetails: { type: 'solver', info: '' },
-      }])
+        routeDetails: { type: 'kyber', totalAmountIn: 1n, paths: [] },
+      })
       await Promise.resolve()
     })
 
     expect(screen.queryByText('BEST RETURN')).toBeNull()
+  })
+})
+
+describe('DexDiscovery — how often it actually asks', () => {
+  it('honours an adapter that wants five seconds between quotes', async () => {
+    vi.useFakeTimers()
+    const getQuote = vi.fn().mockResolvedValue(null)
+    mocks.getAdaptersForChain.mockReturnValue([
+      { name: 'Socket', supportsExecution: true, minQuoteIntervalMs: 5000, getQuote, buildTransaction: vi.fn() },
+    ])
+
+    render(<DexDiscovery />)
+    fireEvent.change(screen.getByPlaceholderText('0.0'), { target: { value: '1' } })
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+
+    // Ten seconds of a one-second poll, against a five-second floor.
+    expect(getQuote.mock.calls.length).toBeLessThanOrEqual(3)
+    vi.useRealTimers()
   })
 })
 
@@ -264,7 +282,7 @@ describe('DexDiscovery — chain change', () => {
     fireEvent.change(screen.getByPlaceholderText('0.0'), { target: { value: '2' } })
     fireEvent.change(toSelect(), { target: { value: DAI } })
 
-    mocks.useAavePositions.mockReturnValue(positions({ chainId: 42161 }))
+    mocks.useAavePositions.mockReturnValue(positions({ chainId: 8453 }))
     mocks.getChainConfig.mockReturnValue(
       chainConfig({ defaultTokens: [{ underlyingAsset: USDC, symbol: 'USDbC', decimals: 6 }] }),
     )

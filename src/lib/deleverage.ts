@@ -94,6 +94,64 @@ export function quoteRate(
   return formatUnits((numerator * 10n ** BigInt(scale)) / denominator, scale)
 }
 
+/**
+ * Aggregators either contract can actually route through.
+ *
+ * Applies to AaveV3Strategies as much as AaveV3Deleverager: both approve `router` and then
+ * call `router` with the caller's calldata (`_swap`, AaveV3Strategies.sol:620), so the same
+ * two conditions bind on both. Filtering by `supportsExecution` alone is NOT equivalent — that
+ * flag only says the adapter returns a transaction at all.
+ *
+ * Two conditions have to hold, and only the first is a property of the aggregator:
+ *
+ *  1. Its ERC20 approval-spender equals its call target, it needs no per-swap signature,
+ *     and it can direct output to an arbitrary recipient — both contracts approve `router`,
+ *     call `router`, and expect the output on themselves. This rules out CowSwap (off-chain
+ *     intent) and any Permit2-signature flow (1inch/0x) a contract can't sign. OpenOcean,
+ *     Odos and ParaSwap all satisfy it — ParaSwap only since Augustus v6.2, where the
+ *     approval spender is the router itself rather than a separate TokenTransferProxy.
+ *
+ *  2. Its router is on the deleverager's on-chain allowlist. Nordstern's Guard is on Base and
+ *     Arbitrum only — see script/RouterSetup.s.sol. KyberSwap's router is allowlisted on all
+ *     three chains but is deliberately not named here any more, so nothing quotes it.
+ *
+ *     This list has no chain dimension, so condition 2 holding on SOME chain is what gets a
+ *     name in. What keeps Nordstern away from mainnet, where its Guard is not allowlisted, is
+ *     the adapter itself: GUARDS in adapters/nordstern.ts has no entry for chain 1, so
+ *     `getQuote` returns null there and the route is never ranked. Mainnet's `adapters` list
+ *     in config/chains.ts does not name it either. Both have to keep agreeing with the
+ *     allowlist — a Guard added to GUARDS before it is allowlisted on that chain reintroduces
+ *     exactly the sized-then-rejected failure this comment exists to prevent.
+ *
+ * A router's address is only known after `buildTransaction`, i.e. after a quote has been
+ * paid for, so condition 2 cannot be checked during sizing. Quoting an aggregator that fails
+ * either condition therefore does more than waste quota: it can win the ranking, get sized
+ * against, and then be rejected at build time — leaving the flow to fall back to a strictly
+ * worse route. On the open path that surfaces as a spurious "the rate moved" error the user
+ * can do nothing about, because the route it sized against was never usable.
+ *
+ * To widen this: allowlist the router on-chain FIRST (RouterSetup.s.sol, owner-signed),
+ * then add the name here. Never the other way round.
+ *
+ * Socket satisfies both. Its AllowanceHolder (0x50c4E75a512F2A14A7b304787Adf79C4531A5909, the
+ * same address on both chains) is allowlisted on AaveV3Strategies on Base and Arbitrum, read
+ * off `getAllowedRouters()` on 2026-09-04. Socket signs each route for whoever `userAddress`
+ * names and its AllowanceHolder rejects anyone else with `CallerNotSignedUser()` (0x85132e0f),
+ * so naming the Strategies contract there is the whole requirement — its `contractCaller`
+ * parameter adds nothing and is not sent. Quoted and simulated as the contract on Base at
+ * 25,243 USDC, every route executed and measured within 0.003% of its quote.
+ *
+ * What Socket does cost is 20bps of the INPUT on every route, to
+ * 0xe3D091bcb9406Ddb9a121e37f4eb1345336AFBBf. That is the unkeyed public host; a request keyed
+ * with `x-api-key` and an `affiliate` header comes back with no fee at all. Unkeyed, Socket
+ * therefore loses to Nordstern on every trade by roughly that margin and the extra quoting is
+ * close to wasted. The key is what makes it competitive.
+ *
+ * Mainnet has neither: no Nordstern Guard, and Socket's AllowanceHolder is not on the
+ * Deleverager's allowlist, which holds KyberSwap's router alone. So chain 1 currently ranks
+ * nothing, KyberSwap no longer being named here.
+ */
+export const COMPATIBLE_ADAPTERS = ['Nordstern', 'Socket'] as const
 
 /**
  * How many routes are built and measured, best-quoted first.
@@ -118,11 +176,7 @@ export const MAX_MEASURED_ROUTES = 6
 
 
 /**
- * Quotes, best OUTPUT first. Empty when none priced.
- *
- * No compatibility filter any more: every leverage quote comes from the solver, which only
- * returns routes bound to a target the contract can call, and `validateSwapTx` still checks
- * the on-chain allowlist on what it builds.
+ * Compatible quotes, best OUTPUT first. Empty when none are usable.
  *
  * Ranked on `amountOut` rather than `netReturnUsd` because every candidate is selling the same
  * input for the same token, so the raw output is the one figure that means the same thing for
@@ -134,7 +188,10 @@ export const MAX_MEASURED_ROUTES = 6
  */
 export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
   return quotes
-    .filter((q): q is QuoteResponse => q != null)
+    .filter(
+      (q): q is QuoteResponse =>
+        q != null && (COMPATIBLE_ADAPTERS as readonly string[]).includes(q.aggregator),
+    )
     // Ties return 0. Answering -1 for equal values is an inconsistent comparator, which sort is
     // entitled to do anything with — it happens to be harmless at two or three candidates, and
     // this list decides which route a close executes.

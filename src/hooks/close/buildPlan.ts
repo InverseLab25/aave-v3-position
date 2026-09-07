@@ -1,18 +1,17 @@
 import { erc20Abi, formatUnits, parseUnits, type Address, type PublicClient } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../../config/chains'
-import { leverageAdapters } from '../../adapters'
+import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
 import { selectRoute } from '../../lib/closePlan'
-import { solverClose, solverMeasurement } from '../../adapters/solver'
-import { deriveDebtRepay, stableAmount } from '../../lib/closePlan'
+import { simulateSwap } from '../../adapters/simulate'
+import { deriveDebtRepay } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
-import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
-import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS } from './constants'
+import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS, SIZING_ROUNDS } from './constants'
 import type { QuoteResponse } from '../../adapters/types'
 import type { ClosePlan, CloseInput } from './types'
 
@@ -63,7 +62,7 @@ interface BuildPlanContext {
  * because every failure here has a different remedy.
  */
 export async function buildPlan(
-  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal, preferredAggregator, seedIn }: CloseInput,
+  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal, preferredAggregator }: CloseInput,
   ctx: BuildPlanContext,
 ): Promise<ClosePlan> {
   const { address, chainId, publicClient } = ctx
@@ -170,38 +169,17 @@ export async function buildPlan(
         targetRepay < debt ? targetRepay : (targetRepay * (10000n + ACCRUAL_BUFFER_BPS)) / 10000n
 
       // 3. Quote and size.
-      logFn('Fetching swap routes from the solver…')
-      const adapters = leverageAdapters()
+      logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
+      const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
+        (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
+      )
       /**
        * The last round's full field, kept for the picker. Written on every round rather than
        * only the first, so the list is priced at the size the plan actually settled on.
        */
       let offers: QuoteResponse[] = []
 
-      /**
-       * Whose close each route is simulated inside. Only when the transaction is fully known
-       * before quoting: a MAX close, or a fixed swap with an explicit repay. The sized path
-       * probes at sizes that may fall short, and a whole-close run of a short size reverts
-       * rather than pricing, which is the very answer sizing needs; a derived repay is only
-       * known after the quote. Those stay bare swaps, measured as before.
-       */
-      // ponytail: sized and derived closes are not whole-close simulated; re-quote the settled size with `close` if that matters.
-      const closeOf = (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) =>
-        address && (collateralIn === 'all' || (collateralIn !== undefined && explicitRepay !== null))
-          ? {
-              user: address,
-              collateralToWithdraw: collateralIn === 'all' ? 'all' as const : amountIn.toString(),
-              debtRepay: explicitRepay === null ? 'all' as const : explicitRepay.toString(),
-              ...(signed
-                ? {
-                    permit: { amount: signed.permit.value.toString(), deadline: signed.permit.deadline.toString(), r: signed.permit.r, s: signed.permit.s, v: signed.permit.v },
-                    revokePermit: { deadline: signed.revoke.deadline.toString(), r: signed.revoke.r, s: signed.revoke.s, v: signed.revoke.v },
-                  }
-                : {}),
-            }
-          : undefined
-
-      const quoteAt = async (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) => {
+      const quoteAt = async (amountIn: bigint) => {
         // An aggregator that refused to answer is not evidence about the pair. Tracked per call
         // rather than per plan, because the sizing loop quotes several times and only the round
         // that came back empty needs explaining.
@@ -219,8 +197,6 @@ export async function buildPlan(
                   slippage: slippagePercent,
                   chainId,
                   caller: strategies,
-                  owner: address,
-                  close: closeOf(amountIn, signed),
                   signal,
                 }).catch((e: unknown) => {
                   if (e instanceof AggregatorHttpError && e.retryable) throttled = true
@@ -257,16 +233,12 @@ export async function buildPlan(
         debt: targetRepay,
         needed: targetNeeded,
         slipNum,
+        rounds: SIZING_ROUNDS,
         quoteAt,
-        // The solver measured every route from the contract, so the buy price the swap is
-        // sized on is what the route pays, not what its provider claims.
-        outOf: (q) => solverMeasurement(q)?.amountOut ?? BigInt(q.amountOut),
-        // MAX is quoted at a stable size so every refresh is the same trade to the solver; the
-        // contract drains the live balance regardless (see `drain`).
-        fixedIn: collateralIn === 'all' ? stableAmount(collAmount) : collateralIn,
-        // The last plan's size first, so a refresh is the same trade to the solver. Failing that,
-        // Aave's own oracle prices ride along on both assets, so the first guess is still free.
-        seedIn: seedIn ?? oracleSeed({
+        fixedIn: collateralIn === 'all' ? collAmount : collateralIn,
+        // Aave's own oracle prices ride along on both assets, so the first guess is free.
+        // Without it every refresh pays for a full-collateral probe just to learn the rate.
+        seedIn: oracleSeed({
           needed: targetNeeded,
           slipNum,
           collateralDecimals: collateral.decimals,
@@ -301,8 +273,7 @@ export async function buildPlan(
         slipNum,
         tokenIn: collateralAddr,
         tokenOut: debtAddr,
-        // Measured on the server, from the contract, for this exact calldata.
-        simulate: (_, c) => Promise.resolve(solverMeasurement(c)),
+        simulate: simulateSwap,
       })
       if (!measured.chosen || !measured.tx) {
         throw new CloseError(
@@ -350,15 +321,12 @@ export async function buildPlan(
         aTokenName,
         nonce,
         collAmount,
-        drain: collateralIn === 'all',
         slipNum,
         adapters,
         allowedRouters,
         quoteAt,
         offers,
         measuredOut: measured.measuredOut,
-        wholeClose: solverClose(measured.chosen) !== null,
-        returnedToUser: solverClose(measured.chosen)?.returnedToUser ?? null,
         ...sized,
         // After the spread, because these are the MEASURED figures and `sized` carries the
         // quoted ones. `best` follows too: a simulation is allowed to reorder the field, so the

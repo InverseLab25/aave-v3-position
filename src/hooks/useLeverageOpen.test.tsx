@@ -18,7 +18,6 @@ const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
   useWriteContract: vi.fn(),
   useSignTypedData: vi.fn(),
-  useSendTransaction: vi.fn(),
 }))
 
 vi.mock('../lib/strategies-sdk', async (orig) => ({
@@ -33,7 +32,6 @@ vi.mock('wagmi', () => ({
   useConnection: mocks.useConnection,
   useWriteContract: mocks.useWriteContract,
   useSignTypedData: mocks.useSignTypedData,
-  useSendTransaction: mocks.useSendTransaction,
 }))
 
 import { useLeverageOpen, type LeverageOpenInput } from './useLeverageOpen'
@@ -82,7 +80,6 @@ beforeEach(() => {
   mocks.useConnection.mockReturnValue({ address: '0x000000000000000000000000000000000000dEaD' })
   mocks.useWriteContract.mockReturnValue({ writeContractAsync: vi.fn() })
   mocks.useSignTypedData.mockReturnValue({ signTypedDataAsync: vi.fn() })
-  mocks.useSendTransaction.mockReturnValue({ sendTransactionAsync: vi.fn() })
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue(['0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'])
   mocks.readContractState.mockResolvedValue({
@@ -144,56 +141,6 @@ it('re-quotes when an input value actually changes', async () => {
   await act(async () => {
     vi.advanceTimersByTime(1000)
   })
-  await settle()
-
-  expect(mocks.readContractState).toHaveBeenCalledTimes(2)
-})
-
-it('does not re-quote when a background refetch moves prices and balances', async () => {
-  // Every few seconds the position, balances and oracle prices refetch. They are read fresh by
-  // each run, but they are not the trade: re-keying on them blanked the preview and the route
-  // list on every refetch and asked the solver for a size a hair off the one it was streaming.
-  function Drifting() {
-    const [tick, setTick] = useState(0)
-    const base = makeInput()
-    useLeverageOpen({
-      ...base,
-      maxSupply: base.maxSupply + BigInt(tick),
-      existingCollateralUsd: BigInt(tick),
-      reserves: {
-        ...base.reserves,
-        collateral: { ...base.reserves.collateral, priceUsd: base.reserves.collateral.priceUsd + BigInt(tick) },
-      },
-    })
-    useEffect(() => {
-      const t = setTimeout(() => setTick((n) => n + 1), 1000)
-      return () => clearTimeout(t)
-    }, [tick])
-    return null
-  }
-
-  render(<Drifting />)
-  await settle()
-  await act(async () => { vi.advanceTimersByTime(3000) })
-  await settle()
-
-  expect(mocks.readContractState).toHaveBeenCalledTimes(1)
-})
-
-it('re-quotes when the wallet balance changes', async () => {
-  function Funded() {
-    const [balance, setBalance] = useState(100n * 10n ** 18n)
-    useLeverageOpen({ ...makeInput(), marginBalance: balance })
-    useEffect(() => {
-      const t = setTimeout(() => setBalance(50n * 10n ** 18n), 1000)
-      return () => clearTimeout(t)
-    }, [])
-    return null
-  }
-
-  render(<Funded />)
-  await settle()
-  await act(async () => { vi.advanceTimersByTime(1000) })
   await settle()
 
   expect(mocks.readContractState).toHaveBeenCalledTimes(2)

@@ -8,6 +8,7 @@ import {
   expectedOutcome,
   rankRoutes,
   applyPin,
+  COMPATIBLE_ADAPTERS,
   TX_GAS_CAP_2_24,
   MAX_CALLDATA_BYTES,
   MAX_MEASURED_ROUTES,
@@ -225,7 +226,9 @@ describe('rankRoutes', () => {
   const quote = (aggregator: string, amountOut: string, netReturnUsd: number): QuoteResponse =>
     ({ aggregator, amountOut, netReturnUsd } as QuoteResponse)
 
-  const compatible = 'Solver'
+  // Named off the roster rather than written in, so this suite does not have to be edited every
+  // time an aggregator is allowlisted or dropped.
+  const [compatible] = COMPATIBLE_ADAPTERS
 
   it('ranks on output, not on the USD figure each aggregator prices itself with', () => {
     // The shape an aggregator with no USD of its own arrives in (Nordstern): `gasUsd` is '0', so
@@ -236,6 +239,11 @@ describe('rankRoutes', () => {
       quote(compatible, '2120362157', 2115),
     ])
     expect(ranked.map((q) => q.amountOut)).toEqual(['2120362157', '2119900000'])
+  })
+
+  it('drops an aggregator the contracts cannot route through', () => {
+    const ranked = rankRoutes([quote('NotAllowlisted', '9999999999', 0), quote(compatible, '1', 0)])
+    expect(ranked.map((q) => q.aggregator)).toEqual([compatible])
   })
 })
 
@@ -477,7 +485,7 @@ describe('rankRoutes — ties', () => {
     // A comparator that answers -1 for equal values is inconsistent, and sort is entitled to do
     // anything with one. Harmless at two candidates and wrong the moment there are more — and
     // this list decides which route a close executes.
-    const [compatible, other] = ['Solver', 'Other']
+    const [compatible, other] = COMPATIBLE_ADAPTERS
     const same = (aggregator: string) => ({ aggregator, amountOut: '1000' }) as QuoteResponse
 
     const ranked = rankRoutes([same(compatible), same(other), same(compatible)])

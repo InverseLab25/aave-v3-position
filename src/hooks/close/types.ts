@@ -2,7 +2,6 @@ import type { Address } from 'viem'
 import type { OutBasis } from '../../lib/deleverage'
 import type { StatedRate } from '../../lib/swapRoute'
 import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
-import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'
 
 /*//////////////////////////////////////////////////////////////
@@ -43,8 +42,6 @@ export interface CloseInput {
    * rather than falling back to the route the user pinned past.
    */
   preferredAggregator?: string
-  /** The swap size the last plan of this same trade settled on — see `sizeSwap.seedIn`. */
-  seedIn?: bigint
 }
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
@@ -53,15 +50,8 @@ export interface ClosePlan {
   expectedBasis: OutBasis
   /** What the aggregator quoted, before anything measured it. See OpenPreview.quotedOut. */
   quotedOut: bigint
-  /**
-   * Gas the simulator measured: the swap alone, or the whole close when the solver ran the
-   * route through the contract (`wholeClose`). See OpenPreview.swapGasUsed.
-   */
+  /** Gas the simulator measured for the swap alone. See OpenPreview.swapGasUsed. */
   swapGasUsed: bigint | null
-  /** The route was simulated as the whole close, so its gas and `returnedToUser` are the transaction's. */
-  wholeClose: boolean
-  /** What the whole-close simulation forwarded to the wallet, or null when only the swap was run. */
-  returnedToUser: bigint | null
   /** AaveV3Strategies — the contract the close executes against. */
   strategies: Address
   collateralAddr: Address
@@ -97,8 +87,6 @@ export interface ClosePlan {
    */
   measuredOut: Record<string, bigint>
   collAmount: bigint
-  /** A MAX close: the contract drains the live balance, whatever `requiredIn` was quoted at. */
-  drain: boolean
   /** Collateral fed to the swap. Always equal to `best.amountIn`. */
   requiredIn: bigint
   expectedOut: bigint
@@ -125,8 +113,7 @@ export interface ClosePlan {
   /** 10000 − slippageBps, for re-deriving a candidate's guaranteed output. */
   slipNum: bigint
   /** Re-quote at a given size, so close() can rebuild calldata from a CURRENT quote. */
-  /** With `signed`, the ask is the final one: the solver returns the transaction to send. */
-  quoteAt: (amountIn: bigint, signed?: { permit: PermitArgs; revoke: RevokeArgs }) => Promise<QuoteResponse[]>
+  quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
   /** Lowercased router allowlist, read once per plan. */
   allowedRouters: Set<string>
 }

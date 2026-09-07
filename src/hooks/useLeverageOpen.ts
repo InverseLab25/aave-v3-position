@@ -3,7 +3,6 @@ import {
   useChainId,
   useConnection,
   usePublicClient,
-  useSendTransaction,
   useSignTypedData,
   useWriteContract,
 } from 'wagmi'
@@ -20,6 +19,7 @@ import {
   withinAdoptionBand,
 } from '../lib/delegationCache'
 import type { TxOutcome } from '../lib/txOutcome'
+import { clearQuoteCache } from '../adapters/http'
 import type { QuoteResponse } from '../adapters/types'
 import type { StrategiesRemedy } from '../lib/strategiesErrors'
 import {
@@ -53,9 +53,9 @@ export function useLeverageOpen(
    * AavePosition is hidden with `display: none` rather than unmounted when the user leaves its
    * tab, deliberately — see the note on the frozen confirmation pair in LeveragePanel, where a
    * reserve refetch unmounting things mid-transaction destroyed a settled report. Hidden, the
-   * panel would still re-quote on every pass the solver lands, and each re-quote costs a build
-   * and a simulation per candidate. Gating the QUOTING rather than the mount is what stops that
-   * without putting the report back at risk.
+   * panel still re-keys on every background refetch of prices and balances, and a re-key now
+   * costs a build and a simulation per candidate on top of the quotes. Gating the QUOTING rather
+   * than the mount is what stops that without putting the report back at risk.
    *
    * Unpausing re-quotes, on purpose: a preview priced before the user looked away is worse than
    * none, because it looks current.
@@ -68,7 +68,6 @@ export function useLeverageOpen(
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const { mutateAsync: signTypedDataAsync } = useSignTypedData()
-  const { mutateAsync: sendTransactionAsync } = useSendTransaction()
 
   const [preview, setPreview] = useState<OpenPreview | null>(null)
   const [previewError, setPreviewError] = useState<LeverageError | null>(null)
@@ -131,9 +130,7 @@ export function useLeverageOpen(
    */
   const currentSend = useRef<Hex | null>(null)
 
-  /** A run is under way. A pass landing mid-run is not lost, the next one re-reads. */
-  const inFlight = useRef(false)
-  const refresh = useCallback(() => { if (!inFlight.current) setTick((t) => t + 1) }, [])
+  const refresh = useCallback(() => setTick((t) => t + 1), [])
 
   /**
    * Refresh as a USER means it — the same re-quote, with the reuse window dropped first.
@@ -145,6 +142,7 @@ export function useLeverageOpen(
    * the cache is dropped and the next pass goes to the network.
    */
   const hardRefresh = useCallback(() => {
+    clearQuoteCache()
     // The pause flag and the allowlist too: someone pressing refresh after the owner changed one
     // is asking to see it, and the cache would otherwise hold the old answer for up to a minute.
     forgetContractState()
@@ -292,12 +290,9 @@ export function useLeverageOpen(
   // commit, so the quoting effect below always observes the object from this same render.
   const inputRef = useRef(input)
   const pinRef = useRef(pinnedBorrow)
-  /** What the last run settled on, with the key it answered, so a refresh can start from it. */
-  const lastRef = useRef<{ key: string; swapIn: bigint } | null>(null)
   useEffect(() => {
     inputRef.current = input
     pinRef.current = pinnedBorrow
-    lastRef.current = preview && previewFor !== null ? { key: previewFor, swapIn: preview.swapIn } : null
   })
 
   useEffect(() => {
@@ -316,21 +311,15 @@ export function useLeverageOpen(
     // flow has always aborted for this reason; this is the same thing on the open side.
     const controller = new AbortController()
 
-    // Only a re-quote of the SAME trade starts from the last size; a changed input is a new solve.
-    const seedIn = lastRef.current?.key === key ? lastRef.current.swapIn : undefined
-    // A re-quote of a trade already on screen is quiet: the server refreshed it on its own, so
-    // the figures move and nothing says "Pricing…". The first price of a trade still does.
-    const quiet = seedIn !== undefined
     const timer = setTimeout(async () => {
       await runPreview({
-        input, pinned, forInput, client, chainId, owner, seedIn,
+        input, pinned, forInput, client, chainId, owner,
         // Recomputed from the effect's own `input` rather than the render-scope `pairKey`, which
         // is nullable and belongs to a later render than the one this run answers for.
         forPair: inputKey({ ...input, preferredAggregator: undefined }),
         cancelled: () => cancelled,
         signal: controller.signal,
-        setIsQuoting: (v) => { inFlight.current = v; setIsQuoting(quiet ? false : v) },
-        setPreviewError, setPreview, setPreviewFor, setRejected,
+        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
         // A new list is a new question: the measurements belong to the field it replaces.
         setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v, measured: {} }),
         setMeasured: (m, forPair) =>
@@ -342,8 +331,6 @@ export function useLeverageOpen(
 
     return () => {
       cancelled = true
-      // A cancelled run never reaches its own `finally`, so the flag is dropped here.
-      inFlight.current = false
       controller.abort()
       clearTimeout(timer)
     }
@@ -365,11 +352,8 @@ export function useLeverageOpen(
       signTypedData:
         injected?.signTypedData ??
         ((payload) => signTypedDataAsync(payload as Parameters<typeof signTypedDataAsync>[0])),
-      sendTransaction:
-        injected?.sendTransaction ??
-        ((args) => sendTransactionAsync(args as Parameters<typeof sendTransactionAsync>[0])),
     }),
-    [injected, writeContractAsync, signTypedDataAsync, sendTransactionAsync],
+    [injected, writeContractAsync, signTypedDataAsync],
   )
 
   /**

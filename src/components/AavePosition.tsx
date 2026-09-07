@@ -39,6 +39,7 @@ const AVG_PRICE_OVERRIDE_STORAGE_KEY = 'aave.avgPriceOverrides.v1'
 interface AavePositionProps {
   viewAddress?: `0x${string}`
   viewChainId?: number
+  apiNativePrice?: number | null
   /** Whether this is the tab on screen. Passed down so a hidden panel stops pricing. */
   active?: boolean
 }
@@ -74,10 +75,12 @@ const fmtSigned = (n: number) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)
  * render, so React tore down and rebuilt every cell in both tables whenever a price or balance
  * refetch landed, instead of diffing them. What it used to close over comes in as props.
  */
-function ValueCell({ a, side, r, onEdit }: {
+function ValueCell({ a, side, r, chainId, apiNativePrice, onEdit }: {
   a: SuppliedAsset | BorrowedAsset
   side: 'supply' | 'borrow'
   r: RowPnl | null
+  chainId: number
+  apiNativePrice?: number | null
   onEdit: (rowKey: string, avg: number) => void
 }) {
   const rowKey = `${side}:${a.underlyingAsset.toLowerCase()}`
@@ -85,7 +88,10 @@ function ValueCell({ a, side, r, onEdit }: {
   // Reported by the resolver rather than re-derived from the override map, so the highlight and
   // the number can never disagree about where the figure came from.
   const isOverride = r?.source === 'override'
-  const currentPrice = Number(a.priceInUsd)
+  const chainConfig = getChainConfig(chainId)
+  const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+  const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
+  const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(a.priceInUsd)
   const valueUsd = a.amount * currentPrice
 
   return (
@@ -141,7 +147,7 @@ function PnlCell({ r, side }: { r: RowPnl | null; side: 'supply' | 'borrow' }) {
   )
 }
 
-export function AavePosition({ viewAddress, viewChainId, active }: AavePositionProps = {}) {
+export function AavePosition({ viewAddress, viewChainId, apiNativePrice, active }: AavePositionProps = {}) {
   const {
     isConnected,
     isViewMode,
@@ -235,7 +241,10 @@ export function AavePosition({ viewAddress, viewChainId, active }: AavePositionP
    * lag the market by more than the position's whole P&L.
    */
   const priceOf = (a: { symbol: string; priceInUsd: string }) => {
-    return Number(a.priceInUsd)
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const isNativeToken = a.symbol.toUpperCase() === nativeWrappedSymbol
+    return isNativeToken && apiNativePrice ? apiNativePrice : Number(a.priceInUsd)
   }
 
   /**
@@ -299,7 +308,10 @@ export function AavePosition({ viewAddress, viewChainId, active }: AavePositionP
     const list = side === 'supply' ? suppliedAssets : borrowedAssets
     const asset = list.find((a: SuppliedAsset | BorrowedAsset) => a.underlyingAsset.toLowerCase() === addr)
     if (!asset) return null
-    const currentPrice = Number(asset.priceInUsd)
+    const chainConfig = getChainConfig(chainId)
+    const nativeWrappedSymbol = chainConfig?.defaultTokens?.[0]?.symbol?.toUpperCase() || 'WETH'
+    const isNativeToken = asset.symbol.toUpperCase() === nativeWrappedSymbol
+    const currentPrice = (isNativeToken && apiNativePrice) ? apiNativePrice : Number(asset.priceInUsd)
 
     return {
       side,
@@ -572,7 +584,7 @@ export function AavePosition({ viewAddress, viewChainId, active }: AavePositionP
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                        <ValueCell a={a} side="supply" r={r} onEdit={openEditor} />
+                        <ValueCell a={a} side="supply" r={r} chainId={chainId} apiNativePrice={apiNativePrice} onEdit={openEditor} />
                         <td className="number text-success" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-success" data-label="Interest Earned">
                           {a.interestEarnedTokens.toFixed(4)} {a.symbol} <br />
@@ -641,7 +653,7 @@ export function AavePosition({ viewAddress, viewChainId, active }: AavePositionP
                       <tr key={i}>
                         <td style={{ fontWeight: 600 }}>{a.symbol}</td>
                         <td className="number" data-label="Balance">{a.amount.toFixed(4)}</td>
-                        <ValueCell a={a} side="borrow" r={r} onEdit={openEditor} />
+                        <ValueCell a={a} side="borrow" r={r} chainId={chainId} apiNativePrice={apiNativePrice} onEdit={openEditor} />
                         <td className="number text-danger" data-label="APY">{a.apy.toFixed(2)}%</td>
                         <td className="number text-danger" data-label="Interest Paid">
                           {a.interestPaidTokens.toFixed(4)} {a.symbol} <br />

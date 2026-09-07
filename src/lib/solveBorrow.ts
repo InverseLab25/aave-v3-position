@@ -1,25 +1,15 @@
 import type { QuoteResponse } from '../adapters/types'
-import { BPS, ceilDiv } from './strategies-sdk/sizing'
+import { BPS, ceilDiv, nextSwapIn, type SwapObservation } from './strategies-sdk/sizing'
 
 /**
- * Headroom over what a price says is needed (0.3%), on the oracle seed and on the re-size alike.
+ * Extra headroom on the oracle seed (0.3%).
  *
- * A price is only exact at the size it was measured at: a larger swap pays more impact, and the
- * oracle knows nothing about the DEX spread at all. Nudging the size up trades a little
- * over-borrowing for a quote that clears the flash first time. Kept small: every basis point
- * here is debt the user did not need to take on, though the surplus collateral it buys is
- * supplied to them rather than lost.
+ * Oracle prices are mid-market and know nothing about the DEX spread or this size's price
+ * impact, so a seed taken straight from them tends to land short and cost a refinement round.
+ * Nudging it up trades a little over-borrowing for a lot fewer second calls. Kept small: every
+ * basis point here is debt the user did not need to take on.
  */
 const SEED_MARGIN_BPS = 30n
-
-/**
- * How far over the buy-price size the seed may land and still be taken as it is (twice the margin).
- *
- * The seed is worth keeping when the oracle was right: it is the figure the form showed while
- * the user typed, so accepting it means the number firms up rather than jumping. Past this the
- * oracle overstated the route, and re-sizing saves the user real debt.
- */
-const SEED_TOLERANCE_BPS = 2n * SEED_MARGIN_BPS
 
 export interface SolveBorrowInput {
   /** Collateral the swap must produce, in collateral wei — the flash loan being repaid. */
@@ -29,6 +19,8 @@ export interface SolveBorrowInput {
   debtMargin: bigint
   /** 10000 − slippageBps. What the router's GUARANTEED output must clear. */
   slipNum: bigint
+  /** How many verification rounds to spend converging. */
+  rounds: number
   /** Aave oracle prices, any shared fixed-point scale — it cancels in the ratio. */
   collateralPriceUsd: bigint
   debtPriceUsd: bigint
@@ -36,18 +28,6 @@ export interface SolveBorrowInput {
   debtDecimals: number
   /** Ranked quotes for a given DEBT-asset input, best first; empty when nothing routes. */
   quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
-  /**
-   * The swap input the last solve of this same trade settled on. Quoted first, in place of the
-   * oracle's guess: while the route still prices it within tolerance it is kept as it is, so a
-   * refresh asks the router for the trade it already has live rather than one a few wei off.
-   */
-  seedIn?: bigint
-  /**
-   * The output a quote is sized on. Defaults to the quote's own `amountOut`; a caller holding a
-   * measurement passes that instead, so the buy price is what the route really pays, not what
-   * it claims.
-   */
-  outOf?: (quote: QuoteResponse) => bigint
 }
 
 type SolveBorrowError = 'ZERO_FLASH' | 'ZERO_RATE' | 'NO_ROUTE' | 'NOT_CONVERGING'
@@ -104,11 +84,9 @@ type SolveBorrowOutcome =
 /**
  * Work out how much debt has to be borrowed for the swap to repay the flash loan.
  *
- * Aggregators quote exact-INPUT only, so the required input cannot be asked for directly. It
- * is seeded from oracle prices and quoted once; that quote's BUY PRICE (what the route pays
- * per debt unit at about this size) then says exactly how much input repays the flash, and one
- * more quote at that size fetches the calldata. Two round trips at most, in either direction:
- * a route worse than the oracle borrows more, a route better than it borrows less.
+ * This is the open flow's mirror of `sizeSwap`: aggregators quote exact-INPUT only, so the
+ * required input cannot be asked for directly. It is seeded from oracle prices, VERIFIED
+ * against a real quote at that size, and scaled up if the guaranteed output falls short.
  *
  * Solving for the borrow rather than asking the user for it is what makes an under-covered
  * flash structurally impossible: the amount is derived FROM the repayment obligation, so there
@@ -136,43 +114,45 @@ export async function solveBorrow(p: SolveBorrowInput): Promise<SolveBorrowOutco
   // to borrow, which the contract rejects with ZeroAmount.
   if (seededBorrow === null) return { ok: false, error: 'NOT_CONVERGING' }
 
-  const outOf = p.outOf ?? ((q: QuoteResponse) => BigInt(q.amountOut))
+  let swapIn = seededBorrow + p.debtMargin
+  let best: QuoteResponse | null = null
+  let ranked: QuoteResponse[] = []
+  /** The previous round's sample, so the step can read a slope rather than assume one. */
+  let prev: SwapObservation | null = null
   /** Output the swap has to reach for its guarantee to repay the flash. */
   const targetOut = ceilDiv(p.flashAmount * BPS, p.slipNum)
 
-  // Round one: the last size where there is one, else the oracle's guess, quoted for real.
-  const firstIn = p.seedIn !== undefined && p.seedIn > p.debtMargin ? p.seedIn : seededBorrow + p.debtMargin
-  let ranked = await p.quoteAt(firstIn)
-  let best = ranked[0]
-  if (!best) return { ok: false, error: 'NO_ROUTE' }
-  const seedIn = BigInt(best.amountIn)
-  const seedOut = outOf(best)
-  if (seedOut <= 0n) return { ok: false, error: 'NOT_CONVERGING' }
+  for (let round = 0; round <= p.rounds; round++) {
+    const rankedAt = await p.quoteAt(swapIn)
+    const quote = rankedAt[0]
+    // A failed re-quote must not leave the previous one in place: its calldata swaps a
+    // different amount than the contract would borrow, so the two would disagree.
+    if (!quote) return { ok: false, error: 'NO_ROUTE' }
 
-  // The route's buy price, read as the size at which it would return exactly `targetOut`.
-  // Scaling by the ratio treats `out(in)` as a straight line through the origin, which price
-  // impact bends — hence the margin on top, and the one verifying quote after.
-  const need = ceilDiv(targetOut * seedIn, seedOut)
-  const sized = need + ceilDiv(need * SEED_MARGIN_BPS, BPS)
-  const seedCovers = guaranteedOut(seedOut) >= p.flashAmount
-  const seedIsRightSized = seedIn <= need + ceilDiv(need * SEED_TOLERANCE_BPS, BPS)
+    best = quote
+    ranked = rankedAt
 
-  if (!(seedCovers && seedIsRightSized)) {
-    // Round two, at the size the price says. A failed re-quote must not leave the seed's quote
-    // in place: its calldata swaps a different amount than the contract would borrow.
-    ranked = await p.quoteAt(sized)
-    best = ranked[0]
-    if (!best) return { ok: false, error: 'NO_ROUTE' }
-    // Still short after re-sizing on the route's own price: the curve is steeper than a margin
-    // covers, and a third guess would be a guess. Ask the user for a smaller position instead.
-    if (guaranteedOut(outOf(best)) < p.flashAmount) return { ok: false, error: 'NOT_CONVERGING' }
+    const quotedOut = BigInt(quote.amountOut)
+    if (guaranteedOut(quotedOut) >= p.flashAmount) break // this size repays the flash — done
+
+    // Short. Step to where the two samples say the curve reaches `targetOut` — see `nextSwapIn`
+    // for why scaling by the shortfall ratio undershoots every round on a curve with real price
+    // impact, and why a 1,000 WETH open failed against this budget because of it.
+    const cur: SwapObservation = { in: swapIn, out: quotedOut }
+    const scaled = nextSwapIn(targetOut, cur, prev)
+    if (scaled <= swapIn) return { ok: false, error: 'NOT_CONVERGING' }
+    if (round === p.rounds) return { ok: false, error: 'NOT_CONVERGING' }
+    prev = cur
+    swapIn = scaled
   }
 
-  // Read the size back off the winning quote rather than the arithmetic: the router's calldata
-  // encodes that amount and that calldata is what executes, so deriving it from anywhere else
-  // lets the borrow and the swap disagree.
+  if (!best) return { ok: false, error: 'NO_ROUTE' }
+
+  // Read the size back off the winning quote rather than the loop's bookkeeping: the router's
+  // calldata encodes that amount and that calldata is what executes, so deriving it from
+  // anywhere else lets the borrow and the swap disagree.
   const quotedIn = BigInt(best.amountIn)
-  const expectedOut = outOf(best)
+  const expectedOut = BigInt(best.amountOut)
   if (quotedIn <= p.debtMargin) {
     // The margin alone covers the whole swap, so there is nothing to borrow. The contract
     // reverts ZeroAmount on a zero borrow, so refuse rather than clamp.

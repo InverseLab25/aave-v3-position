@@ -15,6 +15,9 @@ import { RECEIPT_TIMEOUT_MS } from '../../lib/settle'
  */
 export const ACCRUAL_BUFFER_BPS = 50n
 
+/** Verification re-quotes allowed while converging on the collateral actually required. */
+export const SIZING_ROUNDS = 3
+
 /**
  * How long to wait for a submitted close to be mined before giving up on it (ms).
  *

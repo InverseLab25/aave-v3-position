@@ -1,5 +1,4 @@
-import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react'
-import { onSolverUpdate } from '../adapters/solver'
+import { useState, useEffect, useMemo, type CSSProperties } from 'react'
 import type { OutBasis } from '../lib/deleverage'
 
 /** What each rung of `expectedOutcome` means, in the user's terms. */
@@ -18,6 +17,7 @@ import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 import { extractRevertMessage } from '../utils/errors'
 import { healthFactor, evaluateHf } from '../utils/health'
 
+import { clearQuoteCache } from '../adapters/http'
 import type { CloseErrorKind } from '../lib/deleverage'
 import { PRICE_IMPACT_HIGH_PERCENT, suggestWiderSlippage } from '../lib/closePlan'
 import { simulateAndWrite } from '../utils/contract'
@@ -50,6 +50,16 @@ const SLIPPAGE_SUGGESTION_CAP = 1
 // How often the open modal re-quotes. Aggregator quotes go stale within seconds, and the
 // router enforces the output floor frozen into its calldata, so a preview that is not
 // refreshed stops describing the transaction that would actually be submitted.
+/**
+ * Gap between one quote settling and the next being requested.
+ *
+ * This is a REST period, not a period. Actual cadence is roughly
+ * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts: a cheap pair refreshes
+ * every ~3.5s, a 200 WETH split route every ~10s. Refreshing faster than a quote takes cannot
+ * produce fresher numbers, it only produces more overlapping requests.
+ */
+const QUOTE_REFRESH_MS = 3000
+
 /**
  * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
  * the two amount fields in this app read as the same control.
@@ -124,9 +134,6 @@ export function ClosePositionModal({
   const [isComplete, setIsComplete] = useState<boolean>(false)
 
   const [preview, setPreview] = useState<ClosePreview | null>(null)
-  // Read inside the quote effect without re-arming it on every preview.
-  const previewRef = useRef<ClosePreview | null>(null)
-  useEffect(() => { previewRef.current = preview }, [preview])
   /**
    * The aggregator the user pinned in the route list, or null while the ranking decides. Held
    * across re-quotes on purpose — a pin overrides the ranking until it is taken off.
@@ -139,22 +146,15 @@ export function ClosePositionModal({
    * sizing). Setting it higher converts the surplus into the debt asset and sends it to the
    * wallet, which is the point when the collateral is expected to fall.
    */
-  // Both default to MAX: swap the whole collateral, repay the whole debt. A fixed size is one
-  // quote at that size, so the preview is one live trade the solver keeps fresh, rather than
-  // the estimate-and-refine rounds that each probe a different size.
-  const [collateralInStr, setCollateralInStr] = useState<string>(suppliedAssets[0] ? String(suppliedAssets[0].amount) : '')
-  const [isCollateralMax, setIsCollateralMax] = useState<boolean>(!!suppliedAssets[0])
+  const [collateralInStr, setCollateralInStr] = useState<string>('')
+  const [isCollateralMax, setIsCollateralMax] = useState<boolean>(false)
   /**
    * How much debt to repay. Empty means the whole thing. Anything smaller is a partial close:
    * the position stays open with less debt and less collateral behind it.
    */
-  const [debtInStr, setDebtInStr] = useState<string>(String(borrowedAsset.amount))
-  const [isDebtMax, setIsDebtMax] = useState<boolean>(true)
+  const [debtInStr, setDebtInStr] = useState<string>('')
+  const [isDebtMax, setIsDebtMax] = useState<boolean>(false)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
-  /** A run is under way, quiet or not. What a landing pass checks before asking for another. */
-  const inFlight = useRef(false)
-  /** The next run was asked for by a pass landing, not by the user: it re-reads without saying "Pricing…". */
-  const quietNext = useRef(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   /**
    * Unix seconds until the held permit expires, or null when none is held. Drives the
@@ -297,12 +297,7 @@ export function ClosePositionModal({
         if (isMounted) { setPreview(null); setPreviewError(null); setIsQuoting(false) }
         return
       }
-      // Quiet only with a preview already standing: the server refreshed a trade the user is
-      // looking at, so the figures move and nothing else does. The first price still says so.
-      const quiet = quietNext.current && previewRef.current !== null
-      quietNext.current = false
-      inFlight.current = true
-      if (!quiet) setIsQuoting(true)
+      setIsQuoting(true)
       try {
         const p = await quotePreview({
           collateral: selectedCollateral,
@@ -314,19 +309,13 @@ export function ClosePositionModal({
           signal: controller.signal,
         })
         if (isMounted) {
-          // A stall at the aggregator mid-poll must not swap a live preview for an error: the
-          // next refresh asks again. With nothing on screen yet, the error is all there is.
-          const stall = !p.preview && p.error?.kind === 'aggregator' && previewRef.current !== null
-          if (!stall) {
-            setPreview(p.preview)
-            setPreviewError(p.error)
-          }
+          setPreview(p.preview)
+          setPreviewError(p.error)
           // Only when this run actually priced something. A failed one leaves the last roster
           // standing rather than replacing it with nothing.
           if (p.preview) setQuotedRoutes({ pair: routesPairKey, list: p.preview.routes })
         }
       } finally {
-        inFlight.current = false
         if (isMounted) setIsQuoting(false)
       }
     }
@@ -335,7 +324,6 @@ export function ClosePositionModal({
     const timeout = setTimeout(run, 300)
     return () => {
       isMounted = false
-      inFlight.current = false
       clearTimeout(timeout)
       controller.abort()
     }
@@ -488,42 +476,43 @@ export function ClosePositionModal({
     ? step === 1
     : closeStep === 'permit' || closeStep === 'revoke' || closeStep === 'sending'
 
-  // Re-quote whenever the solver lands a fresh pass, because a close plan cannot be carried
-  // forward — the router freezes its output floor into the calldata at build time, so a preview
-  // left sitting stops describing what would actually execute.
+  // Re-quote on a cadence, because a close plan cannot be carried forward — the router freezes
+  // its output floor into the calldata at build time, so a preview left sitting stops
+  // describing what would actually execute.
   //
-  // Only while nothing is in flight. A pass landing mid-quote is not lost: the next one comes a
-  // second later, and one run at a time is what lets `isQuoting` fall to false between them —
-  // `canExecute` reads that flag.
+  // Self-scheduling, NOT a fixed interval. A quote for a large position takes 4-8s (a 200 WETH
+  // route is 27kB of split-route data); a 3s interval fires while the previous one is still in
+  // flight. Those overlapping runs pile up on the slowest endpoint in the app, and — because a
+  // superseded run is barred from clearing `isQuoting` by its own `isMounted` guard — none of
+  // them ever clears it. `canExecute` reads that flag, so on a large position the button was
+  // unclickable except by luck. Waiting for the current quote to settle before timing the next
+  // keeps exactly one in flight and lets the flag fall to false between refreshes.
   //
   // Paused while a close is running: a re-quote landing mid-flow would move the figures under
   // the user and spend rate-limit budget the execution path needs.
   //
-  // Held while the tab is hidden: nobody is reading the figures, and with no ask going out the
-  // solver drops the stream on its own. Re-quoted the moment the tab is looked at again — which
-  // is also the first moment a stale price could be read.
+  // Held while the tab is hidden. Browsers throttle a background timer rather than stopping it,
+  // so left alone this keeps asking the slowest endpoint in the app for prices nobody can see,
+  // roughly once a minute, for as long as the modal stays open. The re-quote is re-armed the
+  // moment the tab is looked at again — which is also the first moment a stale price could be
+  // read — so nothing is lost by holding it.
   useEffect(() => {
     if (isSameAsset || !closeAvailable || !selectedCollateral) return
     if (isProcessing || isQuoting) return
 
     const requote = () => {
+      clearQuoteCache()
       setRefreshTick((t) => t + 1)
     }
     const visible = () => !paused && document.visibilityState === 'visible'
-    // The solver streams the trade and says when a pass has landed; that is when there is
-    // something new to show, so it is what re-quotes rather than a clock.
-    const off = onSolverUpdate(() => {
-      if (!visible() || inFlight.current) return
-      quietNext.current = true
-      requote()
-    })
+    const id = visible() ? setTimeout(requote, QUOTE_REFRESH_MS) : undefined
     const onVisibilityChange = () => {
       if (visible()) requote()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
-      off()
+      clearTimeout(id)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick, paused])
@@ -650,10 +639,7 @@ export function ClosePositionModal({
                 // The settled panel belongs to the pair it was produced for. Carried across a
                 // change of collateral it captions the new pair with the old one's numbers.
                 clearOutcome()
-                const next = suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null
-                setSelectedCollateral(next)
-                // MAX follows the collateral: the string is display only, 'all' resolves on chain.
-                if (isCollateralMax) setCollateralInStr(next ? String(next.amount) : '')
+                setSelectedCollateral(suppliedAssets.find((a) => a.underlyingAsset === e.target.value) ?? null)
               }}
               style={{ appearance: 'none', backgroundImage: 'url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22292.4%22%20height%3D%22292.4%22%3E%3Cpath%20fill%3D%22%2364748b%22%20d%3D%22M287%2069.4a17.6%2017.6%200%200%200-13-5.4H18.4c-5%200-9.3%201.8-12.9%205.4A17.6%2017.6%200%200%200%200%2082.2c0%205%201.8%209.3%205.4%2012.9l128%20127.9c3.6%203.6%207.8%205.4%2012.8%205.4s9.2-1.8%2012.8-5.4L287%2095c3.5-3.5%205.4-7.8%205.4-12.8%200-5-1.9-9.2-5.5-12.8z%22%2F%3E%3C%2Fsvg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px top 50%', backgroundSize: '10px auto' }}
             >
@@ -891,7 +877,12 @@ export function ClosePositionModal({
               }}>
                 <h4 style={{ margin: 0, fontSize: T.fontSize.sm }}>Estimated Output</h4>
                 <button
-                  onClick={() => setRefreshTick((t) => t + 1)}
+                  // Refresh exists to get prices newer than the ones on screen, so it has to
+                  // drop the quote-reuse window as well as re-run the effect.
+                  onClick={() => {
+                    clearQuoteCache()
+                    setRefreshTick((t) => t + 1)
+                  }}
                   disabled={isQuoting}
                   className="btn-ghost"
                   title="Re-fetch the latest quote and prices"

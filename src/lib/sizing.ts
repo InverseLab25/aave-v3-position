@@ -1,26 +1,18 @@
 import type { QuoteResponse } from '../adapters/types'
 import { CloseError } from './deleverage'
-import { ceilDiv } from './strategies-sdk/sizing'
+import { ceilDiv, nextSwapIn, type SwapObservation } from './strategies-sdk/sizing'
 
 
 /**
- * Headroom over what a price says is needed (0.3%), on the oracle seed and on the re-size alike.
+ * Extra headroom on the oracle seed (0.3%).
  *
- * A price is only exact at the size it was sampled at: a larger swap pays more impact, and the
- * oracle knows nothing about the DEX spread at all. Nudging the size up trades a little
- * over-swapping for a quote that clears `needed` first time. Kept small — every basis point
- * here is collateral converted that did not need to be.
+ * Oracle prices are mid-market: they know nothing about the DEX spread or the price impact
+ * of this particular size, so a seed derived straight from them tends to come up slightly
+ * short and cost a refinement round. Nudging it up trades a little over-swapping for a lot
+ * fewer second calls. Kept small — every basis point here is collateral converted that did
+ * not need to be.
  */
 const SEED_MARGIN_BPS = 30n
-
-/**
- * How far over the buy-price size a sample may land and still be taken as it is (twice the margin).
- *
- * A right-sized oracle seed is worth keeping: it is one call, and the figure the user has been
- * looking at. Past this the sample over-swaps, and re-sizing keeps collateral supplied that
- * did not need to be sold.
- */
-const SEED_TOLERANCE_BPS = 2n * SEED_MARGIN_BPS
 
 /**
  * A swap size estimated from oracle prices, in collateral wei. Costs no network call.
@@ -64,6 +56,8 @@ interface SizeSwapInput {
   needed: bigint
   /** 10000 − slippageBps. */
   slipNum: bigint
+  /** How many verification rounds to spend converging. */
+  rounds: number
   /**
    * Ranked quotes for a given input size, best first; empty when nothing routes. Injected
    * so the sizing algorithm can be exercised without a network, an adapter, or a wallet.
@@ -89,12 +83,6 @@ interface SizeSwapInput {
    * than a wrong answer.
    */
   seedIn?: bigint
-  /**
-   * The output a quote is sized on. Defaults to the quote's own `amountOut`; a caller holding a
-   * measurement passes that instead, so the buy price is what the route really pays, not what
-   * it claims.
-   */
-  outOf?: (quote: QuoteResponse) => bigint
 }
 
 interface SizeSwapResult {
@@ -114,25 +102,26 @@ interface SizeSwapResult {
 /**
  * Work out how much collateral actually has to be swapped to repay the debt.
  *
- * Aggregators quote exact-INPUT only, so the required input cannot be asked for directly. One
- * sample is quoted — the oracle seed where there is one, the whole balance otherwise — and its
- * BUY PRICE (what the route pays per collateral unit at about this size) says exactly how much
- * input clears `needed`. One more quote at that size fetches the calldata. Two round trips at
- * most, in either direction: a sample that falls short grows, one that over-swaps shrinks.
+ * Aggregators quote exact-INPUT only, so the required input cannot be asked for directly.
+ * It is estimated from an observed rate, then VERIFIED against a real quote at that size
+ * and refined if it falls short. Pricing is non-linear and the aggregator may pick a
+ * different route at a different size, so a single back-out is an estimate, never an answer.
  *
- * Pricing is non-linear, so the re-size carries a small margin and is judged on its own
- * quote, never assumed. A size the price puts beyond the balance drains instead, and
- * `covered` is then read off the full-collateral quote.
+ * The estimate is deliberately conservative: it is derived from the rate for swapping the
+ * ENTIRE collateral, i.e. the worst price-impact point, so any smaller trade prices at least
+ * that well. In practice the first verification round succeeds and the loop exits; the
+ * remaining rounds exist for the case where the aggregator routes differently at the
+ * smaller size.
  */
 export async function sizeSwap({
   collAmount,
   debt,
   needed,
   slipNum,
+  rounds,
   quoteAt,
   fixedIn,
   seedIn,
-  outOf = (q) => BigInt(q.amountOut),
 }: SizeSwapInput): Promise<SizeSwapResult> {
   /** What a router contractually guarantees to deliver for a given quoted output. */
   const guaranteedOut = (quotedOut: bigint) => (quotedOut * slipNum) / 10000n
@@ -153,7 +142,7 @@ export async function sizeSwap({
     if (quotedIn === 0n || quotedIn > collAmount) {
       throw new CloseError('pair', 'Swap route returned an unusable input amount')
     }
-    const expectedOut = outOf(best)
+    const expectedOut = BigInt(best.amountOut)
     const minDebtOut = guaranteedOut(expectedOut)
     return {
       requiredIn: quotedIn,
@@ -181,52 +170,71 @@ export async function sizeSwap({
     const rankedFixed = await quoteAt(fixedIn)
     const bestFixed = rankedFixed[0]
     if (!bestFixed) throw new CloseError('pair', 'No compatible swap route available')
-    return finalize(bestFixed, rankedFixed, outOf(bestFixed) >= debt)
+    return finalize(bestFixed, rankedFixed, BigInt(bestFixed.amountOut) >= debt)
   }
 
-  /** The whole balance, quoted: what a drain would return, and whether it covers the debt. */
-  const drain = async () => {
-    const rankedFull = await quoteAt(collAmount)
-    const bestFull = rankedFull[0]
-    if (!bestFull) throw new CloseError('pair', 'No compatible swap route available')
-    return finalize(bestFull, rankedFull, outOf(bestFull) >= debt)
+  // Try the free estimate first. A seed that already clears `needed` answers the whole
+  // question in one call — no full-collateral probe, which is the second request every
+  // refresh would otherwise pay for.
+  if (seedIn !== undefined && seedIn > 0n && seedIn < collAmount) {
+    const rankedSeed = await quoteAt(seedIn)
+    const bestSeed = rankedSeed[0]
+    if (bestSeed && guaranteedOut(BigInt(bestSeed.amountOut)) >= needed) {
+      // Clearing `needed` means clearing `debt`, since needed > debt by the accrual buffer.
+      return finalize(bestSeed, rankedSeed, true)
+    }
+    // Seed was short (or unroutable). Fall through to the probe-and-refine path below — the
+    // oracle disagreeing with the route costs an extra round, never a wrong size.
   }
 
-  // The sample. The oracle seed costs nothing and is usually right; without one the balance
-  // is the only size known to be worth quoting, and it doubles as the coverage check.
-  const sampleIn = seedIn !== undefined && seedIn > 0n && seedIn < collAmount ? seedIn : collAmount
-  const sampled = await quoteAt(sampleIn)
-  const sample = sampled[0]
-  if (!sample) throw new CloseError('pair', 'No compatible swap route available')
-  const sampleOut = outOf(sample)
-  if (sampleIn === collAmount && sampleOut < debt) return finalize(sample, sampled, false) // underwater: drain
+  // Quote the full collateral first to gauge price and coverage.
+  const rankedFull = await quoteAt(collAmount)
+  const bestFull = rankedFull[0]
+  if (!bestFull) throw new CloseError('pair', 'No compatible swap route available')
+  const fullOut = BigInt(bestFull.amountOut)
+  const covered = fullOut >= debt
 
-  // The route's buy price, read as the size at which it would return exactly `targetOut`.
-  // Scaling by the ratio treats `out(in)` as a straight line through the origin, which price
-  // impact bends — hence the margin on top, and the one verifying quote after.
+  let requiredIn =
+    covered && fullOut > 0n ? ceilDiv(collAmount * needed * 10000n, fullOut * slipNum) : collAmount
+  if (!covered || requiredIn >= collAmount) requiredIn = collAmount
+
+  let best = bestFull
+  let ranked = rankedFull
+  /** The previous round's sample, so the step can read a slope rather than assume one. */
+  let prev: SwapObservation | null = null
+  /** Output the swap has to reach for its guarantee to clear `needed`. */
   const targetOut = ceilDiv(needed * 10000n, slipNum)
-  const need = sampleOut > 0n ? ceilDiv(targetOut * BigInt(sample.amountIn), sampleOut) : collAmount
-  const sized = need + ceilDiv(need * SEED_MARGIN_BPS, 10000n)
-  if (sized >= collAmount) {
-    // Needs more than there is — drain instead. The balance sample IS that quote.
-    return sampleIn === collAmount ? finalize(sample, sampled, true) : drain()
-  }
-  const sampleCovers = guaranteedOut(sampleOut) >= needed
-  const sampleIsRightSized = BigInt(sample.amountIn) <= need + ceilDiv(need * SEED_TOLERANCE_BPS, 10000n)
-  if (sampleCovers && sampleIsRightSized) return finalize(sample, sampled, true)
+  for (let round = 0; round < rounds && requiredIn !== collAmount; round++) {
+    const rankedAt = await quoteAt(requiredIn)
+    const quote = rankedAt[0]
+    // A failed re-quote must NOT leave the previous quote in place: its calldata swaps a
+    // different amount than the contract would withdraw, so the router would try to pull
+    // more than it was approved for. Fall back to the full-collateral quote, which drains.
+    if (!quote) {
+      best = bestFull
+      ranked = rankedFull
+      break
+    }
+    best = quote
+    ranked = rankedAt
 
-  // Round two, at the size the price says. A failed re-quote must NOT leave the sample in
-  // place: its calldata swaps a different amount than the contract would withdraw, so the
-  // router would try to pull more than it was approved for. The balance sample drains instead.
-  const ranked = await quoteAt(sized)
-  const best = ranked[0]
-  if (!best) {
-    if (sampleIn === collAmount) return finalize(sample, sampled, true)
-    throw new CloseError('pair', 'No compatible swap route available')
+    const quotedOut = BigInt(quote.amountOut)
+    if (guaranteedOut(quotedOut) >= needed) break // this size is enough — stop here
+
+    // Short. Step to where the two samples say the curve reaches `targetOut` — see `nextSwapIn`
+    // for why scaling by the shortfall ratio lands short every round once price impact is real.
+    const cur: SwapObservation = { in: requiredIn, out: quotedOut }
+    const scaled = quotedOut > 0n ? nextSwapIn(targetOut, cur, prev) : collAmount
+    prev = cur
+    // Needs more than there is — drain instead.
+    if (scaled >= collAmount) {
+      best = bestFull
+      ranked = rankedFull
+      break
+    }
+    if (scaled <= requiredIn) break // not converging — accept and let `guaranteed` decide
+    requiredIn = scaled
   }
-  if (guaranteedOut(outOf(best)) >= needed) return finalize(best, ranked, true)
-  // Still short after re-sizing on the route's own price: the curve is steeper than the margin
-  // covers. Whether the whole balance can do it is the drain quote's answer, and `guaranteed`
-  // says no either way.
-  return drain()
+
+  return finalize(best, ranked, covered)
 }

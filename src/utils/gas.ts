@@ -57,9 +57,9 @@ export const STRATEGY_OVERHEAD_GAS = 1_500_000n
  */
 export function gasFromMeasuredSwap(
   swapGas: bigint,
-  opts: { chainId?: number; label?: string; /** The measurement already covers the whole transaction. */ whole?: boolean } = {},
+  opts: { chainId?: number; label?: string } = {},
 ): bigint {
-  const gas = opts.whole ? swapGas : swapGas + STRATEGY_OVERHEAD_GAS
+  const gas = swapGas + STRATEGY_OVERHEAD_GAS
   const cap = getTxGasCap(opts.chainId)
   if (cap !== undefined && gas > cap) {
     throw new GasEstimateError(

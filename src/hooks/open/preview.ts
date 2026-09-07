@@ -9,14 +9,14 @@ import {
 } from '../../lib/leverage'
 import { solveBorrow } from '../../lib/solveBorrow'
 import { routeCostPercent } from '../../lib/swapRoute'
-import { leverageAdapters } from '../../adapters'
+import { getAdaptersForChain } from '../../adapters'
 import { AggregatorHttpError } from '../../adapters/http'
 import type { Adapter, QuoteResponse } from '../../adapters/types'
-import { getTxGasCap } from '../../config/chains'
-import { applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
+import { getChainConfig, getTxGasCap } from '../../config/chains'
+import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
-import { solverMeasurement, solverOpen } from '../../adapters/solver'
-import { type LeverageOpenInput, type OpenPreview } from '../open/types'
+import { simulateSwap, swapSimulationInput } from '../../adapters/simulate'
+import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
  * What the debounced preview run needs from the hook.
@@ -49,8 +49,6 @@ interface PreviewRunContext {
   chainId: number
   owner: Address | undefined
   cancelled: () => boolean
-  /** The swap input the last preview of this same trade settled on — see `solveBorrow.seedIn`. */
-  seedIn?: bigint
   /**
    * Stops the quotes behind a superseded run, rather than only ignoring their answers. Shared
    * with any other run asking the same URL, so aborting here cancels nothing anyone still wants.
@@ -81,7 +79,7 @@ interface PreviewRunContext {
 /** One debounced quote-and-size pass. Everything the preview shows is decided here. */
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
-    input, pinned, forInput, client, chainId, owner, cancelled, signal, forPair, seedIn,
+    input, pinned, forInput, client, chainId, cancelled, signal, forPair,
     setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes, setMeasured,
   } = ctx
 
@@ -98,7 +96,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
        * The last round's field, reported ONCE at the end of the run — hence declared out here,
        * where `finally` can reach it.
        *
-       * `solveBorrow` calls `quoteAll` once or twice, and only the final round's list is the
+       * `solveBorrow` calls `quoteAll` up to three times, and only the final round's list is the
        * one the preview is built from. Reporting each round as it landed re-rendered the panel
        * and the modal twice over to show numbers that were about to be replaced. Null until a
        * round has actually happened, so a run that fails before quoting leaves the previous list
@@ -162,9 +160,12 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         }
 
         const allowed = new Set(routers.map((r) => r.toLowerCase()))
-        // The solver, which quotes every provider and simulates each route server-side. There is
-        // deliberately no browser fallback behind it.
-        const adapters = leverageAdapters()
+        // Same filter the close flow uses, and for the same reason: `supportsExecution` only
+        // says the adapter returns a transaction, not that this contract can execute it. See
+        // COMPATIBLE_ADAPTERS — quoting the rest gets them ranked and sized against, then
+        // rejected at build, which surfaces as a "rate moved" the user cannot act on.
+        const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
+          .filter((a) => (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name))
 
         const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
         const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
@@ -188,15 +189,8 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
          */
         let pinnedOut = false
 
-        /**
-         * Every adapter's quote for a given debt-asset input, best output first.
-         *
-         * Quoted as the wallet's own open, so the solver runs each route through the contract
-         * rather than as a bare swap. The flash is named only when it is settled (a pinned
-         * borrow): a probe size that cannot repay a fixed flash reverts instead of pricing,
-         * and sizing needs the price. Without it each route is flashed its own quote less 1%.
-         */
-        const quoteAll = async (swapIn: bigint, flashAmount?: bigint): Promise<Candidate[]> => {
+        /** Every adapter's quote for a given debt-asset input, best output first. */
+        const quoteAll = async (swapIn: bigint): Promise<Candidate[]> => {
           const results = await Promise.all(
             adapters.map(async (a) => {
               try {
@@ -211,12 +205,6 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
                   slippage: slippagePercent,
                   chainId,
                   caller: input.contract,
-                  owner,
-                  // A boost posts no margin and takes the ratchet path, which the solver does not
-                  // model, so it stays a bare swap.
-                  open: owner && input.marginAsset !== 'none'
-                    ? { user: owner, margin: input.marginAsset, marginAmount: input.marginAmount.toString(), ...(flashAmount ? { flashAmount: flashAmount.toString() } : {}) }
-                    : undefined,
                   signal,
                 })
                 return quotes.map((q) => ({ a, q }))
@@ -286,7 +274,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           flashAmount = derived.flashAmount
           debtMargin = derived.debtMargin
           borrowAmount = pinned
-          candidates = await quoteAll(borrowAmount + debtMargin, flashAmount)
+          candidates = await quoteAll(borrowAmount + debtMargin)
           if (cancelled()) return
           if (candidates.length === 0) {
             setPreviewError(nothingPriced())
@@ -304,8 +292,8 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           const solution = await solveBorrow({
             flashAmount,
             debtMargin,
-            seedIn,
             slipNum: BPS - input.slippageBps,
+            rounds: MAX_REFINE_ROUNDS,
             collateralPriceUsd: coll.priceUsd,
             debtPriceUsd: debt.priceUsd,
             collateralDecimals: coll.decimals,
@@ -314,9 +302,6 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
               candidates = await quoteAll(swapIn)
               return candidates.map((c) => c.q)
             },
-            // The solver measured every route from the contract, so the buy price the borrow is
-            // sized on is what the route pays, not what its provider claims.
-            outOf: (q) => solverMeasurement(q)?.amountOut ?? BigInt(q.amountOut),
           })
           if (cancelled()) return
           if (!solution.ok) {
@@ -332,13 +317,23 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
           build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
           isAllowlisted: (router) => allowed.has(router.toLowerCase()),
-          label: (c) => routeKey(c.q),
+          label: (c) => c.a.name,
           txGasCap: getTxGasCap(chainId),
           cancelled,
           // The contract makes this swap mid-flash-loan, so it is the sender and the recipient.
-          // The solver already measured every route that way on the server, so the result is
-          // read off the quote rather than simulated again here.
-          simulate: (c) => Promise.resolve(solverMeasurement(c.q)),
+          // The open direction is debt -> collateral, the mirror of the close.
+          simulate: (c, tx) =>
+            simulateSwap(
+              swapSimulationInput({
+                chainId,
+                caller: input.contract,
+                tokenIn: debtAsset,
+                tokenOut: collateral,
+                amountIn: c.q.amountIn,
+                tx,
+              }),
+              signal,
+            ),
         })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
         // superseded attempt writes a no-route error that a reverted input would make current.
@@ -443,12 +438,11 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           expectedBasis: expectation.basis,
           quotedOut,
           swapGasUsed: selected.sim ? BigInt(selected.sim.gasUsed) : null,
-          wholeOpen: solverOpen(build.quote) !== null,
           minOut: guaranteedOut > flashAmount ? guaranteedOut : flashAmount,
           projection,
           router: build.built.to as Address,
           swapData: build.built.data as Hex,
-          aggregator: routeKey(build.quote),
+          aggregator: build.adapter.name,
           priceImpactPercent: routeCostPercent(build.quote.rawAmountInUsd, build.quote.rawAmountOutUsd),
         })
       } catch {

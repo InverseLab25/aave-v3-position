@@ -21,3 +21,13 @@ export const RPC_URLS: Partial<Record<number, string>> = {
   84532: import.meta.env.VITE_RPC_URL_84532,
 };
 
+/**
+ * The endpoint to simulate a swap against, or undefined where there is none.
+ *
+ * No public fallback, deliberately. A simulation is not broadcast, so there is nothing in it to
+ * front-run directly, but it does hand whoever runs the node the exact trade you are about to
+ * make, at full size, before you make it. On the sizes this app deals in that is worth more to
+ * them than it is to us, so an unconfigured chain gets no simulation and the caller falls back
+ * to the aggregator's own quoted output.
+ */
+export const simulationRpc = (chainId: number): string | undefined => RPC_URLS[chainId];

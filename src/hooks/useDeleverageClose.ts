@@ -125,19 +125,9 @@ export function useDeleverageClose() {
    * Resolve reserves, read live state, size the swap and quote it. No signing — shared by
    * preview() (display) and close() (execution) so both describe the same transaction.
    */
-  /** The size the last plan settled on, and the trade it was for, so a re-quote starts from it. */
-  const lastSized = useRef<{ trade: string; requiredIn: bigint } | null>(null)
   const buildPlan = useCallback(
-    async (input: CloseInput, logFn: (m: string) => void = () => {}) => {
-      const trade = [
-        input.collateral.underlyingAsset, input.debtAsset.underlyingAsset, input.slippagePercent,
-        String(input.collateralIn), String(input.debtIn), input.preferredAggregator,
-      ].join('|')
-      const seedIn = lastSized.current?.trade === trade ? lastSized.current.requiredIn : undefined
-      const p = await buildPlanStep({ ...input, seedIn }, { address, chainId, publicClient, log: logFn })
-      lastSized.current = { trade, requiredIn: p.requiredIn }
-      return p
-    },
+    (input: CloseInput, logFn: (m: string) => void = () => {}) =>
+      buildPlanStep(input, { address, chainId, publicClient, log: logFn }),
     [address, chainId, publicClient],
   )
 
@@ -183,8 +173,7 @@ export function useDeleverageClose() {
             debtRepaid: formatUnits(p.debt, dDec),
             debtRemaining: formatUnits(p.debtRemaining, dDec),
             debtRequired: formatUnits(p.needed, dDec),
-            // What the whole-close simulation actually forwarded, when there was one.
-            debtReturned: formatUnits(p.returnedToUser ?? (p.expectedOut > p.debt ? p.expectedOut - p.debt : 0n), dDec),
+            debtReturned: formatUnits(p.expectedOut > p.debt ? p.expectedOut - p.debt : 0n, dDec),
             collateralSwapped: formatUnits(p.requiredIn, cDec),
             collateralKeptSupplied: formatUnits(keptSupplied, cDec),
             collateralKeptSuppliedUsd:
@@ -261,7 +250,7 @@ export function useDeleverageClose() {
           )
         }
         log(
-          `Best route: ${routeKey(p.best)}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
+          `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
         )
 
         const withdrawal = planWithdrawal(p)
@@ -287,7 +276,7 @@ export function useDeleverageClose() {
 
         const route = await buildFreshRoute(p, {
           chainId, slippagePercent: input.slippagePercent, signatures, log,
-        }, permits)
+        })
         const { hash, builtOut, minOut } = await submitClose(p, route, permits, {
           address, chainId, config, publicClient, walletClient, input, log, setStep,
         })

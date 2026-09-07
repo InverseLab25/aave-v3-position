@@ -30,7 +30,7 @@ export interface RouteHop {
 export type RouteDetails =
   | { type: 'kyber' | 'nordstern'; totalAmountIn: bigint; paths: RouteHop[][] }
   | { type: 'odos-defillama' }
-  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap' | 'socket' | 'solver'; info: string };
+  | { type: 'cowswap' | '0x' | 'openocean' | 'paraswap' | 'socket'; info: string };
 
 export interface QuoteResponse {
   /**
@@ -108,6 +108,14 @@ export interface Adapter {
   name: string;
   /** Whether this adapter supports on-chain execution (CowSwap = false) */
   supportsExecution: boolean;
+  /**
+   * Shortest gap between quotes the streaming screen may ask for, in ms. Default 1000.
+   *
+   * A property of the endpoint rather than of the caller: OpenOcean and Socket's public backend
+   * both answer a per-second poll with 429s, and the shared HTTP gate cannot help — it meters
+   * per origin against OUR budget, and these limits are shared with everyone else using them.
+   */
+  minQuoteIntervalMs?: number;
   /** `signal` aborts a superseded request so it stops consuming the aggregator. */
   getQuote: (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number, signal?: AbortSignal) => Promise<QuoteResponse | null>;
   /**
@@ -126,9 +134,6 @@ export interface Adapter {
   getQuotes?: (args: QuotesRequest) => Promise<QuoteResponse[]>;
   buildTransaction: (quote: QuoteResponse, slippage: number, walletAddress: string, chainId: number) => Promise<TransactionPayload>;
 }
-
-/** A signature as the solver takes it: decimal strings for the numbers, hex for r and s. */
-export interface SolverSig { deadline: string; r: string; s: string; v: number }
 
 export interface QuotesRequest {
   fromAsset: Asset;
@@ -149,27 +154,5 @@ export interface QuotesRequest {
    * mid-flash-loan and the output has to come back to the contract that owes the loan.
    */
   receiver?: string;
-  /**
-   * The connected wallet, when there is one. The solver needs it because Socket signs its
-   * route for a wallet; nothing in the browser adapters reads it.
-   */
-  owner?: string;
-  /**
-   * Whose close this swap sits inside, when it does. The solver then runs each route as the
-   * whole close through the Strategies contract instead of as a bare swap, and reports what
-   * it repaid, withdrew and returned. Amounts are wei strings, or 'all'.
-   */
-  close?: {
-    user: string; collateralToWithdraw: 'all' | string; debtRepay: 'all' | string;
-    /** On the final ask only: the solver then returns the transaction to send, signatures inside. */
-    permit?: SolverSig & { amount: string }; revokePermit?: SolverSig;
-  };
-  /**
-   * Whose open this swap sits inside, when it does. The solver then runs each route as the
-   * whole open through the Strategies contract, with the margin's balance and allowance
-   * overridden for the wallet so it works before the approve. `amountIn` is what the contract
-   * swaps; without `flashAmount` each route is flashed its own quote less 1%.
-   */
-  open?: { user: string; margin: 'debt' | 'collateral'; marginAmount: string; flashAmount?: string; delegation?: SolverSig };
   signal?: AbortSignal;
 }

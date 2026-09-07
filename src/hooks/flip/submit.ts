@@ -1,7 +1,8 @@
 import type { Account, Address, Chain, PublicClient, Transport, WalletClient } from 'viem'
 import { assertWalletChain } from '../../lib/walletChain'
 import { getFlipperAddress } from '../../config/chains'
-import { leverageAdapters } from '../../adapters'
+import { getChainConfig } from '../../config/chains'
+import { getAdaptersForChain } from '../../adapters'
 import { adjustedFees, pinnedGasLimit } from '../../utils/gas'
 import { quoteAndSelect } from './preview'
 import { canReuseSignature, reuseBlocker, type HeldSignature } from '../../lib/closePlan'
@@ -160,7 +161,7 @@ export async function submitFlip(
         const fresh = await quoteAndSelect({
           input,
           chainId,
-          adapters: leverageAdapters(),
+          adapters: getAdaptersForChain(getChainConfig(chainId)?.adapters ?? []),
           allowedRouters: new Set(
             (
               (await publicClient.readContract({

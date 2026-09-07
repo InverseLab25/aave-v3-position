@@ -3,13 +3,13 @@ import type { Config } from 'wagmi'
 import { estimateFeesPerGas } from 'wagmi/actions'
 import { calculateAdjustedFees, gasFromMeasuredSwap, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
 import { assertWalletChain } from '../../lib/walletChain'
+import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
 import { computeMinOut, deriveDebtRepay, isSlippageShapedFailure, planWithdrawal } from '../../lib/closePlan'
 import { aaveV3StrategiesAbi, FULL_CLOSE, planClose } from '../../lib/strategies-sdk'
 import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { SlippageTooTightError, type ClosePlan, type CloseInput, type CloseStep } from './types'
 import type { buildFreshRoute } from './signing'
-import { solverTx } from '../../adapters/solver'
 
 /** What the send path needs from the hook. */
 export interface SubmitContext {
@@ -170,25 +170,6 @@ export async function submitClose(
         const { maxFeePerGas, maxPriorityFeePerGas, gasPrice } = await estimateFeesPerGas(config)
         const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
           calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
-        // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
-        // three falls outside every member of it.
-        const fees = adjustedMaxFeePerGas
-          ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
-          : { gasPrice: adjustedGasPrice }
-
-        // The solver was handed the permits on the re-quote and built the whole transaction
-        // from them, minOut and signatures inside and gas measured with a margin on. That is
-        // what was simulated against live state a moment ago, so it is what gets sent.
-        const built = solverTx(route.chosen)
-        if (built) {
-          log('Submitting close transaction…')
-          setStep('sending')
-          await assertWalletChain(walletClient, chainId)
-          const hash = await walletClient.sendTransaction({
-            account: address, chain: null, to: built.to, data: built.data, value: built.value, gas: built.gas, ...fees,
-          })
-          return { hash, builtOut, minOut }
-        }
 
         // Built from the swap the simulator already measured wherever there is one, matching the
         // open. Estimating would execute this same transaction against this same state a second
@@ -204,7 +185,7 @@ export async function submitClose(
         let gas: bigint
         try {
           gas = p.swapGasUsed
-            ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close', whole: p.wholeClose })
+            ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close' })
             : await pinnedGasLimit(
                 () =>
                   publicClient.estimateContractGas({
@@ -229,6 +210,7 @@ export async function submitClose(
           // Deliberately NOT retried. Re-submitting automatically would spend gas against
           // numbers the user has not seen. The refreshed preview goes back in front of them,
           // and the held signature survives, so their next press costs no wallet prompt.
+          clearQuoteCache()
           // `pinnedGasLimit` wraps the node's error; the revert reason is on the cause.
           const src = e instanceof GasEstimateError ? (e.cause ?? e) : e
           const detail = (src as { shortMessage?: string }).shortMessage ?? (src as Error).message
@@ -258,7 +240,11 @@ export async function submitClose(
           account: address,
           chain: null,
           gas,
-          ...fees,
+          // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
+          // three falls outside every member of it.
+          ...(adjustedMaxFeePerGas
+            ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+            : { gasPrice: adjustedGasPrice }),
         })
   return { hash, builtOut, minOut }
 }
