@@ -49,6 +49,8 @@ interface PreviewRunContext {
   chainId: number
   owner: Address | undefined
   cancelled: () => boolean
+  /** The swap input the last preview of this same trade settled on — see `solveBorrow.seedIn`. */
+  seedIn?: bigint
   /**
    * Stops the quotes behind a superseded run, rather than only ignoring their answers. Shared
    * with any other run asking the same URL, so aborting here cancels nothing anyone still wants.
@@ -79,7 +81,7 @@ interface PreviewRunContext {
 /** One debounced quote-and-size pass. Everything the preview shows is decided here. */
 export async function runPreview(ctx: PreviewRunContext): Promise<void> {
   const {
-    input, pinned, forInput, client, chainId, owner, cancelled, signal, forPair,
+    input, pinned, forInput, client, chainId, owner, cancelled, signal, forPair, seedIn,
     setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes, setMeasured,
   } = ctx
 
@@ -290,6 +292,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           const solution = await solveBorrow({
             flashAmount,
             debtMargin,
+            seedIn,
             slipNum: BPS - input.slippageBps,
             collateralPriceUsd: coll.priceUsd,
             debtPriceUsd: debt.priceUsd,

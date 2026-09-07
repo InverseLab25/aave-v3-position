@@ -288,9 +288,12 @@ export function useLeverageOpen(
   // commit, so the quoting effect below always observes the object from this same render.
   const inputRef = useRef(input)
   const pinRef = useRef(pinnedBorrow)
+  /** What the last run settled on, with the key it answered, so a refresh can start from it. */
+  const lastRef = useRef<{ key: string; swapIn: bigint } | null>(null)
   useEffect(() => {
     inputRef.current = input
     pinRef.current = pinnedBorrow
+    lastRef.current = preview && previewFor !== null ? { key: previewFor, swapIn: preview.swapIn } : null
   })
 
   useEffect(() => {
@@ -312,6 +315,8 @@ export function useLeverageOpen(
     const timer = setTimeout(async () => {
       await runPreview({
         input, pinned, forInput, client, chainId, owner,
+        // Only a re-quote of the SAME trade starts from the last size; a changed input is a new solve.
+        seedIn: lastRef.current?.key === key ? lastRef.current.swapIn : undefined,
         // Recomputed from the effect's own `input` rather than the render-scope `pairKey`, which
         // is nullable and belongs to a later render than the one this run answers for.
         forPair: inputKey({ ...input, preferredAggregator: undefined }),

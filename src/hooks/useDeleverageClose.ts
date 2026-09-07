@@ -125,9 +125,19 @@ export function useDeleverageClose() {
    * Resolve reserves, read live state, size the swap and quote it. No signing — shared by
    * preview() (display) and close() (execution) so both describe the same transaction.
    */
+  /** The size the last plan settled on, and the trade it was for, so a re-quote starts from it. */
+  const lastSized = useRef<{ trade: string; requiredIn: bigint } | null>(null)
   const buildPlan = useCallback(
-    (input: CloseInput, logFn: (m: string) => void = () => {}) =>
-      buildPlanStep(input, { address, chainId, publicClient, log: logFn }),
+    async (input: CloseInput, logFn: (m: string) => void = () => {}) => {
+      const trade = [
+        input.collateral.underlyingAsset, input.debtAsset.underlyingAsset, input.slippagePercent,
+        String(input.collateralIn), String(input.debtIn), input.preferredAggregator,
+      ].join('|')
+      const seedIn = lastSized.current?.trade === trade ? lastSized.current.requiredIn : undefined
+      const p = await buildPlanStep({ ...input, seedIn }, { address, chainId, publicClient, log: logFn })
+      lastSized.current = { trade, requiredIn: p.requiredIn }
+      return p
+    },
     [address, chainId, publicClient],
   )
 

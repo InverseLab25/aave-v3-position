@@ -42,6 +42,8 @@ export interface CloseInput {
    * rather than falling back to the route the user pinned past.
    */
   preferredAggregator?: string
+  /** The swap size the last plan of this same trade settled on — see `sizeSwap.seedIn`. */
+  seedIn?: bigint
 }
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */

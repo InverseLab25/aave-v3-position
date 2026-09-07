@@ -62,7 +62,7 @@ interface BuildPlanContext {
  * because every failure here has a different remedy.
  */
 export async function buildPlan(
-  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal, preferredAggregator }: CloseInput,
+  { collateral, debtAsset, slippagePercent, collateralIn, debtIn, signal, preferredAggregator, seedIn }: CloseInput,
   ctx: BuildPlanContext,
 ): Promise<ClosePlan> {
   const { address, chainId, publicClient } = ctx
@@ -239,9 +239,9 @@ export async function buildPlan(
         // MAX is quoted at a stable size so every refresh is the same trade to the solver; the
         // contract drains the live balance regardless (see `drain`).
         fixedIn: collateralIn === 'all' ? stableAmount(collAmount) : collateralIn,
-        // Aave's own oracle prices ride along on both assets, so the first guess is free.
-        // Without it every refresh pays for a full-collateral probe just to learn the rate.
-        seedIn: oracleSeed({
+        // The last plan's size first, so a refresh is the same trade to the solver. Failing that,
+        // Aave's own oracle prices ride along on both assets, so the first guess is still free.
+        seedIn: seedIn ?? oracleSeed({
           needed: targetNeeded,
           slipNum,
           collateralDecimals: collateral.decimals,

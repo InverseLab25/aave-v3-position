@@ -200,6 +200,20 @@ const previewWith = async (overrides: Record<string, unknown> = {}) => {
 }
 
 describe('buildPlan — validation before any signature is requested', () => {
+  it('starts a re-quote of the same trade from the size the last plan settled on', async () => {
+    mocks.oracleSeed.mockReturnValue(parseUnits('6', 18))
+    const { result } = renderHook(() => useDeleverageClose())
+    await result.current.preview(baseInput)
+    await result.current.preview(baseInput)
+    // A changed trade is a fresh solve: the old size says nothing about it.
+    await result.current.preview({ ...baseInput, slippagePercent: baseInput.slippagePercent + 1 })
+
+    const seeds = mocks.sizeSwap.mock.calls.map((c) => (c[0] as { seedIn?: bigint }).seedIn)
+    expect(seeds[0]).not.toBe(SIZED.requiredIn)
+    expect(seeds[1]).toBe(SIZED.requiredIn)
+    expect(seeds[2]).not.toBe(SIZED.requiredIn)
+  })
+
   it('produces a preview describing the swap on the happy path', async () => {
     const { preview, error } = await previewWith()
 

@@ -186,3 +186,34 @@ it('seeds nothing when there is no flash to repay, or no price to imply a rate',
   expect(seedBorrow({ ...BASE, flashAmount: 0n })).toBeNull()
   expect(seedBorrow({ ...BASE, debtPriceUsd: 0n })).toBeNull()
 })
+
+it('quotes the last size first, and keeps it while the route still prices within tolerance', async () => {
+  // A route 20% worse than the oracle takes two rounds the first time. A refresh handed that
+  // size starts from it instead of the oracle, finds it still right, and asks nothing else —
+  // so the router sees the same trade it saw last time.
+  const first = await solveBorrow({ ...BASE, quoteAt: routerAt((ORACLE_RATE_WAD * 80n) / 100n) })
+  if (!first.ok) throw new Error('expected a solve')
+  const quoteAt = routerAt((ORACLE_RATE_WAD * 80n) / 100n)
+  const again = await solveBorrow({ ...BASE, quoteAt, seedIn: first.solved.swapIn })
+
+  expect(again.ok).toBe(true)
+  if (!again.ok) return
+  expect(quoteAt).toHaveBeenCalledTimes(1)
+  expect(quoteAt).toHaveBeenCalledWith(first.solved.swapIn)
+  expect(again.solved.swapIn).toBe(first.solved.swapIn)
+})
+
+it('re-sizes off the last size once the route has moved past tolerance', async () => {
+  const first = await solveBorrow({ ...BASE, quoteAt: routerAt((ORACLE_RATE_WAD * 80n) / 100n) })
+  if (!first.ok) throw new Error('expected a solve')
+  // The route worsened another 10%: the old size no longer clears the flash, so one correction.
+  const quoteAt = routerAt((ORACLE_RATE_WAD * 70n) / 100n)
+  const again = await solveBorrow({ ...BASE, quoteAt, seedIn: first.solved.swapIn })
+
+  expect(again.ok).toBe(true)
+  if (!again.ok) return
+  expect(quoteAt).toHaveBeenCalledTimes(2)
+  expect(quoteAt).toHaveBeenNthCalledWith(1, first.solved.swapIn)
+  expect(again.solved.swapIn).toBeGreaterThan(first.solved.swapIn)
+  expect(again.solved.minCollateralOut).toBeGreaterThanOrEqual(BASE.flashAmount)
+})

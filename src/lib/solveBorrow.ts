@@ -37,6 +37,12 @@ export interface SolveBorrowInput {
   /** Ranked quotes for a given DEBT-asset input, best first; empty when nothing routes. */
   quoteAt: (amountIn: bigint) => Promise<QuoteResponse[]>
   /**
+   * The swap input the last solve of this same trade settled on. Quoted first, in place of the
+   * oracle's guess: while the route still prices it within tolerance it is kept as it is, so a
+   * refresh asks the router for the trade it already has live rather than one a few wei off.
+   */
+  seedIn?: bigint
+  /**
    * The output a quote is sized on. Defaults to the quote's own `amountOut`; a caller holding a
    * measurement passes that instead, so the buy price is what the route really pays, not what
    * it claims.
@@ -134,8 +140,9 @@ export async function solveBorrow(p: SolveBorrowInput): Promise<SolveBorrowOutco
   /** Output the swap has to reach for its guarantee to repay the flash. */
   const targetOut = ceilDiv(p.flashAmount * BPS, p.slipNum)
 
-  // Round one: the oracle's guess, quoted for real.
-  let ranked = await p.quoteAt(seededBorrow + p.debtMargin)
+  // Round one: the last size where there is one, else the oracle's guess, quoted for real.
+  const firstIn = p.seedIn !== undefined && p.seedIn > p.debtMargin ? p.seedIn : seededBorrow + p.debtMargin
+  let ranked = await p.quoteAt(firstIn)
   let best = ranked[0]
   if (!best) return { ok: false, error: 'NO_ROUTE' }
   const seedIn = BigInt(best.amountIn)
