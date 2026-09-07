@@ -340,7 +340,7 @@ export async function submitOpen(ctx: SubmitContext): Promise<void> {
       // Either way it throws before the write, and `prepared.current` is only cleared after a
       // successful send, so the signature survives and a retry costs no new prompt.
       const openGas = effectivePreview.swapGasUsed
-        ? gasFromMeasuredSwap(effectivePreview.swapGasUsed, { chainId, label: 'open' })
+        ? gasFromMeasuredSwap(effectivePreview.swapGasUsed, { chainId, label: 'open', whole: effectivePreview.wholeOpen })
         : await pinnedGasLimit(
             () =>
               client.estimateContractGas({

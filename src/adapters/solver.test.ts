@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AggregatorHttpError } from './http'
-import { onSolverUpdate, resetSolverSession, solverAdapter, solverClose, solverMeasurement } from './solver'
+import { onSolverUpdate, resetSolverSession, solverAdapter, solverClose, solverMeasurement, solverOpen } from './solver'
 
 const OWNER = '0x1111111111111111111111111111111111111111'
 const CONTRACT = '0x2222222222222222222222222222222222222222'
@@ -298,6 +298,17 @@ describe('solverAdapter.getQuotes', () => {
 
     expect(sockets()[0].sent[0]).toMatchObject({ close })
     expect(solverClose(q)).toEqual({ debtRepaid: 2000000000n, collateralWithdrawn: 10n ** 18n, returnedToUser: 499000000n })
+  })
+
+  it('asks for the whole open to be simulated when told whose open it is, and reads back what it did', async () => {
+    const opened = { collateralSupplied: '1990000000000000000', debtBorrowed: '2500000000', margin: '500000000' }
+    stubServer([done([route({ open: opened })])])
+    const open = { user: OWNER, margin: 'debt' as const, marginAmount: '500000000', flashAmount: '2000000000000000000' }
+    const [q] = await solverAdapter.getQuotes!({ ...args, open })
+
+    expect(sockets()[0].sent[0]).toMatchObject({ open })
+    expect(solverOpen(q)).toEqual({ collateralSupplied: 1990000000000000000n, debtBorrowed: 2500000000n, margin: 500000000n })
+    expect(solverClose(q)).toBeNull()
   })
 
   it('reports no close for a route that was only simulated as a swap', async () => {

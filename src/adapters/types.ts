@@ -157,5 +157,12 @@ export interface QuotesRequest {
    * it repaid, withdrew and returned. Amounts are wei strings, or 'all'.
    */
   close?: { user: string; collateralToWithdraw: 'all' | string; debtRepay: 'all' | string };
+  /**
+   * Whose open this swap sits inside, when it does. The solver then runs each route as the
+   * whole open through the Strategies contract, with the margin's balance and allowance
+   * overridden for the wallet so it works before the approve. `amountIn` is what the contract
+   * swaps; without `flashAmount` each route is flashed its own quote less 1%.
+   */
+  open?: { user: string; margin: 'debt' | 'collateral'; marginAmount: string; flashAmount?: string };
   signal?: AbortSignal;
 }

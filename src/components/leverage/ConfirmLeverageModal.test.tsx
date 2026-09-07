@@ -34,6 +34,7 @@ const preview: OpenPreview = {
   expectedBasis: 'simulated' as const,
   quotedOut: 10n ** 18n,
   swapGasUsed: 2_600_000n,
+  wholeOpen: false,
   expectedOut: 2n * 10n ** 18n,
   minOut: 199n * 10n ** 16n,
   projection,

@@ -15,7 +15,7 @@ import type { Adapter, QuoteResponse } from '../../adapters/types'
 import { getTxGasCap } from '../../config/chains'
 import { applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
 import { quoteField } from '../../adapters'
-import { solverMeasurement } from '../../adapters/solver'
+import { solverMeasurement, solverOpen } from '../../adapters/solver'
 import { type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
@@ -188,8 +188,15 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
          */
         let pinnedOut = false
 
-        /** Every adapter's quote for a given debt-asset input, best output first. */
-        const quoteAll = async (swapIn: bigint): Promise<Candidate[]> => {
+        /**
+         * Every adapter's quote for a given debt-asset input, best output first.
+         *
+         * Quoted as the wallet's own open, so the solver runs each route through the contract
+         * rather than as a bare swap. The flash is named only when it is settled (a pinned
+         * borrow): a probe size that cannot repay a fixed flash reverts instead of pricing,
+         * and sizing needs the price. Without it each route is flashed its own quote less 1%.
+         */
+        const quoteAll = async (swapIn: bigint, flashAmount?: bigint): Promise<Candidate[]> => {
           const results = await Promise.all(
             adapters.map(async (a) => {
               try {
@@ -205,6 +212,11 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
                   chainId,
                   caller: input.contract,
                   owner,
+                  // A boost posts no margin and takes the ratchet path, which the solver does not
+                  // model, so it stays a bare swap.
+                  open: owner && input.marginAsset !== 'none'
+                    ? { user: owner, margin: input.marginAsset, marginAmount: input.marginAmount.toString(), ...(flashAmount ? { flashAmount: flashAmount.toString() } : {}) }
+                    : undefined,
                   signal,
                 })
                 return quotes.map((q) => ({ a, q }))
@@ -274,7 +286,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           flashAmount = derived.flashAmount
           debtMargin = derived.debtMargin
           borrowAmount = pinned
-          candidates = await quoteAll(borrowAmount + debtMargin)
+          candidates = await quoteAll(borrowAmount + debtMargin, flashAmount)
           if (cancelled()) return
           if (candidates.length === 0) {
             setPreviewError(nothingPriced())
@@ -431,6 +443,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           expectedBasis: expectation.basis,
           quotedOut,
           swapGasUsed: selected.sim ? BigInt(selected.sim.gasUsed) : null,
+          wholeOpen: solverOpen(build.quote) !== null,
           minOut: guaranteedOut > flashAmount ? guaranteedOut : flashAmount,
           projection,
           router: build.built.to as Address,

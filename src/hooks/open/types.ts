@@ -107,6 +107,8 @@ export interface OpenPreview {
    * exact state, so estimating would run it a second time to learn the same thing.
    */
   swapGasUsed: bigint | null
+  /** The route was simulated as the whole open, so `swapGasUsed` is the transaction's. */
+  wholeOpen: boolean
   minOut: bigint
   /** What the account becomes, verified against the built route rather than the oracle. */
   projection: OpenProjection

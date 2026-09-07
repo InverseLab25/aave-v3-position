@@ -38,6 +38,8 @@ interface SolverRoute {
   expiresAt?: number;
   /** Off the PositionClosed event, when the route was run as the whole close. */
   close?: { debtRepaid: string; collateralWithdrawn: string; returnedToUser: string };
+  /** Off the PositionOpened event, when the route was run as the whole open. */
+  open?: { collateralSupplied: string; debtBorrowed: string; margin: string };
 }
 
 interface SolverAnswer {
@@ -297,6 +299,13 @@ export function solverClose(quote: QuoteResponse): { debtRepaid: bigint; collate
   return { debtRepaid: BigInt(c.debtRepaid), collateralWithdrawn: BigInt(c.collateralWithdrawn), returnedToUser: BigInt(c.returnedToUser) };
 }
 
+/** What the whole open did with this route, or null when only the swap was simulated. */
+export function solverOpen(quote: QuoteResponse): { collateralSupplied: bigint; debtBorrowed: bigint; margin: bigint } | null {
+  const o = (quote.rawQuote as Partial<SolverRaw> | undefined)?.open;
+  if (!o) return null;
+  return { collateralSupplied: BigInt(o.collateralSupplied), debtBorrowed: BigInt(o.debtBorrowed), margin: BigInt(o.margin) };
+}
+
 /**
  * The trade's live routes, or null when the stream has none yet (or the socket is down, which
  * the one-shot is left to report). Committed routes only, unexpired, ranked by the server's
@@ -361,7 +370,7 @@ export const solverAdapter: Adapter = {
   // contract. Quote through `getQuotes`, which every leverage flow already does.
   getQuote: async () => null,
 
-  getQuotes: async ({ fromAsset, toAsset, amountIn, slippage, chainId, caller, owner, close, signal }): Promise<QuoteResponse[]> => {
+  getQuotes: async ({ fromAsset, toAsset, amountIn, slippage, chainId, caller, owner, close, open, signal }): Promise<QuoteResponse[]> => {
     if (!SOLVER_CHAINS.has(chainId)) return [];
     const body = {
       chainId,
@@ -374,6 +383,7 @@ export const solverAdapter: Adapter = {
       amountIn,
       slippageBps: Math.round(slippage * 100),
       ...(close ? { close } : {}),
+      ...(open ? { open } : {}),
     };
     try {
       // Every ask keeps the trade's stream alive; once it has routes they are what is
