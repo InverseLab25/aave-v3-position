@@ -8,6 +8,7 @@
  * the panel any more. It is submitted from here, against a route re-priced seconds ago.
  */
 import { useEffect, useState } from 'react'
+import { onSolverUpdate } from '../../adapters/solver'
 import { formatUnits } from 'viem'
 import type { OpenPreview, OpenStep } from '../../hooks/useLeverageOpen'
 import type { OpenProjection } from '../../lib/leverage'
@@ -28,7 +29,6 @@ import { T, MODAL_WIDTH } from '../../styles/theme'
  * fires regardless launches quotes that overlap the one still running, and they queue up on the
  * slowest endpoint in the app. Waiting for the current one to settle keeps exactly one in flight.
  */
-const QUOTE_REFRESH_MS = 3000
 
 interface ConfirmLeverageModalProps {
   /** "Open long WETH" / "Boost long WETH" — the same label the panel's button carries. */
@@ -132,14 +132,13 @@ export function ConfirmLeverageModal({
   const busy = step === 'sending'
   const done = step === 'done'
 
-  // Re-quote on a cadence so what is confirmed is what was just priced. Paused while the wallet
-  // has the transaction: a quote landing mid-flow moves the figures under the user, and the
-  // signature has committed to the borrow anyway. Stopped once it lands — there is nothing left
-  // to price, and a refresh would only spend rate-limit budget.
+  // Re-quote each time the solver lands a fresh pass, so what is confirmed is what was just
+  // priced. Paused while the wallet has the transaction: a quote landing mid-flow moves the
+  // figures under the user, and the signature has committed to the borrow anyway. Stopped once
+  // it lands — there is nothing left to price.
   useEffect(() => {
     if (busy || done || isQuoting) return
-    const id = setTimeout(onRefresh, QUOTE_REFRESH_MS)
-    return () => clearTimeout(id)
+    return onSolverUpdate(onRefresh)
   }, [busy, done, isQuoting, onRefresh])
 
   // Only ticks while a signature is held, and only inside the callback — never as a render effect.

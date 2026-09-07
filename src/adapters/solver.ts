@@ -103,7 +103,6 @@ let session: Promise<{ token: string; expiresAt: number }> | null = null;
 
 export function resetSolverSession(): void {
   session = null;
-  asked.clear();
   socket?.then((c) => c.ws.close(), () => {});
   socket = null;
 }
@@ -145,9 +144,14 @@ type Conn = {
   streams: Map<string, Stream>;
   byId: Map<string, Stream>;
 };
-/** When each trade was last asked for, so a repeat ask can be told from a one-off. Outlives the socket. */
-const asked = new Map<string, number>();
 let socket: Promise<Conn> | null = null;
+
+/** Told each time a stream lands a pass, so a preview can re-read the field then rather than on a clock. */
+const watchers = new Set<() => void>();
+export function onSolverUpdate(fn: () => void): () => void {
+  watchers.add(fn);
+  return () => { watchers.delete(fn); };
+}
 
 /**
  * A trade the server keeps re-quoting: each provider runs its own loop, quote, simulate, push,
@@ -164,7 +168,7 @@ interface Stream {
   idle: ReturnType<typeof setTimeout>;
 }
 const STREAM_EVERY_MS = 1000;
-/** Longer than the slowest poller's gap (the close preview: ~3s plus a quote), shorter than a forgotten tab. */
+/** Longer than a pass plus the re-quote it triggers, shorter than a forgotten tab. */
 const STREAM_IDLE_MS = 8000;
 
 function stopStream(conn: Conn, key: string): void {
@@ -177,15 +181,14 @@ function stopStream(conn: Conn, key: string): void {
 }
 
 /**
- * The stream for this trade, or null until it has been asked for twice in quick succession. A
- * poller asks for the same trade over and over; the sizing loops ask for each probe size once
- * and move on, and a stream per probe would leave a trail of loops on the server. Every ask
- * pushes the idle stop back.
+ * The stream for this trade, started here once a one-shot has shown the pair prices at all;
+ * null before that. Every ask pushes the idle stop back, so a probe size the sizing loop asked
+ * once and moved on from is stopped on the server a few seconds later.
  */
-function streamFor(conn: Conn, key: string, body: object, repeat: boolean): Stream | null {
+function streamFor(conn: Conn, key: string, body: object, start: boolean): Stream | null {
   let s = conn.streams.get(key);
   if (!s) {
-    if (!repeat) return null;
+    if (!start) return null;
     const id = `s${++seq}`;
     s = { id, routes: new Map(), pass: new Map(), idle: setTimeout(() => {}, 0) };
     conn.streams.set(key, s);
@@ -220,6 +223,7 @@ function connect(): Promise<Conn> {
         } else if (m.cycle && m.provider) {
           s.routes.set(m.provider, { list: s.pass.get(m.provider) ?? [], deadline: m.expiresAt ?? Date.now() });
           s.pass.delete(m.provider);
+          for (const w of watchers) w();
         } else if (m.error) {
           // Refused (rate limited, bad request): the one-shot path reports why on the next ask.
           for (const [key, x] of conn.streams) if (x === s) stopStream(conn, key);
@@ -292,15 +296,12 @@ export function solverMeasurement(quote: QuoteResponse): SimulationResult | null
 async function streamRoutes(body: object, signal?: AbortSignal): Promise<SolverRaw[] | null> {
   const key = JSON.stringify(body);
   const now = Date.now();
-  const repeat = now - (asked.get(key) ?? 0) <= STREAM_IDLE_MS;
-  for (const [k, t] of asked) if (now - t > STREAM_IDLE_MS) asked.delete(k);
-  asked.set(key, now);
   // Only over a socket the one-shot path has already opened: a stream never dials on its own.
   if (!socket) return null;
   let conn: Conn;
   try { conn = await socket; } catch { return null; }
   if (signal?.aborted) return null;
-  const s = streamFor(conn, key, body, repeat);
+  const s = streamFor(conn, key, body, false);
   if (!s) return null;
   const live: SolverRaw[] = [];
   for (const { list, deadline } of s.routes.values()) {
@@ -367,7 +368,8 @@ export const solverAdapter: Adapter = {
     try {
       // Every ask keeps the trade's stream alive; once it has routes they are what is
       // answered, at most a second and a quote old, with no request made. Until then, and
-      // whenever the stream is empty, the one-shot below asks and says why if nothing prices.
+      // whenever the stream is empty, the one-shot below asks and says why if nothing prices —
+      // and once it has priced, starts the stream so the next ask is answered from it.
       const live = await streamRoutes(body, signal);
       if (live) return toQuotes(live, amountIn, toAsset);
 
@@ -390,6 +392,7 @@ export const solverAdapter: Adapter = {
         throw new AggregatorHttpError(503, `${solverUrl()}/ws`);
       }
 
+      if (answer.routes.length && socket) socket.then((c) => streamFor(c, JSON.stringify(body), body, true), () => {});
       return toQuotes(answer.routes.map((r) => ({ ...r, deadline: answer.expiresAt })), amountIn, toAsset);
     } catch (e) {
       if ((e as Error)?.name === 'AbortError' || signal?.aborted) return [];

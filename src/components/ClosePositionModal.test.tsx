@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { parseUnits } from 'viem'
 import type { BorrowedAsset, SuppliedAsset } from '../hooks/useAavePositions'
 
@@ -39,6 +39,11 @@ vi.mock('../hooks/useAdjustedGas', () => ({ useAdjustedGas: mocks.useAdjustedGas
 vi.mock('../hooks/useDeleverageClose', () => ({ useDeleverageClose: mocks.useDeleverageClose }))
 vi.mock('../utils/contract', () => ({ simulateAndWrite: mocks.simulateAndWrite }))
 vi.mock('./ExplorerLink', () => ({ ExplorerLink: () => null }))
+/** The solver adapter's watchers, so a test can land a pass the way the stream would. */
+const watchers = new Set<() => void>()
+vi.mock('../adapters/solver', () => ({
+  onSolverUpdate: (fn: () => void) => { watchers.add(fn); return () => watchers.delete(fn) },
+}))
 
 import { ClosePositionModal } from './ClosePositionModal'
 
@@ -257,6 +262,16 @@ describe('ClosePositionModal — the two-press flow', () => {
 
     // The hook already dropped the stale quote; the modal bumps refreshTick to pull a fresh one.
     await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('re-quotes when the solver lands a fresh pass, not on a clock', async () => {
+    mount()
+    await waitFor(() => expect(isEnabled()).toBe(true))
+    const before = previewFn.mock.calls.length
+
+    act(() => { for (const w of watchers) w() })
+
+    await waitFor(() => expect(previewFn.mock.calls.length).toBe(before + 1))
   })
 
   it('keeps the last preview when a refresh finds the aggregator stalled', async () => {

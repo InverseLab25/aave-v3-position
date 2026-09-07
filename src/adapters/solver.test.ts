@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AggregatorHttpError } from './http'
-import { resetSolverSession, solverAdapter, solverMeasurement } from './solver'
+import { onSolverUpdate, resetSolverSession, solverAdapter, solverMeasurement } from './solver'
 
 const OWNER = '0x1111111111111111111111111111111111111111'
 const CONTRACT = '0x2222222222222222222222222222222222222222'
@@ -227,12 +227,9 @@ describe('solverAdapter.getQuotes', () => {
     const push = (m: object) => sockets().at(-1)!.onmessage?.({ data: JSON.stringify(m) })
     const streamId = () => sockets().at(-1)!.sent.find((m) => m.every)?.id as string
 
-    it('starts a one-second stream once a trade is asked for twice, and answers the repeat from it', async () => {
+    it('starts a one-second stream once a trade has priced, and answers the next ask from it', async () => {
       stubServer([done([route()]), done([route()]), done([route()])])
       await solverAdapter.getQuotes!(args)
-      expect(sockets().at(-1)!.sent.some((m) => m.every)).toBe(false) // a one-off is not streamed
-
-      await solverAdapter.getQuotes!(args) // second ask: stream requested, one-shot still answers (no routes yet)
       const sub = sockets().at(-1)!.sent.find((m) => m.every)!
       expect(sub.every).toBe(1000)
       expect(sub).toMatchObject({ chainId: 8453, tokenIn: WETH, tokenOut: USDC, caller: CONTRACT, owner: OWNER })
@@ -246,9 +243,29 @@ describe('solverAdapter.getQuotes', () => {
       expect(quotes.map((q) => q.routeId)).toEqual(['Socket · 0x', 'Socket · Kyberswap']) // best measured first
     })
 
+    it('does not stream a trade nothing priced, so a dead pair is not quoted forever', async () => {
+      stubServer([{ ...done([]), rejected: [{ provider: 'nordstern', code: 'NO_LIQUIDITY' }] }])
+      await solverAdapter.getQuotes!(args)
+      expect(sockets().at(-1)!.sent.some((m) => m.every)).toBe(false)
+    })
+
+    it('tells watchers each time a pass lands, and stops once they leave', async () => {
+      stubServer([done([route()])])
+      await solverAdapter.getQuotes!(args)
+      const seen = vi.fn()
+      const off = onSolverUpdate(seen)
+      const id = streamId()
+      push({ id, route: route() })
+      expect(seen).not.toHaveBeenCalled() // a route alone is a pass in progress
+      push({ id, provider: 'socket', cycle: true, rejected: [], expiresAt: Date.now() + 30_000 })
+      expect(seen).toHaveBeenCalledTimes(1)
+      off()
+      push({ id, provider: 'socket', cycle: true, rejected: [], expiresAt: Date.now() + 30_000 })
+      expect(seen).toHaveBeenCalledTimes(1)
+    })
+
     it("replaces a provider's routes at its cycle, so a venue that stopped passing drops out", async () => {
       stubServer([done([route()]), done([route()])])
-      await solverAdapter.getQuotes!(args)
       await solverAdapter.getQuotes!(args)
       const id = streamId()
       push({ id, route: route({ venue: 'Kyberswap' }) })
@@ -262,8 +279,7 @@ describe('solverAdapter.getQuotes', () => {
     it('stops a stream nobody has asked about for a while', async () => {
       vi.useFakeTimers()
       try {
-        stubServer([done([route()]), done([route()])])
-        await solverAdapter.getQuotes!(args)
+        stubServer([done([route()])])
         await solverAdapter.getQuotes!(args)
         const id = streamId()
         await vi.advanceTimersByTimeAsync(8_001)

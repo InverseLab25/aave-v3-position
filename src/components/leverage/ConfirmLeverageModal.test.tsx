@@ -5,6 +5,13 @@ import { ConfirmLeverageModal } from './ConfirmLeverageModal'
 import type { OpenPreview } from '../../hooks/useLeverageOpen'
 import type { OpenProjection } from '../../lib/leverage'
 
+/** The solver adapter's watchers, so a test can land a pass the way the stream would. */
+const watchers = new Set<() => void>()
+const passLands = () => act(() => { for (const w of watchers) w() })
+vi.mock('../../adapters/solver', () => ({
+  onSolverUpdate: (fn: () => void) => { watchers.add(fn); return () => watchers.delete(fn) },
+}))
+
 const projection: OpenProjection = {
   expectedCollateral: 3n * 10n ** 18n,
   expectedDebt: 6000n * 10n ** 6n,
@@ -92,10 +99,12 @@ it('shows what the position becomes, from the route rather than the form', () =>
   expect(screen.getByText('1.25')).toBeDefined()
 })
 
-it('re-prices the route on a cadence while it sits open', () => {
+it('re-prices the route each time the solver lands a fresh pass, not on a clock', () => {
   const props = setup()
+  act(() => void vi.advanceTimersByTime(10_000))
+  expect(props.onRefresh).not.toHaveBeenCalled()
 
-  act(() => void vi.advanceTimersByTime(3000))
+  passLands()
 
   expect(props.onRefresh).toHaveBeenCalledTimes(1)
 })
@@ -105,7 +114,7 @@ it('stops re-pricing once the wallet has the transaction', () => {
   // committed to the borrow — refreshing can only spend rate-limit budget the send needs.
   const props = setup({ step: 'sending' })
 
-  act(() => void vi.advanceTimersByTime(10_000))
+  passLands()
 
   expect(props.onRefresh).not.toHaveBeenCalled()
 })
@@ -113,7 +122,7 @@ it('stops re-pricing once the wallet has the transaction', () => {
 it('does not stack a refresh on top of a quote still in flight', () => {
   const props = setup({ isQuoting: true })
 
-  act(() => void vi.advanceTimersByTime(10_000))
+  passLands()
 
   expect(props.onRefresh).not.toHaveBeenCalled()
 })

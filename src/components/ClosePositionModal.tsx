@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, type CSSProperties } from 'react'
+import { onSolverUpdate } from '../adapters/solver'
 import type { OutBasis } from '../lib/deleverage'
 
 /** What each rung of `expectedOutcome` means, in the user's terms. */
@@ -49,16 +50,6 @@ const SLIPPAGE_SUGGESTION_CAP = 1
 // How often the open modal re-quotes. Aggregator quotes go stale within seconds, and the
 // router enforces the output floor frozen into its calldata, so a preview that is not
 // refreshed stops describing the transaction that would actually be submitted.
-/**
- * Gap between one quote settling and the next being requested.
- *
- * This is a REST period, not a period. Actual cadence is roughly
- * `debounce + quote latency + QUOTE_REFRESH_MS`, which self-adjusts. The solver keeps re-quoting
- * a trade it has been asked for twice, once a second, and answers a repeat ask from that with
- * no request, so a second here is what keeps the figures within a second or two of the chain.
- */
-const QUOTE_REFRESH_MS = 1000
-
 /**
  * Pill control sitting inside a text input, matching the MAX button in BorrowRepayModal so
  * the two amount fields in this app read as the same control.
@@ -486,26 +477,20 @@ export function ClosePositionModal({
     ? step === 1
     : closeStep === 'permit' || closeStep === 'revoke' || closeStep === 'sending'
 
-  // Re-quote on a cadence, because a close plan cannot be carried forward — the router freezes
-  // its output floor into the calldata at build time, so a preview left sitting stops
-  // describing what would actually execute.
+  // Re-quote whenever the solver lands a fresh pass, because a close plan cannot be carried
+  // forward — the router freezes its output floor into the calldata at build time, so a preview
+  // left sitting stops describing what would actually execute.
   //
-  // Self-scheduling, NOT a fixed interval. A quote for a large position takes 4-8s (a 200 WETH
-  // route is 27kB of split-route data); a 3s interval fires while the previous one is still in
-  // flight. Those overlapping runs pile up on the slowest endpoint in the app, and — because a
-  // superseded run is barred from clearing `isQuoting` by its own `isMounted` guard — none of
-  // them ever clears it. `canExecute` reads that flag, so on a large position the button was
-  // unclickable except by luck. Waiting for the current quote to settle before timing the next
-  // keeps exactly one in flight and lets the flag fall to false between refreshes.
+  // Only while nothing is in flight. A pass landing mid-quote is not lost: the next one comes a
+  // second later, and one run at a time is what lets `isQuoting` fall to false between them —
+  // `canExecute` reads that flag.
   //
   // Paused while a close is running: a re-quote landing mid-flow would move the figures under
   // the user and spend rate-limit budget the execution path needs.
   //
-  // Held while the tab is hidden. Browsers throttle a background timer rather than stopping it,
-  // so left alone this keeps asking the slowest endpoint in the app for prices nobody can see,
-  // roughly once a minute, for as long as the modal stays open. The re-quote is re-armed the
-  // moment the tab is looked at again — which is also the first moment a stale price could be
-  // read — so nothing is lost by holding it.
+  // Held while the tab is hidden: nobody is reading the figures, and with no ask going out the
+  // solver drops the stream on its own. Re-quoted the moment the tab is looked at again — which
+  // is also the first moment a stale price could be read.
   useEffect(() => {
     if (isSameAsset || !closeAvailable || !selectedCollateral) return
     if (isProcessing || isQuoting) return
@@ -514,14 +499,18 @@ export function ClosePositionModal({
       setRefreshTick((t) => t + 1)
     }
     const visible = () => !paused && document.visibilityState === 'visible'
-    const id = visible() ? setTimeout(requote, QUOTE_REFRESH_MS) : undefined
+    // The solver streams the trade and says when a pass has landed; that is when there is
+    // something new to show, so it is what re-quotes rather than a clock.
+    const off = onSolverUpdate(() => {
+      if (visible()) requote()
+    })
     const onVisibilityChange = () => {
       if (visible()) requote()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
-      clearTimeout(id)
+      off()
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [isSameAsset, closeAvailable, selectedCollateral, isProcessing, isQuoting, refreshTick, paused])
