@@ -22,18 +22,12 @@ import { fetchQuoteJson, limitedFetch } from './http';
  */
 
 /**
- * Socket credentials, inlined into the bundle by vite.config.ts from the UNPREFIXED
- * `SOCKET_API_KEY` and `SOCKET_AFFILIATE`. Deliberate: they are shipped to the browser and sent
- * on every request, no proxy in between. The keyed host is used once both are set, since it
- * refuses a key without an affiliate; `SOCKET_BASE` overrides the host either way.
+ * Where quotes go: the same-origin `/api/socket`, served by the Vite dev proxy locally and by
+ * `api/socket/[...path].js` deployed. Whatever serves it adds the key and affiliate on the way
+ * through; the keyed host refuses browser requests on CORS, so the credentials cannot live
+ * here under any name. `SOCKET_BASE` overrides the path for a build that serves it elsewhere.
  */
-const SOCKET_API_KEY = (import.meta.env.SOCKET_API_KEY as string | undefined) || undefined;
-const SOCKET_AFFILIATE = (import.meta.env.SOCKET_AFFILIATE as string | undefined) || undefined;
-const SOCKET_BASE =
-  (import.meta.env.SOCKET_BASE as string | undefined) ||
-  (SOCKET_API_KEY && SOCKET_AFFILIATE
-    ? 'https://dedicated-backend.socket.tech'
-    : 'https://public-backend.socket.tech');
+const SOCKET_BASE = (import.meta.env.SOCKET_BASE as string | undefined) || '/api/socket';
 
 /** Chains this app configures that Socket serves. */
 const SOCKET_CHAINS = new Set([1, 10, 137, 8453, 42161]);
@@ -134,10 +128,8 @@ const quoteUrl = (q: SocketQuote, slippage: number, caller: string, receiver = c
     simulatedQuotesRequired: 'false',
   }).toString();
 
-const headers = (): HeadersInit => ({
-  ...(SOCKET_AFFILIATE ? { affiliate: SOCKET_AFFILIATE } : {}),
-  ...(SOCKET_API_KEY ? { 'x-api-key': SOCKET_API_KEY } : {}),
-});
+// Nothing to add: the proxy carries the credentials.
+const headers = (): HeadersInit => ({});
 
 /** The route with the most output. Socket ranks its own with tags; this app ranks on output. */
 const bestRoute = (routes: SocketRoute[] | undefined): SocketRoute | null => {

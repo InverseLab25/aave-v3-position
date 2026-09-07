@@ -2,18 +2,35 @@ import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
-export default defineConfig(({ mode }) => {
-  // Read WITHOUT a prefix filter: the Socket credentials are kept under unprefixed names so a
-  // hosting dashboard will store them as secrets, and inlined into the bundle here on purpose.
+export default defineConfig(({ mode, command }) => {
+  // Read WITHOUT a prefix filter: the credentials are unprefixed so they cannot be substituted
+  // into the bundle. This config runs in Node, so the dev proxy below can hold them.
   const env = loadEnv(mode, process.cwd(), '')
-  const inline = (name: string) => JSON.stringify(env[name] ?? '')
+  const key = env.SOCKET_API_KEY
+  const affiliate = env.SOCKET_AFFILIATE
+  // The dedicated host rejects a key without an affiliate, so it takes both or neither.
+  const keyed = Boolean(key && affiliate)
+  const socketHost = keyed ? 'https://dedicated-backend.socket.tech' : 'https://public-backend.socket.tech'
+  if (command === 'serve') {
+    console.log(`socket: ${socketHost}  key:${key ? 'yes' : 'no'}  affiliate:${affiliate ? 'yes' : 'no'}`)
+  }
 
   return {
     plugins: [react()],
-    define: {
-      'import.meta.env.SOCKET_API_KEY': inline('SOCKET_API_KEY'),
-      'import.meta.env.SOCKET_AFFILIATE': inline('SOCKET_AFFILIATE'),
-      'import.meta.env.SOCKET_BASE': inline('SOCKET_BASE'),
+    define: { 'import.meta.env.SOCKET_BASE': JSON.stringify(env.SOCKET_BASE ?? '') },
+    server: {
+      // Locally, the same path api/socket/[...path].js serves deployed.
+      proxy: {
+        '/api/socket': {
+          target: socketHost,
+          changeOrigin: true,
+          rewrite: (path: string) => path.replace(/^\/api\/socket/, ''),
+          headers: {
+            ...(affiliate ? { affiliate } : {}),
+            ...(keyed ? { 'x-api-key': key } : {}),
+          },
+        },
+      },
     },
     build: {
       sourcemap: false,
