@@ -210,4 +210,15 @@ export interface OpenDeps {
     gasPrice?: bigint
   }) => Promise<Hex>
   signTypedData: (payload: unknown) => Promise<Hex>
+  /** A transaction the solver built whole, sent as is. Same chain pin and gas rules as `writeContract`. */
+  sendTransaction: (args: {
+    to: Address
+    data: Hex
+    value: bigint
+    chainId?: number
+    gas?: bigint
+    maxFeePerGas?: bigint
+    maxPriorityFeePerGas?: bigint
+    gasPrice?: bigint
+  }) => Promise<Hex>
 }

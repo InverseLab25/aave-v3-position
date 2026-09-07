@@ -3,6 +3,7 @@ import {
   useChainId,
   useConnection,
   usePublicClient,
+  useSendTransaction,
   useSignTypedData,
   useWriteContract,
 } from 'wagmi'
@@ -67,6 +68,7 @@ export function useLeverageOpen(
 
   const { mutateAsync: writeContractAsync } = useWriteContract()
   const { mutateAsync: signTypedDataAsync } = useSignTypedData()
+  const { mutateAsync: sendTransactionAsync } = useSendTransaction()
 
   const [preview, setPreview] = useState<OpenPreview | null>(null)
   const [previewError, setPreviewError] = useState<LeverageError | null>(null)
@@ -363,8 +365,11 @@ export function useLeverageOpen(
       signTypedData:
         injected?.signTypedData ??
         ((payload) => signTypedDataAsync(payload as Parameters<typeof signTypedDataAsync>[0])),
+      sendTransaction:
+        injected?.sendTransaction ??
+        ((args) => sendTransactionAsync(args as Parameters<typeof sendTransactionAsync>[0])),
     }),
-    [injected, writeContractAsync, signTypedDataAsync],
+    [injected, writeContractAsync, signTypedDataAsync, sendTransactionAsync],
   )
 
   /**

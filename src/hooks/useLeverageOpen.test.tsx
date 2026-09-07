@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
   useWriteContract: vi.fn(),
   useSignTypedData: vi.fn(),
+  useSendTransaction: vi.fn(),
 }))
 
 vi.mock('../lib/strategies-sdk', async (orig) => ({
@@ -32,6 +33,7 @@ vi.mock('wagmi', () => ({
   useConnection: mocks.useConnection,
   useWriteContract: mocks.useWriteContract,
   useSignTypedData: mocks.useSignTypedData,
+  useSendTransaction: mocks.useSendTransaction,
 }))
 
 import { useLeverageOpen, type LeverageOpenInput } from './useLeverageOpen'
@@ -80,6 +82,7 @@ beforeEach(() => {
   mocks.useConnection.mockReturnValue({ address: '0x000000000000000000000000000000000000dEaD' })
   mocks.useWriteContract.mockReturnValue({ writeContractAsync: vi.fn() })
   mocks.useSignTypedData.mockReturnValue({ signTypedDataAsync: vi.fn() })
+  mocks.useSendTransaction.mockReturnValue({ sendTransactionAsync: vi.fn() })
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue(['0x6131B5fae19EA4f9D964eAc0408E4408b66337b5'])
   mocks.readContractState.mockResolvedValue({

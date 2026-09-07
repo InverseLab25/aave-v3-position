@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   useConnection: vi.fn(),
   useWriteContract: vi.fn(),
   useSignTypedData: vi.fn(),
+  useSendTransaction: vi.fn(),
 }))
 
 vi.mock('../lib/strategies-sdk', async (orig) => ({
@@ -59,6 +60,7 @@ vi.mock('wagmi', () => ({
   useConnection: mocks.useConnection,
   useWriteContract: mocks.useWriteContract,
   useSignTypedData: mocks.useSignTypedData,
+  useSendTransaction: mocks.useSendTransaction,
 }))
 
 import { AggregatorHttpError } from '../adapters/http'
@@ -162,6 +164,9 @@ const signTypedData = vi.fn<(payload: unknown) => Promise<typeof SIGNATURE>>(asy
 const writeContract = vi.fn<(args: { functionName: string }) => Promise<`0x${string}`>>(
   async () => `0x${'11'.repeat(32)}`,
 )
+const sendTransaction = vi.fn<(args: { to: string; data: string }) => Promise<`0x${string}`>>(
+  async () => `0x${'22'.repeat(32)}`,
+)
 
 /**
  * This repo's jsdom exposes no `localStorage` at all, so one is installed here.
@@ -203,7 +208,7 @@ let repriceWith: (input: LeverageOpenInput) => void = () => {}
 
 async function mount(input: LeverageOpenInput = makeInput()) {
   const rendered = renderHook(
-    (props: LeverageOpenInput) => useLeverageOpen(props, { signTypedData, writeContract }),
+    (props: LeverageOpenInput) => useLeverageOpen(props, { signTypedData, writeContract, sendTransaction }),
     { initialProps: input },
   )
   result = rendered.result
@@ -265,6 +270,7 @@ beforeEach(() => {
   mocks.useConnection.mockReturnValue({ address: OWNER })
   mocks.useWriteContract.mockReturnValue({ writeContractAsync: vi.fn() })
   mocks.useSignTypedData.mockReturnValue({ signTypedDataAsync: vi.fn() })
+  mocks.useSendTransaction.mockReturnValue({ sendTransactionAsync: vi.fn() })
   mocks.getPauseState.mockResolvedValue({ paused: false })
   mocks.getAllowedRouters.mockResolvedValue([ROUTER])
   mocks.readContractState.mockResolvedValue({ paused: false, routers: [ROUTER] })
@@ -276,6 +282,33 @@ beforeEach(() => {
   mocks.getPermitContext.mockResolvedValue({ name: 'Aave Variable Debt USDC', nonce: NONCE })
   signTypedData.mockResolvedValue(SIGNATURE)
   writeContract.mockResolvedValue(`0x${'11'.repeat(32)}`)
+})
+
+it('hands the delegation to the solver on the final ask and sends the transaction it built, as is', async () => {
+  // A solver-shaped adapter: the same route, and the whole transaction once the delegation rides along.
+  const base = fakeAdapter()
+  const tx = { to: STRATEGIES, data: '0xfeed', value: '0', gas: '2500000' }
+  const getQuotes = vi.fn(async (r: { fromAsset: unknown; toAsset: unknown; amountIn: string; open?: { delegation?: unknown } }) => {
+    const q = (await base.getQuote(r.fromAsset as never, r.toAsset as never, r.amountIn, 0.5, CHAIN_ID))!
+    return [r.open?.delegation ? { ...q, rawQuote: { tx } } : q]
+  })
+  mocks.leverageAdapters.mockReturnValue([{ ...base, getQuotes }])
+  await mount()
+  await prepare()
+  await settle()
+  // Captured before the send, which forgets the preview it was built from.
+  const flashAmount = hook().preview!.flashAmount
+
+  await submit()
+
+  const final = getQuotes.mock.calls.at(-1)![0]
+  expect(final.open).toMatchObject({
+    user: OWNER, margin: 'collateral', flashAmount: flashAmount.toString(),
+    delegation: { v: expect.any(Number), r: expect.stringMatching(/^0x/) },
+  })
+  expect(sendTransaction).toHaveBeenCalledWith(expect.objectContaining({ to: STRATEGIES, data: '0xfeed', gas: 2500000n, chainId: CHAIN_ID }))
+  expect(writeContract).not.toHaveBeenCalled()
+  expect(hook().step).toBe('done')
 })
 
 it('reads the settled swap and the wallet changes off the open receipt', async () => {
