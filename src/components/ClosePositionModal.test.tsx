@@ -264,14 +264,20 @@ describe('ClosePositionModal — the two-press flow', () => {
     await waitFor(() => expect(previewFn.mock.calls.length).toBeGreaterThan(before))
   })
 
-  it('re-quotes when the solver lands a fresh pass, not on a clock', async () => {
+  it('re-quotes quietly when the solver lands a fresh pass: the numbers move, nothing says Pricing', async () => {
     mount()
     await waitFor(() => expect(isEnabled()).toBe(true))
     const before = previewFn.mock.calls.length
+    let land!: (v: unknown) => void
+    previewFn.mockImplementationOnce(() => new Promise((r) => { land = r }))
 
     act(() => { for (const w of watchers) w() })
 
     await waitFor(() => expect(previewFn.mock.calls.length).toBe(before + 1))
+    // The server refreshed the trade on its own; the user did not ask for anything.
+    expect(screen.getByText(/Refresh/).textContent).not.toContain('Pricing')
+    expect(isEnabled()).toBe(true)
+    await act(async () => { land({ preview: okPreview(), error: null }) })
   })
 
   it('keeps the last preview when a refresh finds the aggregator stalled', async () => {

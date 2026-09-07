@@ -151,6 +151,10 @@ export function ClosePositionModal({
   const [debtInStr, setDebtInStr] = useState<string>(String(borrowedAsset.amount))
   const [isDebtMax, setIsDebtMax] = useState<boolean>(true)
   const [isQuoting, setIsQuoting] = useState<boolean>(false)
+  /** A run is under way, quiet or not. What a landing pass checks before asking for another. */
+  const inFlight = useRef(false)
+  /** The next run was asked for by a pass landing, not by the user: it re-reads without saying "Pricing…". */
+  const quietNext = useRef(false)
   const [refreshTick, setRefreshTick] = useState<number>(0)
   /**
    * Unix seconds until the held permit expires, or null when none is held. Drives the
@@ -293,7 +297,12 @@ export function ClosePositionModal({
         if (isMounted) { setPreview(null); setPreviewError(null); setIsQuoting(false) }
         return
       }
-      setIsQuoting(true)
+      // Quiet only with a preview already standing: the server refreshed a trade the user is
+      // looking at, so the figures move and nothing else does. The first price still says so.
+      const quiet = quietNext.current && previewRef.current !== null
+      quietNext.current = false
+      inFlight.current = true
+      if (!quiet) setIsQuoting(true)
       try {
         const p = await quotePreview({
           collateral: selectedCollateral,
@@ -317,7 +326,8 @@ export function ClosePositionModal({
           if (p.preview) setQuotedRoutes({ pair: routesPairKey, list: p.preview.routes })
         }
       } finally {
-        if (isMounted) setIsQuoting(false)
+        inFlight.current = false
+        if (isMounted && !quiet) setIsQuoting(false)
       }
     }
 
@@ -325,6 +335,7 @@ export function ClosePositionModal({
     const timeout = setTimeout(run, 300)
     return () => {
       isMounted = false
+      inFlight.current = false
       clearTimeout(timeout)
       controller.abort()
     }
@@ -502,7 +513,9 @@ export function ClosePositionModal({
     // The solver streams the trade and says when a pass has landed; that is when there is
     // something new to show, so it is what re-quotes rather than a clock.
     const off = onSolverUpdate(() => {
-      if (visible()) requote()
+      if (!visible() || inFlight.current) return
+      quietNext.current = true
+      requote()
     })
     const onVisibilityChange = () => {
       if (visible()) requote()

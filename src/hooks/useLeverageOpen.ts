@@ -129,7 +129,9 @@ export function useLeverageOpen(
    */
   const currentSend = useRef<Hex | null>(null)
 
-  const refresh = useCallback(() => setTick((t) => t + 1), [])
+  /** A run is under way. A pass landing mid-run is not lost, the next one re-reads. */
+  const inFlight = useRef(false)
+  const refresh = useCallback(() => { if (!inFlight.current) setTick((t) => t + 1) }, [])
 
   /**
    * Refresh as a USER means it — the same re-quote, with the reuse window dropped first.
@@ -312,17 +314,21 @@ export function useLeverageOpen(
     // flow has always aborted for this reason; this is the same thing on the open side.
     const controller = new AbortController()
 
+    // Only a re-quote of the SAME trade starts from the last size; a changed input is a new solve.
+    const seedIn = lastRef.current?.key === key ? lastRef.current.swapIn : undefined
+    // A re-quote of a trade already on screen is quiet: the server refreshed it on its own, so
+    // the figures move and nothing says "Pricing…". The first price of a trade still does.
+    const quiet = seedIn !== undefined
     const timer = setTimeout(async () => {
       await runPreview({
-        input, pinned, forInput, client, chainId, owner,
-        // Only a re-quote of the SAME trade starts from the last size; a changed input is a new solve.
-        seedIn: lastRef.current?.key === key ? lastRef.current.swapIn : undefined,
+        input, pinned, forInput, client, chainId, owner, seedIn,
         // Recomputed from the effect's own `input` rather than the render-scope `pairKey`, which
         // is nullable and belongs to a later render than the one this run answers for.
         forPair: inputKey({ ...input, preferredAggregator: undefined }),
         cancelled: () => cancelled,
         signal: controller.signal,
-        setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected,
+        setIsQuoting: (v) => { inFlight.current = v; if (!quiet) setIsQuoting(v) },
+        setPreviewError, setPreview, setPreviewFor, setRejected,
         // A new list is a new question: the measurements belong to the field it replaces.
         setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v, measured: {} }),
         setMeasured: (m, forPair) =>
@@ -334,6 +340,8 @@ export function useLeverageOpen(
 
     return () => {
       cancelled = true
+      // A cancelled run never reaches its own `finally`, so the flag is dropped here.
+      inFlight.current = false
       controller.abort()
       clearTimeout(timer)
     }
