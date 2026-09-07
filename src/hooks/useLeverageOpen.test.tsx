@@ -146,6 +146,38 @@ it('re-quotes when an input value actually changes', async () => {
   expect(mocks.readContractState).toHaveBeenCalledTimes(2)
 })
 
+it('does not re-quote when a background refetch moves prices and balances', async () => {
+  // Every few seconds the position, balances and oracle prices refetch. They are read fresh by
+  // each run, but they are not the trade: re-keying on them blanked the preview and the route
+  // list on every refetch and asked the solver for a size a hair off the one it was streaming.
+  function Drifting() {
+    const [tick, setTick] = useState(0)
+    const base = makeInput()
+    useLeverageOpen({
+      ...base,
+      maxSupply: base.maxSupply + BigInt(tick),
+      marginBalance: base.marginBalance + BigInt(tick),
+      existingCollateralUsd: BigInt(tick),
+      reserves: {
+        ...base.reserves,
+        collateral: { ...base.reserves.collateral, priceUsd: base.reserves.collateral.priceUsd + BigInt(tick) },
+      },
+    })
+    useEffect(() => {
+      const t = setTimeout(() => setTick((n) => n + 1), 1000)
+      return () => clearTimeout(t)
+    }, [tick])
+    return null
+  }
+
+  render(<Drifting />)
+  await settle()
+  await act(async () => { vi.advanceTimersByTime(3000) })
+  await settle()
+
+  expect(mocks.readContractState).toHaveBeenCalledTimes(1)
+})
+
 it('does not quote while the panel is out of view', async () => {
   // The panel is not unmounted when the user switches to the DEX tab or backgrounds the browser:
   // AavePosition is hidden with `display: none` so an in-flight transaction's report survives.

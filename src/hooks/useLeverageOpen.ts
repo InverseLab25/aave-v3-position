@@ -52,9 +52,9 @@ export function useLeverageOpen(
    * AavePosition is hidden with `display: none` rather than unmounted when the user leaves its
    * tab, deliberately — see the note on the frozen confirmation pair in LeveragePanel, where a
    * reserve refetch unmounting things mid-transaction destroyed a settled report. Hidden, the
-   * panel still re-keys on every background refetch of prices and balances, and a re-key now
-   * costs a build and a simulation per candidate on top of the quotes. Gating the QUOTING rather
-   * than the mount is what stops that without putting the report back at risk.
+   * panel would still re-quote on every pass the solver lands, and each re-quote costs a build
+   * and a simulation per candidate. Gating the QUOTING rather than the mount is what stops that
+   * without putting the report back at risk.
    *
    * Unpausing re-quotes, on purpose: a preview priced before the user looked away is worse than
    * none, because it looks current.
@@ -327,7 +327,7 @@ export function useLeverageOpen(
         forPair: inputKey({ ...input, preferredAggregator: undefined }),
         cancelled: () => cancelled,
         signal: controller.signal,
-        setIsQuoting: (v) => { inFlight.current = v; if (!quiet) setIsQuoting(v) },
+        setIsQuoting: (v) => { inFlight.current = v; setIsQuoting(quiet ? false : v) },
         setPreviewError, setPreview, setPreviewFor, setRejected,
         // A new list is a new question: the measurements belong to the field it replaces.
         setRoutes: (v, forPair) => setQuotedRoutes({ pair: forPair, routes: v, measured: {} }),

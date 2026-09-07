@@ -162,18 +162,20 @@ export const SIGNATURE_TTL_S = 1800n
  * comparing references would treat a caller re-creating an equal object every render as a change
  * on every render, permanently masking a settled preview.
  */
-function reserveKey(r: ReserveInfo): string {
-  return `${r.address}|${r.decimals}|${r.priceUsd}|${r.ltvBps}|${r.liquidationThresholdBps}`
-}
+/**
+ * Only what names the TRADE. Prices, balances, LTVs and the existing position are read fresh by
+ * every run, but they change on every background refetch, and keying on them made each refetch
+ * a new trade: preview blanked, route list masked, and a fresh one-shot to the solver for a size
+ * a hair off the one it was already streaming.
+ */
 export function inputKey(i: LeverageOpenInput): string {
   return [
     i.contract, i.direction, i.marginAsset, i.subject, i.quote,
-    i.marginAmount, i.sizedBy, i.supplyAmount, i.borrowAmount, i.maxSupply,
-    i.slippageBps, i.marginBalance,
-    i.existingCollateralUsd, i.existingDebtUsd, i.existingLtvBps, i.existingLiquidationThresholdBps,
-    reserveKey(i.reserves.collateral), reserveKey(i.reserves.debt),
-    // Folded in because it changes both the sizing verdict and the projection's LTV inputs, so a
-    // preview computed before the reserve config resolved must not survive it arriving.
+    i.marginAmount, i.sizedBy, i.supplyAmount, i.borrowAmount, i.slippageBps,
+    i.reserves.collateral.address, i.reserves.collateral.decimals,
+    i.reserves.debt.address, i.reserves.debt.decimals,
+    // Resolves once, from null. Folded in so a preview computed before the reserve config
+    // arrived does not survive it arriving.
     i.collateralEnablement === null || i.collateralEnablement === undefined
       ? '-'
       : `${i.collateralEnablement.willCount}:${i.collateralEnablement.reason ?? ''}`,

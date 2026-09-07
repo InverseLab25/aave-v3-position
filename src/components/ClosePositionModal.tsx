@@ -327,7 +327,7 @@ export function ClosePositionModal({
         }
       } finally {
         inFlight.current = false
-        if (isMounted && !quiet) setIsQuoting(false)
+        if (isMounted) setIsQuoting(false)
       }
     }
 
