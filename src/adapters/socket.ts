@@ -21,32 +21,18 @@ import { fetchQuoteJson, limitedFetch } from './http';
  * Quote-and-swap from the user's own wallet is unaffected and works.
  */
 
-/** Attribution, when one is configured. The public host allows this header through CORS. */
-const SOCKET_AFFILIATE = import.meta.env.VITE_SOCKET_AFFILIATE as string | undefined;
-
 /**
- * Where the quotes come from: a same-origin proxy when there is one, the public host otherwise.
- *
- * There is no third option. The keyed host, `dedicated-backend.socket.tech`, answers a CORS
- * preflight with 403 and no `access-control-allow-*` headers at all, so no browser request can
- * reach it whatever headers it carries — and `public-backend` allows only `affiliate` through
- * CORS, never `x-api-key`. So the key cannot live in this file under any spelling; it lives on
- * whatever serves `/api/socket` (the Vite dev proxy locally, a serverless function deployed),
- * which adds `x-api-key` and `affiliate` on the way through.
- *
- * Worth doing because the unkeyed host takes 20bps of the input out of every route — 50 USDC on
- * a 25k swap, to 0xe3D091bcb9406Ddb9a121e37f4eb1345336AFBBf — which leaves Socket permanently
- * behind Nordstern on the same trade. Keyed, that fee is gone.
- *
- * Automatic in dev, where vite.config.ts always serves that path. Opt-in for a build, because
- * pointing at `/api/socket` where nothing serves it turns every quote into an HTML 404 that
- * reads as Socket being down — set `VITE_SOCKET_PROXY` once something answers it there.
- * `VITE_SOCKET_BASE` overrides both.
+ * Socket credentials, inlined into the bundle by vite.config.ts from the UNPREFIXED
+ * `SOCKET_API_KEY` and `SOCKET_AFFILIATE`. Deliberate: they are shipped to the browser and sent
+ * on every request, no proxy in between. The keyed host is used once both are set, since it
+ * refuses a key without an affiliate; `SOCKET_BASE` overrides the host either way.
  */
+const SOCKET_API_KEY = (import.meta.env.SOCKET_API_KEY as string | undefined) || undefined;
+const SOCKET_AFFILIATE = (import.meta.env.SOCKET_AFFILIATE as string | undefined) || undefined;
 const SOCKET_BASE =
-  (import.meta.env.VITE_SOCKET_BASE as string | undefined) ??
-  (import.meta.env.DEV || import.meta.env.VITE_SOCKET_PROXY
-    ? '/api/socket'
+  (import.meta.env.SOCKET_BASE as string | undefined) ||
+  (SOCKET_API_KEY && SOCKET_AFFILIATE
+    ? 'https://dedicated-backend.socket.tech'
     : 'https://public-backend.socket.tech');
 
 /** Chains this app configures that Socket serves. */
@@ -148,9 +134,10 @@ const quoteUrl = (q: SocketQuote, slippage: number, caller: string, receiver = c
     simulatedQuotesRequired: 'false',
   }).toString();
 
-// No `x-api-key` here, ever: CORS forbids it on both hosts, and the proxy adds it where it can.
-const headers = (): HeadersInit =>
-  SOCKET_AFFILIATE ? { affiliate: SOCKET_AFFILIATE } : {};
+const headers = (): HeadersInit => ({
+  ...(SOCKET_AFFILIATE ? { affiliate: SOCKET_AFFILIATE } : {}),
+  ...(SOCKET_API_KEY ? { 'x-api-key': SOCKET_API_KEY } : {}),
+});
 
 /** The route with the most output. Socket ranks its own with tags; this app ranks on output. */
 const bestRoute = (routes: SocketRoute[] | undefined): SocketRoute | null => {
