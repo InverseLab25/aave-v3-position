@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { MAX_ROUTE_GAS, TX_GAS_CAP_2_24 } from '../lib/deleverage'
 
 const mocks = vi.hoisted(() => ({ limitedFetch: vi.fn() }))
 
@@ -148,7 +149,9 @@ describe('simulateSwap', () => {
     await simulateSwap(INPUT)
 
     expect(BigInt(params().blockStateCalls[0].calls[0].gas)).toBe(BigInt(SIMULATION_GAS))
-    expect(SIMULATION_GAS).toBeGreaterThan(33_900_000)
+    // Above anything validation lets through, and never above what the chain would send.
+    expect(BigInt(SIMULATION_GAS)).toBeGreaterThan(MAX_ROUTE_GAS)
+    expect(BigInt(SIMULATION_GAS)).toBeLessThanOrEqual(TX_GAS_CAP_2_24)
   })
 
   it('skips validation so the caller needs no gas of its own', async () => {

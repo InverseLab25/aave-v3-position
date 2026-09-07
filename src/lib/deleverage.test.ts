@@ -10,6 +10,7 @@ import {
   applyPin,
   COMPATIBLE_ADAPTERS,
   TX_GAS_CAP_2_24,
+  MAX_ROUTE_GAS,
   MAX_CALLDATA_BYTES,
   MAX_MEASURED_ROUTES,
 } from './deleverage'
@@ -82,7 +83,7 @@ describe('validateSwapTx — per-transaction gas cap', () => {
     // cap, so a 1M USDC route measuring 13.2M was rejected 5 times in 6 — the pad, not the
     // route, put it over. A pad is for SETTING a limit, where over-estimating is refunded. It
     // has no business in a decision, where over-estimating costs the trade.
-    const underCap = (TX_GAS_CAP_2_24 - 1_000_000n).toString()
+    const underCap = (MAX_ROUTE_GAS - 1_000_000n).toString()
     expect(validateSwapTx({ ...ok, gasEstimate: underCap }, true, TX_GAS_CAP_2_24)).toBeNull()
   })
 
@@ -98,15 +99,17 @@ describe('validateSwapTx — per-transaction gas cap', () => {
     expect(problem).toMatch(/gas/i)
   })
 
-  it('accepts a route sitting exactly on the cap', () => {
-    // The cap is inclusive: 16,777,216 passes validation, 16,777,217 does not.
-    expect(validateSwapTx({ ...ok, gasEstimate: TX_GAS_CAP_2_24.toString() }, true, TX_GAS_CAP_2_24))
-      .toBeNull()
+  it('accepts a route sitting exactly on the route ceiling, and refuses one over it', () => {
+    // Inclusive: 14,000,000 passes validation, 14,000,001 does not.
+    expect(validateSwapTx({ ...ok, gasEstimate: MAX_ROUTE_GAS.toString() }, true, TX_GAS_CAP_2_24)).toBeNull()
+    expect(validateSwapTx({ ...ok, gasEstimate: (MAX_ROUTE_GAS + 1n).toString() }, true, TX_GAS_CAP_2_24))
+      .toMatch(/gas/i)
   })
 
-  it('skips the check on a chain with no cap', () => {
-    // Arbitrum accepts 40M in a single transaction. An undefined cap must not become zero.
-    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toBeNull()
+  it('applies the route ceiling on a chain with no cap too', () => {
+    // Arbitrum accepts 40M in a single transaction, but nothing over 14M is measured anywhere.
+    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toMatch(/gas/i)
+    expect(validateSwapTx({ ...ok, gasEstimate: '13000000' }, true, undefined)).toBeNull()
   })
 
   it('skips the check when the aggregator returned no gas figure', () => {

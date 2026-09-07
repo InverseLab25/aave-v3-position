@@ -246,6 +246,15 @@ export function applyPin<T>(
 export const TX_GAS_CAP_2_24 = 16_777_216n
 
 /**
+ * Most gas a route may quote and still be measured, on any chain.
+ *
+ * 14M. The simulation runs under 16M, and the contract spends its own on top of the swap, so a
+ * route quoting more than this cannot be measured and could not be sent on a capped chain
+ * either. Refusing it here saves the simulation.
+ */
+export const MAX_ROUTE_GAS = 14_000_000n
+
+/**
  * Largest calldata a route may carry, in bytes.
  *
  * 20KB. Only KyberSwap has ever exceeded it in any sample taken here — 22 to 25KB on Base at
@@ -285,15 +294,18 @@ export function validateSwapTx(
   // there is no simulation to catch it and no error the user can act on. Aggregator gas is an
   // estimate rather than a measurement, so this catches the clearly-impossible rather than the
   // marginal — an absent or unparseable figure is not evidence and is left alone.
-  if (txGasCap !== undefined && tx.gasEstimate) {
+  if (tx.gasEstimate) {
     let gas: bigint
     try {
       gas = BigInt(tx.gasEstimate)
     } catch {
       return null
     }
-    if (gas > txGasCap) {
+    if (txGasCap !== undefined && gas > txGasCap) {
       return `route needs ${gas} gas; this chain caps a transaction at ${txGasCap}`
+    }
+    if (gas > MAX_ROUTE_GAS) {
+      return `route needs ${gas} gas, over the ${MAX_ROUTE_GAS} a route may quote`
     }
   }
   return null

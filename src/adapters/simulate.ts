@@ -6,12 +6,12 @@ import type { TransactionPayload } from './types'
 /**
  * Gas limit every simulation runs under.
  *
- * Deliberately far above any chain's per-transaction cap. The point is to measure what a route
- * really costs, including when that turns out to be more than the chain will allow; judging it
- * against the cap is the caller's job and needs the true figure to do it. Measured on Base, a
- * KyberSwap route at 1M USDC used 33.9M.
+ * Just under the 2^24 per-transaction cap Base and Ethereum enforce. A route needing more
+ * could never be sent anyway, so there is nothing to learn by measuring it; the ones that could
+ * have needed it — KyberSwap at 33.9M for 1M USDC on Base — are refused before simulation by
+ * `validateSwapTx`, on their calldata size and their quoted gas.
  */
-export const SIMULATION_GAS = 60_000_000
+export const SIMULATION_GAS = 16_000_000
 
 /** What a simulation that actually ran reports back. */
 export interface SimulationResult {
