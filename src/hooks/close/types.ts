@@ -87,6 +87,8 @@ export interface ClosePlan {
    */
   measuredOut: Record<string, bigint>
   collAmount: bigint
+  /** A MAX close: the contract drains the live balance, whatever `requiredIn` was quoted at. */
+  drain: boolean
   /** Collateral fed to the swap. Always equal to `best.amountIn`. */
   requiredIn: bigint
   expectedOut: bigint

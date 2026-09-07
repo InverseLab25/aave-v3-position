@@ -12,9 +12,19 @@ import {
   suggestWiderSlippage,
   MAX_OUTPUT_DEGRADATION_PERCENT,
   type HeldSignature,
+  stableAmount,
 } from './closePlan'
 
 const COLL = parseUnits('100', 18)
+
+describe('stableAmount', () => {
+  it('keeps the top eight digits and zeroes the rest, so accrual does not change the trade', () => {
+    expect(stableAmount(412677064098232390932n)).toBe(412677060000000000000n)
+    expect(stableAmount(412677065518367319396n)).toBe(412677060000000000000n)
+    expect(stableAmount(12345678n)).toBe(12345678n)
+    expect(stableAmount(0n)).toBe(0n)
+  })
+})
 
 describe('planWithdrawal', () => {
   it('withdraws exactly what the swap pulls on a partial close', () => {
@@ -24,6 +34,13 @@ describe('planWithdrawal', () => {
     expect(w.drainAll).toBe(false)
     expect(w.collateralToWithdraw).toBe(requiredIn)
     expect(w.pullAmount).toBe(requiredIn)
+  })
+
+  it('drains on a MAX close even though the stable quote size is a hair under the balance', () => {
+    const w = planWithdrawal({ requiredIn: stableAmount(COLL + 123456789n), collAmount: COLL + 123456789n, drain: true })
+    expect(w.drainAll).toBe(true)
+    expect(w.collateralToWithdraw).toBe(maxUint256)
+    expect(w.pullAmount).toBe(COLL + 123456789n)
   })
 
   it('resolves the drain sentinel to the live balance for reuse checks', () => {

@@ -7,7 +7,7 @@ import { CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../
 import { quoteField } from '../../adapters'
 import { selectRoute } from '../../lib/closePlan'
 import { solverMeasurement } from '../../adapters/solver'
-import { deriveDebtRepay } from '../../lib/closePlan'
+import { deriveDebtRepay, stableAmount } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
@@ -236,7 +236,9 @@ export async function buildPlan(
         // The solver measured every route from the contract, so the buy price the swap is
         // sized on is what the route pays, not what its provider claims.
         outOf: (q) => solverMeasurement(q)?.amountOut ?? BigInt(q.amountOut),
-        fixedIn: collateralIn === 'all' ? collAmount : collateralIn,
+        // MAX is quoted at a stable size so every refresh is the same trade to the solver; the
+        // contract drains the live balance regardless (see `drain`).
+        fixedIn: collateralIn === 'all' ? stableAmount(collAmount) : collateralIn,
         // Aave's own oracle prices ride along on both assets, so the first guess is free.
         // Without it every refresh pays for a full-collateral probe just to learn the rate.
         seedIn: oracleSeed({
@@ -323,6 +325,7 @@ export async function buildPlan(
         aTokenName,
         nonce,
         collAmount,
+        drain: collateralIn === 'all',
         slipNum,
         adapters,
         allowedRouters,
