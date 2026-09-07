@@ -9,8 +9,11 @@ const affiliate = process.env.SOCKET_AFFILIATE
 const host = key && affiliate ? 'https://dedicated-backend.socket.tech' : 'https://public-backend.socket.tech'
 
 async function proxy(request) {
+  // vercel.json rewrites /api/socket/<path> here as ?path=<path>, with the original query kept.
   const url = new URL(request.url)
-  const target = host + url.pathname.replace(/^\/api\/socket/, '') + url.search
+  const path = url.searchParams.get('path') ?? ''
+  url.searchParams.delete('path')
+  const target = `${host}/${path}${url.search}`
   const headers = new Headers({ accept: 'application/json' })
   if (affiliate) headers.set('affiliate', affiliate)
   if (key && affiliate) headers.set('x-api-key', key)
