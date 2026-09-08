@@ -8,6 +8,7 @@ import {
   expectedOutcome,
   rankRoutes,
   applyPin,
+  routeKey,
   COMPATIBLE_ADAPTERS,
   TX_GAS_CAP_2_24,
   MAX_ROUTE_GAS,
@@ -247,6 +248,13 @@ describe('rankRoutes', () => {
   it('drops an aggregator the contracts cannot route through', () => {
     const ranked = rankRoutes([quote('NotAllowlisted', '9999999999', 0), quote(compatible, '1', 0)])
     expect(ranked.map((q) => q.aggregator)).toEqual([compatible])
+  })
+})
+
+describe('routeKey', () => {
+  it('prefixes a venue with the adapter so a direct adapter and Socket\'s row stay distinct', () => {
+    expect(routeKey({ aggregator: 'Socket', routeId: 'Kyberswap' })).toBe('Socket/Kyberswap')
+    expect(routeKey({ aggregator: 'KyberSwap' })).toBe('KyberSwap')
   })
 })
 

@@ -211,14 +211,16 @@ export function rankRoutes(quotes: (QuoteResponse | null)[]): QuoteResponse[] {
  * input is what each flow turns into "that route cannot serve this trade".
  */
 /**
- * What identifies one row: the venue where the adapter named one, the adapter otherwise.
+ * What identifies one row: 'Adapter/Venue' where the adapter named a venue, the adapter otherwise.
  *
- * The single place this fallback lives. Keying measurements or pins on `aggregator` alone
- * collapses every Socket route onto one entry, so they all report the winner's measurement and
- * pinning any of them pins all of them.
+ * The single place this lives. Keying measurements or pins on `aggregator` alone collapses
+ * every Socket route onto one entry, so they all report the winner's measurement and pinning
+ * any of them pins all of them. Keying on the venue alone is the opposite trap: Socket's
+ * KyberSwap row and our direct KyberSwap adapter are different routes with different calldata,
+ * and they would share a key and a label.
  */
 export function routeKey(q: { aggregator: string; routeId?: string }): string {
-  return q.routeId ?? q.aggregator
+  return q.routeId ? `${q.aggregator}/${q.routeId}` : q.aggregator
 }
 
 export function applyPin<T>(

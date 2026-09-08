@@ -112,7 +112,7 @@ export interface OpenPreview {
   projection: OpenProjection
   router: Address
   swapData: Hex
-  /** Aggregator name, for display. */
+  /** Route name for display: the adapter, or Adapter/Venue for a router over routers like Socket. */
   aggregator: string
   /**
    * What the route costs as a percentage of value put in — the aggregator's own USD figures for

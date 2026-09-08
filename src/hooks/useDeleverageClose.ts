@@ -250,7 +250,7 @@ export function useDeleverageClose() {
           )
         }
         log(
-          `Best route: ${p.best.aggregator}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
+          `Best route: ${routeKey(p.best)}. Swapping ~${formatUnits(p.requiredIn, input.collateral.decimals)} ${input.collateral.symbol}; the rest stays supplied in Aave.`,
         )
 
         const withdrawal = planWithdrawal(p)

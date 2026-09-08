@@ -442,7 +442,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           projection,
           router: build.built.to as Address,
           swapData: build.built.data as Hex,
-          aggregator: build.adapter.name,
+          aggregator: routeKey(build.quote),
           priceImpactPercent: routeCostPercent(build.quote.rawAmountInUsd, build.quote.rawAmountOutUsd),
         })
       } catch {
