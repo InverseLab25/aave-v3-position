@@ -64,11 +64,7 @@ export async function submitClose(
           quotedOut: builtOut,
           slipNum: p.slipNum,
         })
-        // Built by the SDK rather than by hand: AaveV3Strategies orders these differently from
-        // the AaveV3Deleverager this replaced (swapData moved last, `debtRepay` is new), and the
-        // permit structs differ in both field names and field order — `value`/`{v,r,s}` there
-        // against `amount`/`{r,s,v}` here. Positional args assembled locally would encode
-        // silently wrong.
+
         const { args } = planClose({
           collateral: p.collateralAddr,
           debtAsset: p.debtAddr,

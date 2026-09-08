@@ -1,12 +1,8 @@
 import { erc20Abi, formatUnits, parseUnits, type Address, type PublicClient } from 'viem'
 import { getChainConfig, getStrategiesAddress } from '../../config/chains'
-import { getAdaptersForChain } from '../../adapters'
-import { AggregatorHttpError } from '../../adapters/http'
 import { isNativeAddress, NATIVE_ZERO_ADDRESS } from '../../adapters/native'
-import { COMPATIBLE_ADAPTERS, CloseError, applyPin, expectedOutcome, rankRoutes, routeKey } from '../../lib/deleverage'
-import { quoteField } from '../../adapters'
-import { selectRoute } from '../../lib/closePlan'
-import { simulateSwap } from '../../adapters/simulate'
+import { CloseError } from '../../lib/deleverage'
+import { COMPATIBLE_ADAPTERS, compatibleAdapters, expectedOutcome, quoteRoutes, selectRoute } from '../../lib/routes'
 import { deriveDebtRepay } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
@@ -170,9 +166,7 @@ export async function buildPlan(
 
       // 3. Quote and size.
       logFn(`Fetching swap routes (${COMPATIBLE_ADAPTERS.join(', ')})…`)
-      const adapters = getAdaptersForChain(chainConfig.adapters).filter((a) =>
-        (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name),
-      )
+      const adapters = compatibleAdapters(chainId)
       /**
        * The last round's full field, kept for the picker. Written on every round rather than
        * only the first, so the list is priced at the size the plan actually settled on.
@@ -180,32 +174,17 @@ export async function buildPlan(
       let offers: QuoteResponse[] = []
 
       const quoteAt = async (amountIn: bigint) => {
-        // An aggregator that refused to answer is not evidence about the pair. Tracked per call
-        // rather than per plan, because the sizing loop quotes several times and only the round
-        // that came back empty needs explaining.
-        let throttled = false
-        const ranked = rankRoutes(
-          (
-            await Promise.all(
-              adapters.map((a) =>
-                // Every route each adapter offers, quoted for the contract that executes them.
-                // Socket returns one per underlying aggregator; the rest return one each.
-                quoteField(a, {
-                  fromAsset: collateral,
-                  toAsset: debtAsset,
-                  amountIn: amountIn.toString(),
-                  slippage: slippagePercent,
-                  chainId,
-                  caller: strategies,
-                  signal,
-                }).catch((e: unknown) => {
-                  if (e instanceof AggregatorHttpError && e.retryable) throttled = true
-                  return []
-                }),
-              ),
-            )
-          ).flat(),
-        )
+        const { ranked, usable, throttled, pinnedOut } = await quoteRoutes({
+          adapters,
+          fromAsset: collateral,
+          toAsset: debtAsset,
+          amountIn,
+          slippagePercent,
+          chainId,
+          caller: strategies,
+          signal,
+          pinned: preferredAggregator,
+        })
         // Only when NOTHING priced: one throttled adapter alongside one that answered is a
         // complete answer, and `sizeSwap` should get on with it.
         if (ranked.length === 0 && throttled) {
@@ -215,11 +194,9 @@ export async function buildPlan(
           )
         }
         offers = ranked
-
-        const usable = applyPin(ranked, preferredAggregator, routeKey)
         // Named as the pin's failure rather than the pair's: the pair priced fine, and the fix
         // is to pin something else or nothing at all.
-        if (usable.length === 0 && ranked.length > 0) {
+        if (pinnedOut) {
           throw new CloseError(
             'pair',
             `${preferredAggregator} has no route for this swap — pick another route`,
@@ -273,7 +250,7 @@ export async function buildPlan(
         slipNum,
         tokenIn: collateralAddr,
         tokenOut: debtAddr,
-        simulate: simulateSwap,
+        signal,
       })
       if (!measured.chosen || !measured.tx) {
         throw new CloseError(

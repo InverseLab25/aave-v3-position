@@ -6,7 +6,7 @@
  * time the flow reports success, so the settled figures cost nothing but the decoding.
  */
 import { decodeEventLog, type Address, type Hex } from 'viem'
-import type { OutBasis } from './deleverage'
+import type { OutBasis } from './routes'
 
 /**
  * `keccak256("Swapped(address,address,address,address,uint256,uint256)")`.

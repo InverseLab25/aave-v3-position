@@ -1,5 +1,5 @@
 import type { Address } from 'viem'
-import type { OutBasis } from '../../lib/deleverage'
+import type { OutBasis } from '../../lib/routes'
 import type { StatedRate } from '../../lib/swapRoute'
 import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { FlipRateButton } from '../FlipRateButton'
 import { formatUnits } from 'viem'
 import { T } from '../../styles/theme'
-import type { OutBasis } from '../../lib/deleverage'
+import type { OutBasis } from '../../lib/routes'
 
 /** What each rung of `expectedOutcome` means, in the user's terms. */
 const BASIS_NOTE: Record<OutBasis, string> = {

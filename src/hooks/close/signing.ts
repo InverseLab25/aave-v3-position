@@ -1,17 +1,16 @@
 import { parseSignature, type Address } from 'viem'
 import type { WalletClient } from 'viem'
 import { clearQuoteCache } from '../../adapters/http'
-import { CloseError, buildPermitTypedData, effectiveOut } from '../../lib/deleverage'
-import { simulateSwap } from '../../adapters/simulate'
+import { CloseError, buildPermitTypedData } from '../../lib/deleverage'
 import {
   reuseBlocker,
-  selectRoute,
   MAX_OUTPUT_DEGRADATION_PERCENT,
   type HeldSignature,
   type PermitArgs,
   type RevokeArgs,
   type Withdrawal,
 } from '../../lib/closePlan'
+import { effectiveOut, selectRoute } from '../../lib/routes'
 import { PERMIT_TTL_S } from './constants'
 import type { ClosePlan, CloseStep } from './types'
 
@@ -151,7 +150,6 @@ export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
           slipNum: p.slipNum,
           tokenIn: p.collateralAddr,
           tokenOut: p.debtAddr,
-          simulate: simulateSwap,
         })
 
         if (!router || !swapData || !chosen || !tx) {

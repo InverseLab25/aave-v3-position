@@ -1,6 +1,6 @@
 import { parseAbi, type Address, type Hex } from 'viem'
 import type { StrategiesSig } from '../../lib/strategies-sdk'
-import type { OutBasis } from '../../lib/deleverage'
+import type { OutBasis } from '../../lib/routes'
 import {
   type CollateralEnablement,
   type Direction,

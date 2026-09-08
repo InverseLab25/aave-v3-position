@@ -2,7 +2,8 @@ import { useCallback, useRef, useState } from 'react'
 import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
 import { formatUnits, type Address } from 'viem'
 import { getChainConfig } from '../config/chains'
-import { CloseError, routeKey, toCloseError } from '../lib/deleverage'
+import { CloseError, toCloseError } from '../lib/deleverage'
+import { routeKey } from '../lib/routes'
 import { statedRate } from '../lib/swapRoute'
 import {
   assertExecutable,

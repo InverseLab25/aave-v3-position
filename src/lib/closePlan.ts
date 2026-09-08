@@ -1,9 +1,5 @@
 import { maxUint256, type Address } from 'viem'
-import type { Adapter, QuoteResponse, TransactionPayload } from '../adapters/types'
-import { CloseError, effectiveOut, routeKey, selectBuildableRoute } from './deleverage'
-import { swapSimulationInput } from '../adapters/simulate'
-import type { SimulationInput, SimulationResult } from '../adapters/simulate'
-import { getTxGasCap } from '../config/chains'
+import { CloseError } from './deleverage'
 
 // Moved to swapRoute.ts so the open flow can share them. Re-exported here so every existing
 // consumer of closePlan keeps working against the same import path.
@@ -251,116 +247,8 @@ export function reuseBlocker(
   return null
 }
 
-interface RouteSelection {
-  router: Address | null
-  swapData: `0x${string}` | null
-  chosen: QuoteResponse | null
-  /** The built payload, carrying the aggregator's authoritative amountOut and outputChange. */
-  tx: TransactionPayload | null
-  /**
-   * What the chosen route was measured to return, or null when nothing measured it.
-   *
-   * Null is not a verdict on the route — see {@link effectiveOut}. It reaches `signing`, where
-   * the output `minOut` derives from is chosen, so the two must keep reading it the same way.
-   */
-  sim: SimulationResult | null
-  /**
-   * What each candidate that got as far as being measured actually returned, by aggregator.
-   *
-   * The picker lists the whole field. Listing quoted figures there while the winner is chosen on
-   * measured ones lets the row marked "best" be a route that lost.
-   */
-  measuredOut: Record<string, bigint>
-  /** Why each rejected candidate was unusable, for the error the user eventually sees. */
-  rejected: string[]
-}
-
-/**
- * Pick the first quote the contract will actually accept.
- *
- * A router's address is only known after `buildTransaction`, so the on-chain allowlist cannot
- * filter candidates during sizing — it has to happen here. Every rejection caught at this
- * point is one the user would otherwise pay gas to discover.
- */
-export async function selectRoute({
-  candidates,
-  adapters,
-  strategies,
-  allowedRouters,
-  slippagePercent,
-  chainId,
-  debt,
-  slipNum,
-  tokenIn,
-  tokenOut,
-  simulate,
-}: {
-  candidates: QuoteResponse[]
-  adapters: Adapter[]
-  /** The contract the swap output must land on — it is also the `buildTransaction` recipient. */
-  strategies: Address
-  allowedRouters: Set<string>
-  slippagePercent: number
-  chainId: number
-  debt: bigint
-  slipNum: bigint
-  /** Sold by the swap. Collateral on a close, the old long on a flip. */
-  tokenIn: string
-  /** Bought by the swap. The debt asset on a close, the new long on a flip. */
-  tokenOut: string
-  /** Injected so the selection stays testable without a live simulator. */
-  simulate?: (input: SimulationInput) => Promise<SimulationResult | null>
-}): Promise<RouteSelection> {
-  // The walk itself is shared with the open flow, so the allowlist and calldata checks stay
-  // identical between them. What is specific here is the bar each candidate has to clear:
-  // every quote has a different output, so its guarantee is re-derived rather than inherited
-  // from whichever one sizing settled on.
-  const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
-    build: (c) => {
-      const adapter = adapters.find((a) => a.name === c.aggregator)
-      if (!adapter) throw new Error('no adapter for this quote')
-      return adapter.buildTransaction(c, slippagePercent, strategies, chainId)
-    },
-    isAllowlisted: (router) => allowedRouters.has(router.toLowerCase()),
-    reject: (c) =>
-      (BigInt(c.amountOut) * slipNum) / 10000n < debt ? 'guaranteed output below the debt' : null,
-    label: (c) => routeKey(c),
-    txGasCap: getTxGasCap(chainId),
-    // Deliberately the swap's OWN sender, tokens and size rather than the user's wallet: the
-    // swap happens inside the contract mid-flash-loan, and measuring it anywhere else answers
-    // a question nobody asked while still returning a plausible-looking number.
-    simulate: simulate
-      ? (c, tx) =>
-          simulate(
-            swapSimulationInput({
-              chainId,
-              caller: strategies,
-              tokenIn,
-              tokenOut,
-              amountIn: c.amountIn,
-              tx,
-            }),
-          )
-      : undefined,
-  })
-
-  const measuredOut: Record<string, bigint> = {}
-  for (const m of measurements) measuredOut[routeKey(m.candidate)] = effectiveOut(m.tx, m.sim)
-
-  if (selected) {
-    return {
-      measuredOut,
-      router: selected.tx.to as Address,
-      swapData: selected.tx.data as `0x${string}`,
-      chosen: selected.candidate,
-      tx: selected.tx,
-      sim: selected.sim,
-      rejected,
-    }
-  }
-
-  return { router: null, swapData: null, chosen: null, tx: null, sim: null, measuredOut, rejected }
-}
+// The flip flow still imports `selectRoute` from here; the implementation lives in routes.ts.
+export { selectRoute } from './routes'
 
 /** Throws unless the sized plan is worth asking the user to sign for. */
 export function assertExecutable(

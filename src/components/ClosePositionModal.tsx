@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, type CSSProperties } from 'react'
-import type { OutBasis } from '../lib/deleverage'
+import type { OutBasis } from '../lib/routes'
 
 /** What each rung of `expectedOutcome` means, in the user's terms. */
 const BASIS_NOTE: Record<OutBasis, string> = {

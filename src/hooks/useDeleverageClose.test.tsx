@@ -68,13 +68,13 @@ vi.mock('../lib/sizing', () => ({ sizeSwap: mocks.sizeSwap, oracleSeed: mocks.or
 // Partial, deliberately: only `selectRoute` reaches the network (it builds router calldata).
 // planWithdrawal, reuseBlocker, computeMinOut and assertExecutable stay real, because those
 // ARE the decisions under test — mocking them would hollow the suite out.
-vi.mock('../lib/closePlan', async (orig) => ({
+vi.mock('../lib/routes', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   selectRoute: vi.fn(),
 }))
 
 import { AggregatorHttpError } from '../adapters/http'
-import { selectRoute } from '../lib/closePlan'
+import { selectRoute } from '../lib/routes'
 import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
 import { GAS_LIMIT_BUFFER_PERCENT } from '../utils/gas'
 
@@ -476,7 +476,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
 
-    selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    selectRoute = vi.mocked((await import('../lib/routes')).selectRoute)
     selectRoute.mockResolvedValue(route(SIZED.expectedOut))
 
     const actions = await import('wagmi/actions')
@@ -1018,7 +1018,7 @@ describe('buildPlan — the preview measures what it shows', () => {
     // The open flow has done this since simulation landed: what the user reviews is the number
     // minOut is derived from. The close reviewed a QUOTE and only simulated later, at signing —
     // so the figure being approved was never the figure the contract ended up enforcing.
-    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    const selectRoute = vi.mocked((await import('../lib/routes')).selectRoute)
     selectRoute.mockResolvedValue(measured(parseUnits('20800', 6)) as never)
 
     const { preview } = await previewWith()
@@ -1031,7 +1031,7 @@ describe('buildPlan — the preview measures what it shows', () => {
   it('turns the verdicts on the measurement too', async () => {
     // covered/guaranteed decide whether the button is even offered. Deriving them from the quote
     // while showing a measured number would invite a press the contract then reverts.
-    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    const selectRoute = vi.mocked((await import('../lib/routes')).selectRoute)
     selectRoute.mockResolvedValue(measured(parseUnits('19000', 6)) as never)
 
     const { preview } = await previewWith()
@@ -1043,7 +1043,7 @@ describe('buildPlan — the preview measures what it shows', () => {
   it('says which routes it could not use when none of them builds', async () => {
     // The picker is rendered off this same preview, so a failure that returns nothing at all
     // leaves the user told to pick another route with nothing to pick from.
-    const selectRoute = vi.mocked((await import('../lib/closePlan')).selectRoute)
+    const selectRoute = vi.mocked((await import('../lib/routes')).selectRoute)
     selectRoute.mockResolvedValue({
       router: null, swapData: null, chosen: null, tx: null, sim: null, measuredOut: {},
       rejected: ['Socket: route needs 20307933 gas; this chain caps a transaction at 16777216'],

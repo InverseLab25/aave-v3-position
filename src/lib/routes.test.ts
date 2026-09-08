@@ -1,0 +1,510 @@
+import { describe, it, expect, vi } from 'vitest'
+import { type Address } from 'viem'
+import {
+  validateSwapTx,
+  selectBuildableRoute,
+  selectRoute,
+  effectiveOut,
+  expectedOutcome,
+  applyPin,
+  routeKey,
+  TX_GAS_CAP_2_24,
+  MAX_ROUTE_GAS,
+  MAX_CALLDATA_BYTES,
+  MAX_MEASURED_ROUTES,
+} from './routes'
+import type { TransactionPayload } from '../adapters/types'
+
+describe('validateSwapTx — per-transaction gas cap', () => {
+  const ok = {
+    to: '0xR', spender: '0xR', data: '0xdead', value: '0',
+  }
+
+  it('judges the aggregator\'s own figure, not a padded one', () => {
+    // The bug: the adapter padded its gas 20% and this check compared the padded number to the
+    // cap, so a 1M USDC route measuring 13.2M was rejected 5 times in 6 — the pad, not the
+    // route, put it over. A pad is for SETTING a limit, where over-estimating is refunded. It
+    // has no business in a decision, where over-estimating costs the trade.
+    const underCap = (MAX_ROUTE_GAS - 1_000_000n).toString()
+    expect(validateSwapTx({ ...ok, gasEstimate: underCap }, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+
+  it('rejects a route whose gas cannot fit in one transaction', () => {
+    // Base and Ethereum both refuse a transaction above 2^24 at the node, before it is ever
+    // mined — "gas limit too high". Catching it here costs a route; catching it at send costs
+    // the user three signatures and a rejection they cannot act on.
+    const problem = validateSwapTx(
+      { ...ok, gasEstimate: (TX_GAS_CAP_2_24 + 1n).toString() },
+      true,
+      TX_GAS_CAP_2_24,
+    )
+    expect(problem).toMatch(/gas/i)
+  })
+
+  it('accepts a route sitting exactly on the route ceiling, and refuses one over it', () => {
+    // Inclusive: 14,000,000 passes validation, 14,000,001 does not.
+    expect(validateSwapTx({ ...ok, gasEstimate: MAX_ROUTE_GAS.toString() }, true, TX_GAS_CAP_2_24)).toBeNull()
+    expect(validateSwapTx({ ...ok, gasEstimate: (MAX_ROUTE_GAS + 1n).toString() }, true, TX_GAS_CAP_2_24))
+      .toMatch(/gas/i)
+  })
+
+  it('holds neither limit against a chain with no cap', () => {
+    // Arbitrum accepts 40M in a single transaction. An undefined cap must not become zero, and
+    // the 14M route ceiling belongs to the capped chains only.
+    expect(validateSwapTx({ ...ok, gasEstimate: '40000000' }, true, undefined)).toBeNull()
+  })
+
+  it('skips the check when the aggregator returned no gas figure', () => {
+    // Absent is not zero and not infinite — we simply cannot judge, so we let the route through
+    // and leave it to the simulation that runs before sending.
+    expect(validateSwapTx(ok, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+
+  it('ignores an unparseable gas figure rather than failing the route', () => {
+    expect(validateSwapTx({ ...ok, gasEstimate: 'lots' }, true, TX_GAS_CAP_2_24)).toBeNull()
+  })
+})
+
+describe('validateSwapTx — calldata size', () => {
+  const ok = { to: '0xR', spender: '0xR', value: '0' }
+  const calldata = (bytes: number) => '0x' + 'ab'.repeat(bytes)
+
+  it('rejects a route carrying more calldata than the limit', () => {
+    // Measured on Base at 1M USDC: KyberSwap's 25KB route needed 18.1M gas against a 16.78M
+    // cap while quoting 12.5M, so the gas check above lets it through and the chain does not.
+    expect(validateSwapTx({ ...ok, data: calldata(MAX_CALLDATA_BYTES + 1) }, true)).toContain('calldata')
+  })
+
+  it('leaves a route at the limit alone', () => {
+    expect(validateSwapTx({ ...ok, data: calldata(MAX_CALLDATA_BYTES) }, true)).toBeNull()
+  })
+
+  it('leaves the ordinary route alone', () => {
+    // Every aggregator here but KyberSwap ships a kilobyte or two, so this must never fire on
+    // them — a limit that rejects the normal case is a limit that removes the whole field.
+    expect(validateSwapTx({ ...ok, data: calldata(2048) }, true)).toBeNull()
+  })
+})
+
+describe('selectBuildableRoute — capping the measured field', () => {
+  const quote = (out: string) => ({ amountOut: out }) as never
+  const tx = (out: string) => ({
+    to: '0xR', spender: '0xR', data: '0xdead', value: '0', amountOut: out,
+  })
+
+  it('does NOT drop on rank alone, which is the bug the band replaced', async () => {
+    // A real Base field: the third and fourth quotes 0.0001 apart while the third measured 0.05%
+    // under its own quote. Cutting at three by rank dropped the fourth on a margin far smaller
+    // than the error being measured away, and it may well have won.
+    const candidates = ['1005200', '1005100', '1005000', '1004900'].map(quote)
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+    })
+
+    expect(build).toHaveBeenCalledTimes(4)
+  })
+
+  it('still bounds a field where everything is inside the band', async () => {
+    // The ceiling is what stops a deep pair, where every route quotes within a hair of the best,
+    // from costing a simulation per route forever.
+    const candidates = Array.from({ length: MAX_MEASURED_ROUTES + 2 }, (_, i) =>
+      quote(String(1_000_000 - i)),
+    )
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    const r = await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+      label: (c) => `route-${(c as { amountOut: string }).amountOut}`,
+    })
+
+    expect(build).toHaveBeenCalledTimes(MAX_MEASURED_ROUTES)
+    const firstDropped = 1_000_000 - MAX_MEASURED_ROUTES
+    expect(r.rejected).toContain(
+      `route-${firstDropped}: outside the top ${MAX_MEASURED_ROUTES} by quote`,
+    )
+  })
+
+  it('does not let a rejected candidate use up one of the slots', async () => {
+    // The caller's own bar runs first and costs nothing, so a candidate that fails it should
+    // not deny a build to the next one down.
+    const candidates = ['1000000', '999900', '999800', '999700'].map(quote)
+    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
+
+    const r = await selectBuildableRoute(candidates, {
+      build,
+      isAllowlisted: () => true,
+      reject: (c) => ((c as { amountOut: string }).amountOut === '1000000' ? 'no good' : null),
+    })
+
+    // The band is re-anchored on the best SURVIVING quote, not on the one that was thrown out.
+    expect(r.measurements.map((m) => (m.candidate as { amountOut: string }).amountOut))
+      .toEqual(['999900', '999800', '999700'])
+  })
+})
+
+describe('selectBuildableRoute — gas cap fallthrough', () => {
+  it('falls through an over-cap route to the next candidate', async () => {
+    const built: Record<string, { to: string; spender: string; data: string; value: string; gasEstimate: string }> = {
+      big: { to: '0xR', spender: '0xR', data: '0xaa', value: '0', gasEstimate: '20000000' },
+      small: { to: '0xR', spender: '0xR', data: '0xbb', value: '0', gasEstimate: '9000000' },
+    }
+    const { selected, rejected } = await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+    })
+
+    expect(selected?.candidate).toBe('small')
+    expect(rejected[0]).toContain('big')
+    expect(rejected[0]).toMatch(/gas/i)
+  })
+})
+
+
+describe('routeKey', () => {
+  it('prefixes a venue with the adapter so a direct adapter and Socket\'s row stay distinct', () => {
+    expect(routeKey({ aggregator: 'Socket', routeId: 'Kyberswap' })).toBe('Socket/Kyberswap')
+    expect(routeKey({ aggregator: 'KyberSwap' })).toBe('KyberSwap')
+  })
+})
+
+describe('applyPin', () => {
+  const routes = [{ name: 'KyberSwap' }, { name: 'Nordstern' }]
+  const nameOf = (r: { name: string }) => r.name
+
+  it('passes everything through when nothing is pinned', () => {
+    expect(applyPin(routes, undefined, nameOf)).toEqual(routes)
+  })
+
+  it('drops the others rather than reordering them', () => {
+    // The distinction that matters: a reorder would hand the trade back to KyberSwap the moment
+    // the pinned route failed to build, which is the route the user just refused.
+    expect(applyPin(routes, 'Nordstern', nameOf)).toEqual([{ name: 'Nordstern' }])
+  })
+
+  it('returns nothing for a pin that did not price, so the caller can say which one failed', () => {
+    expect(applyPin(routes, 'OpenOcean', nameOf)).toEqual([])
+  })
+})
+
+
+describe('expectedOutcome', () => {
+  const tx: TransactionPayload = { to: '0xR', spender: '0xR', data: '0xaa', value: '0', amountOut: '100' }
+  const QUOTED = 105n
+
+  it('reports the simulation, and says so', () => {
+    expect(expectedOutcome(tx, { ok: true, amountOut: 97n, gasUsed: 1 }, QUOTED)).toEqual({
+      amount: 97n,
+      basis: 'simulated',
+    })
+  })
+
+  it('falls to the build when the simulator could not be asked', () => {
+    expect(expectedOutcome(tx, null, QUOTED)).toEqual({ amount: 100n, basis: 'built' })
+  })
+
+  it('falls to the quote only when the build returned no amount at all', () => {
+    expect(expectedOutcome({ ...tx, amountOut: undefined }, null, QUOTED)).toEqual({
+      amount: QUOTED,
+      basis: 'quoted',
+    })
+  })
+
+  it('marks a zero-amount build as quoted rather than reporting zero', () => {
+    // A build claiming nothing is not a build worth measuring a fill against. Reporting 0 here
+    // would make `minOut` zero and every fill percentage infinite.
+    expect(expectedOutcome({ ...tx, amountOut: '0' }, null, QUOTED)).toEqual({
+      amount: QUOTED,
+      basis: 'quoted',
+    })
+  })
+
+  it('agrees with effectiveOut on the amount wherever both apply', () => {
+    // The two must not drift: ranking uses one and the slippage floor uses the other, and a
+    // route ranked on a different number than it is floored against is the bug this prevents.
+    const sim = { ok: true as const, amountOut: 97n, gasUsed: 1 }
+    expect(expectedOutcome(tx, sim, QUOTED).amount).toBe(effectiveOut(tx, sim))
+    expect(expectedOutcome(tx, null, QUOTED).amount).toBe(effectiveOut(tx, null))
+  })
+})
+
+describe('effectiveOut', () => {
+  const tx: TransactionPayload = { to: '0xR', spender: '0xR', data: '0xaa', value: '0', amountOut: '100' }
+
+  it('prefers what the simulation measured over what the aggregator claimed', () => {
+    expect(effectiveOut(tx, { ok: true, amountOut: 97n, gasUsed: 1 })).toBe(97n)
+  })
+
+  it('falls back to the built figure when there was no simulation to read', () => {
+    // Null means the simulator could not be asked. That is not evidence about the route, so the
+    // aggregator's own number stands rather than the route being penalised for an outage.
+    expect(effectiveOut(tx, null)).toBe(100n)
+  })
+
+  it('never sees a reverted simulation, because the route is dropped before ranking', () => {
+    // A simulation that RAN and reverted is evidence, and the route is rejected on it rather
+    // than reaching here — see the rejection in `selectBuildableRoute`. This asserts the shape
+    // anyway: if one ever did arrive, trusting its zero would be right, not falling back to a
+    // claim the simulator has already contradicted.
+    expect(effectiveOut(tx, { ok: false, amountOut: 0n, gasUsed: 1, revertReason: 'x' })).toBe(0n)
+  })
+})
+
+describe('selectBuildableRoute — ranking on measured output', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload => ({
+    to: '0xR', spender: '0xR', data, value: '0', amountOut,
+  })
+
+  it('picks the route that measures best, not the one quoted best', async () => {
+    // Candidates arrive best-first BY QUOTE. Simulation is what catches a quote that does not
+    // survive contact with live state, so it has to be allowed to reorder them.
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+    const measured: Record<string, bigint> = { a: 90n, b: 98n }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) => ({ ok: true, amountOut: measured[c], gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('b')
+  })
+
+  it('hands the simulation back so the caller can derive minOut from it', async () => {
+    const { selected } = await selectBuildableRoute(['a'], {
+      build: async () => tx('100'),
+      isAllowlisted: () => true,
+      simulate: async () => ({ ok: true, amountOut: 97n, gasUsed: 4200 }),
+    })
+
+    expect(selected?.sim).toEqual({ ok: true, amountOut: 97n, gasUsed: 4200 })
+  })
+
+  it('lets a route whose simulation failed compete on its built figure', async () => {
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      // 'a' cannot be measured; it keeps its claim of 100 and still beats b's measured 98.
+      simulate: async (c) => (c === 'a' ? null : { ok: true, amountOut: 98n, gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('a')
+    expect(selected?.sim).toBeNull()
+  })
+
+  it('does not spend a simulation on a route it has already rejected', async () => {
+    const simulate = vi.fn(async () => ({ ok: true, amountOut: 1n, gasUsed: 1 }))
+
+    await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => ({ ...tx('100'), gasEstimate: c === 'big' ? '20000000' : '9000000' }),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+      simulate,
+    })
+
+    expect(simulate).toHaveBeenCalledTimes(1)
+  })
+
+  it('ranks on the built figure when no simulator is wired up', async () => {
+    const built: Record<string, TransactionPayload> = { a: tx('99', '0xaa'), b: tx('100', '0xbb') }
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+    })
+
+    expect(selected?.candidate).toBe('b')
+  })
+})
+
+describe('selectBuildableRoute — reporting every measurement', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload =>
+    ({ to: '0xR', spender: '0xR', data, value: '0', amountOut })
+
+  it('hands back what EVERY candidate measured, not just the winner', async () => {
+    // The picker lists the whole field, and until now it listed quoted figures while the winner
+    // was chosen on measured ones — so the row tagged "best" could be a route that lost. The
+    // measurements already exist by this point; discarding all but one is what made them
+    // disagree.
+    const built: Record<string, TransactionPayload> = { a: tx('100', '0xaa'), b: tx('99', '0xbb') }
+    const measured: Record<string, bigint> = { a: 90n, b: 98n }
+
+    const { selected, measurements } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) => ({ ok: true, amountOut: measured[c], gasUsed: 1 }),
+    })
+
+    expect(selected?.candidate).toBe('b')
+    expect(measurements.map((m) => [m.candidate, effectiveOut(m.tx, m.sim)])).toEqual([
+      ['a', 90n],
+      ['b', 98n],
+    ])
+  })
+
+  it('leaves out a candidate that never got as far as being measured', async () => {
+    // Rejected before the build, so there is no measurement to report and no row to update. Its
+    // quoted figure is all anyone can honestly show for it.
+    const { measurements } = await selectBuildableRoute(['big', 'small'], {
+      build: async (c) => ({ ...tx('100'), gasEstimate: c === 'big' ? '20000000' : '9000000' }),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      txGasCap: TX_GAS_CAP_2_24,
+    })
+
+    expect(measurements.map((m) => m.candidate)).toEqual(['small'])
+  })
+})
+
+describe('selectBuildableRoute — a route that reverts in simulation', () => {
+  const tx = (amountOut: string, data = '0xaa'): TransactionPayload =>
+    ({ to: '0xR', spender: '0xR', data, value: '0', amountOut })
+
+  it('drops it and says why, rather than offering it on its own claim', async () => {
+    // The simulation ran. It is not an outage and not a guess — the route reverts against live
+    // state. Offering it anyway, on the aggregator's figure, is offering a trade already shown
+    // to fail.
+    const built: Record<string, TransactionPayload> = { bad: tx('100', '0xaa'), ok: tx('99', '0xbb') }
+
+    const { selected, rejected } = await selectBuildableRoute(['bad', 'ok'], {
+      build: async (c) => built[c],
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async (c) =>
+        c === 'bad'
+          ? { ok: false, amountOut: 0n, gasUsed: 54210, revertReason: 'Insufficient output' }
+          : { ok: true, amountOut: 98n, gasUsed: 1 },
+    })
+
+    expect(selected?.candidate).toBe('ok')
+    expect(rejected.join()).toMatch(/bad.*Insufficient output/)
+  })
+
+  it('still uses a route the simulator could not reach', async () => {
+    // Null is an outage, not a verdict. Penalising it would let the simulator being down
+    // silently re-rank every trade — or block them all.
+    const { selected } = await selectBuildableRoute(['only'], {
+      build: async () => tx('100'),
+      isAllowlisted: () => true,
+      label: (c) => c,
+      simulate: async () => null,
+    })
+
+    expect(selected?.candidate).toBe('only')
+  })
+})
+
+describe('selectBuildableRoute — build concurrency', () => {
+  it('builds every candidate at once, not one after another', async () => {
+    // The walk used to stop at the first success, so building in sequence cost nothing. It
+    // builds the whole field now, and each build is a round-trip to a different aggregator —
+    // so in sequence they add up on a preview that repeats every three seconds.
+    let started = 0
+    let bothStarted: () => void
+    const gate = new Promise<void>((r) => { bothStarted = r })
+
+    const { selected } = await selectBuildableRoute(['a', 'b'], {
+      build: async (c) => {
+        if (++started === 2) bothStarted()
+        // Neither build can finish until both have STARTED. In sequence this deadlocks.
+        await gate
+        return { to: '0xR', spender: '0xR', data: `0x${c}`, value: '0', amountOut: '100' }
+      },
+      isAllowlisted: () => true,
+      label: (c) => c,
+    })
+
+    expect(started).toBe(2)
+    expect(selected).not.toBeNull()
+  })
+})
+
+describe('selectRoute — simulation wiring', () => {
+  const STRATEGIES = '0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c' as Address
+  const COLLATERAL = '0x4200000000000000000000000000000000000006'
+  const DEBT = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+
+  const quote = (aggregator: string, amountIn: string, amountOut: string) =>
+    ({ aggregator, amountIn, amountOut, rawQuote: {} }) as never
+
+  const adapter = (name: string, amountOut: string) =>
+    ({
+      name,
+      buildTransaction: async () => ({
+        to: '0xR', spender: '0xR', data: '0xdead', value: '0', amountOut,
+      }),
+    }) as never
+
+  const base = {
+    strategies: STRATEGIES,
+    allowedRouters: new Set(['0xr']),
+    slippagePercent: 0.5,
+    chainId: 8453,
+    debt: 1n,
+    slipNum: 9950n,
+    tokenIn: COLLATERAL,
+    tokenOut: DEBT,
+  }
+
+  it('measures the swap the contract will actually make, not the user wallet', async () => {
+    // Everything here has been wrong in a way that still returns a plausible number: simulating
+    // from the wrong sender, on the wrong token pair, or at the wrong size all yield an output
+    // that looks fine and is not this trade. Pin each one.
+    const seen: unknown[] = []
+
+    await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '400000000000', '160000000000000000000')],
+      adapters: [adapter('KyberSwap', '160000000000000000000')],
+      simulate: async (input) => {
+        seen.push(input)
+        return { ok: true, amountOut: 159n, gasUsed: 1 }
+      },
+    })
+
+    expect(seen[0]).toMatchObject({
+      chainId: 8453,
+      from: STRATEGIES,
+      to: '0xR',
+      spender: '0xR',
+      data: '0xdead',
+      tokenIn: COLLATERAL,
+      tokenOut: DEBT,
+      amountIn: '400000000000',
+    })
+  })
+
+  it('hands the measurement back so minOut can be derived from it', async () => {
+    const selection = await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '1', '100')],
+      adapters: [adapter('KyberSwap', '100')],
+      simulate: async () => ({ ok: true, amountOut: 97n, gasUsed: 4200 }),
+    })
+
+    expect(selection.sim).toEqual({ ok: true, amountOut: 97n, gasUsed: 4200 })
+  })
+
+  it('still returns a route when nothing simulated it', async () => {
+    const selection = await selectRoute({
+      ...base,
+      candidates: [quote('KyberSwap', '1', '100')],
+      adapters: [adapter('KyberSwap', '100')],
+    })
+
+    expect(selection.router).toBe('0xR')
+    expect(selection.sim).toBeNull()
+  })
+})

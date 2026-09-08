@@ -9,13 +9,8 @@ import {
 } from '../../lib/leverage'
 import { solveBorrow } from '../../lib/solveBorrow'
 import { routeCostPercent } from '../../lib/swapRoute'
-import { getAdaptersForChain } from '../../adapters'
-import { AggregatorHttpError } from '../../adapters/http'
-import type { Adapter, QuoteResponse } from '../../adapters/types'
-import { getChainConfig, getTxGasCap } from '../../config/chains'
-import { COMPATIBLE_ADAPTERS, applyPin, effectiveOut, expectedOutcome, routeKey, selectBuildableRoute } from '../../lib/deleverage'
-import { quoteField } from '../../adapters'
-import { simulateSwap, swapSimulationInput } from '../../adapters/simulate'
+import type { QuoteResponse } from '../../adapters/types'
+import { compatibleAdapters, expectedOutcome, quoteRoutes, routeKey, selectRoute } from '../../lib/routes'
 import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
@@ -160,18 +155,11 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         }
 
         const allowed = new Set(routers.map((r) => r.toLowerCase()))
-        // Same filter the close flow uses, and for the same reason: `supportsExecution` only
-        // says the adapter returns a transaction, not that this contract can execute it. See
-        // COMPATIBLE_ADAPTERS — quoting the rest gets them ranked and sized against, then
-        // rejected at build, which surfaces as a "rate moved" the user cannot act on.
-        const adapters = getAdaptersForChain(getChainConfig(chainId)?.adapters ?? [])
-          .filter((a) => (COMPATIBLE_ADAPTERS as readonly string[]).includes(a.name))
+        const adapters = compatibleAdapters(chainId)
 
         const fromAsset = { underlyingAsset: debtAsset, symbol: '', decimals: debt.decimals }
         const toAsset = { underlyingAsset: collateral, symbol: '', decimals: coll.decimals }
         const slippagePercent = Number(input.slippageBps) / 100
-
-        type Candidate = { a: Adapter; q: QuoteResponse }
 
         /**
          * Whether an aggregator refused to answer, as opposed to answering with nothing.
@@ -189,48 +177,25 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
          */
         let pinnedOut = false
 
-        /** Every adapter's quote for a given debt-asset input, best output first. */
-        const quoteAll = async (swapIn: bigint): Promise<Candidate[]> => {
-          const results = await Promise.all(
-            adapters.map(async (a) => {
-              try {
-                // The whole field from each adapter, not just its best. Socket answers one
-                // request with a route per underlying aggregator, and those differ from each
-                // other as much as two adapters do. Quoted for the contract that will execute
-                // them, so the routes come back already addressed to it.
-                const quotes = await quoteField(a, {
-                  fromAsset,
-                  toAsset,
-                  amountIn: swapIn.toString(),
-                  slippage: slippagePercent,
-                  chainId,
-                  caller: input.contract,
-                  signal,
-                })
-                return quotes.map((q) => ({ a, q }))
-              } catch (e) {
-                if (e instanceof AggregatorHttpError && e.retryable) throttled = true
-                return []
-              }
-            }),
-          )
-          const all = results
-            .flat()
-            // Ties return 0. A comparator that answers -1 for equal values is inconsistent, and
-            // sort is entitled to do anything with one — harmless at two candidates, wrong the
-            // moment there are more.
-            .sort((x, y) => {
-              const a = BigInt(x.q.amountOut)
-              const b = BigInt(y.q.amountOut)
-              return b > a ? 1 : b < a ? -1 : 0
-            })
+        /** Every adapter's quote for a given debt-asset input, best output first, after the pin. */
+        const quoteAll = async (swapIn: bigint): Promise<QuoteResponse[]> => {
+          const r = await quoteRoutes({
+            adapters,
+            fromAsset,
+            toAsset,
+            amountIn: swapIn,
+            slippagePercent,
+            chainId,
+            caller: input.contract,
+            signal,
+            pinned: input.preferredAggregator,
+          })
+          throttled ||= r.throttled
+          pinnedOut ||= r.pinnedOut
           // The whole field, losers included, so the picker has something to offer. Handed to
           // the caller in `finally`, once, rather than on every round.
-          field = all.map((c) => c.q)
-
-          const usable = applyPin(all, input.preferredAggregator, (c) => routeKey(c.q))
-          if (usable.length === 0 && all.length > 0) pinnedOut = true
-          return usable
+          field = r.ranked
+          return r.usable
         }
 
         /**
@@ -244,7 +209,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
 
         // Kept as a list so route selection can fall through a candidate that fails to build or
         // fails `validateSwapTx`, instead of erroring out on the first pick.
-        let candidates: Candidate[] = []
+        let candidates: QuoteResponse[] = []
         let borrowAmount: bigint
         let debtMargin = 0n
         // Provisional on the borrow path: the real flash is read off the BUILT route below,
@@ -300,7 +265,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
             debtDecimals: debt.decimals,
             quoteAt: async (swapIn) => {
               candidates = await quoteAll(swapIn)
-              return candidates.map((c) => c.q)
+              return candidates
             },
           })
           if (cancelled()) return
@@ -314,32 +279,26 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // Build FIRST, then validate what was actually built. The list is best-output-first, so
         // a fallback prices strictly worse than the route the borrow was solved against. The
         // walk is shared with the close flow so the allowlist and calldata checks cannot drift.
-        const { selected, measurements, rejected } = await selectBuildableRoute(candidates, {
-          build: (c) => c.a.buildTransaction(c.q, slippagePercent, input.contract, chainId),
-          isAllowlisted: (router) => allowed.has(router.toLowerCase()),
-          label: (c) => c.a.name,
-          txGasCap: getTxGasCap(chainId),
-          cancelled,
-          // The contract makes this swap mid-flash-loan, so it is the sender and the recipient.
+        const measured = await selectRoute({
+          candidates,
+          adapters,
+          strategies: input.contract,
+          allowedRouters: allowed,
+          slippagePercent,
+          chainId,
+          // No bar here: whether the winner repays the flash is judged below, off its measurement.
+          debt: 0n,
+          slipNum: BPS - input.slippageBps,
           // The open direction is debt -> collateral, the mirror of the close.
-          simulate: (c, tx) =>
-            simulateSwap(
-              swapSimulationInput({
-                chainId,
-                caller: input.contract,
-                tokenIn: debtAsset,
-                tokenOut: collateral,
-                amountIn: c.q.amountIn,
-                tx,
-              }),
-              signal,
-            ),
+          tokenIn: debtAsset,
+          tokenOut: collateral,
+          signal,
         })
         // A null here can also mean "cancelled mid-build" — check `cancelled` first, or a
         // superseded attempt writes a no-route error that a reverted input would make current.
         if (cancelled()) return
-        if (!selected) {
-          setRejected(rejected)
+        if (!measured.chosen || !measured.tx) {
+          setRejected(measured.rejected)
           // With a pin held there was only ever one candidate to walk, so this is that route
           // failing rather than the pair being unroutable — and `rejected` says how.
           setPreviewError(input.preferredAggregator ? 'ROUTE_UNAVAILABLE' : nothingPriced())
@@ -348,11 +307,10 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // Kept for the report in `finally`, where it goes out WITH the field it belongs to. The
         // measurements have to arrive after the list, not before: the list is what stamps the
         // pair they are matched against.
-        measuredField = Object.fromEntries(
-          measurements.map((m) => [routeKey(m.candidate.q), effectiveOut(m.tx, m.sim)]),
-        )
+        measuredField = measured.measuredOut
 
-        const build = { quote: selected.candidate.q, adapter: selected.candidate.a, built: selected.tx }
+        const build = { quote: measured.chosen, built: measured.tx }
+        const sim = measured.sim
 
         // What this route was MEASURED to return, against live state, for this exact calldata.
         // `minOut`, the flash size and the whole projection all come off this number, so the
@@ -361,7 +319,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
         // the close flow cannot read it differently — see its note on why a REVERTED simulation
         // still falls back rather than dropping the route.
         const quotedOut = BigInt(build.quote.amountOut)
-        const expectation = expectedOutcome(build.built, selected.sim, quotedOut)
+        const expectation = expectedOutcome(build.built, sim, quotedOut)
         const builtOut = expectation.amount
         // What this route contractually guarantees to deliver.
         const guaranteedOut = (builtOut * (BPS - input.slippageBps)) / BPS
@@ -437,7 +395,7 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
           expectedOut: builtOut,
           expectedBasis: expectation.basis,
           quotedOut,
-          swapGasUsed: selected.sim ? BigInt(selected.sim.gasUsed) : null,
+          swapGasUsed: sim ? BigInt(sim.gasUsed) : null,
           minOut: guaranteedOut > flashAmount ? guaranteedOut : flashAmount,
           projection,
           router: build.built.to as Address,

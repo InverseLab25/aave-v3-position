@@ -10,7 +10,7 @@
  * `localStorage` can be absent or throw outright, and no part of this is worth failing a flow for.
  */
 import type { Address, Hex } from 'viem'
-import type { OutBasis } from './deleverage'
+import type { OutBasis } from './routes'
 import type { DelegationStorage } from './delegationCache'
 import { clearScreened } from './screenCache'
 

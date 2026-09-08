@@ -12,7 +12,7 @@
  * logging where they belong.
  */
 import { WaitForTransactionReceiptTimeoutError, type Address, type Hex } from 'viem'
-import type { OutBasis } from './deleverage'
+import type { OutBasis } from './routes'
 import { readOutcome, type ReceiptLog, type TxOutcome } from './txOutcome'
 
 /**

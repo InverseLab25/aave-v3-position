@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { MAX_ROUTE_GAS, TX_GAS_CAP_2_24 } from '../lib/deleverage'
+import { MAX_ROUTE_GAS, TX_GAS_CAP_2_24 } from '../lib/routes'
 
 const mocks = vi.hoisted(() => ({ limitedFetch: vi.fn() }))
 
