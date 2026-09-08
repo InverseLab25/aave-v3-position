@@ -53,6 +53,6 @@ export const aaveV3StrategiesAbi = parseAbi([
   "function allowedRouters(address router) view returns (bool)",
   "function getAllowedRouters() view returns (address[])",
   "function paused() view returns (uint256)",
-  "event PositionOpened(address indexed user, address indexed collateral, address indexed debtAsset, uint256 margin, uint256 collateralSupplied, uint256 debtBorrowed)",
-  "event PositionClosed(address indexed user, address indexed collateral, address indexed debtAsset, uint256 debtRepaid, uint256 collateralWithdrawn, uint256 returnedToUser)",
+  "event PositionOpened(address indexed user, address indexed collateral, address indexed debtAsset, address router, uint256 margin, uint256 swapIn, uint256 swapOut, uint256 collateralSupplied, uint256 debtBorrowed)",
+  "event PositionClosed(address indexed user, address indexed collateral, address indexed debtAsset, address router, uint256 collateralWithdrawn, uint256 swapOut, uint256 debtRepaid, uint256 returnedToUser)",
 ] as const);

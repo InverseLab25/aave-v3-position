@@ -15,13 +15,31 @@ import { getAddress, type Address, type Hex } from 'viem'
 import type { PositionEvent } from './strategiesLogs'
 import type { ReceiptLog } from './txOutcome'
 
-/** `keccak256("PositionOpened(address,address,address,uint256,uint256,uint256)")`. */
+/**
+ * `keccak256("PositionOpened(address,address,address,address,uint256,uint256,uint256,uint256,uint256)")`
+ * — the event as AaveV3Strategies emits it since the router and both swap legs were added.
+ */
 export const POSITION_OPENED_TOPIC =
-  '0x189eb591404f8ec246d924067851a6025e0254e8961c7fade58bcf95da1c120b' as const
+  '0xabbe4cc63203a7cc47d9b8767e936fba62472d0b79fba697745fa839836441d6' as const
 
-/** `keccak256("PositionClosed(address,address,address,uint256,uint256,uint256)")`. */
+/** `keccak256("PositionClosed(address,address,address,address,uint256,uint256,uint256,uint256)")`. */
 export const POSITION_CLOSED_TOPIC =
-  '0x3c8c232e82302c21fafdb08b09fa67de2937f94bf1558fad7b17019c0ea8170e' as const
+  '0x27ada07a23b570952513379f3f2d16b6ab60470e5f6ad2074e4d1fc8f3806a4c' as const
+
+/**
+ * The six-word signatures the deployments before that emitted. History from those addresses
+ * still carries them, and the three indexed topics — the only part this screen reads — are laid
+ * out identically, so they are recognised as the same two kinds.
+ */
+const LEGACY_OPENED_TOPIC = '0x189eb591404f8ec246d924067851a6025e0254e8961c7fade58bcf95da1c120b'
+const LEGACY_CLOSED_TOPIC = '0x3c8c232e82302c21fafdb08b09fa67de2937f94bf1558fad7b17019c0ea8170e'
+
+const KIND_BY_TOPIC: Record<string, 'open' | 'close'> = {
+  [POSITION_OPENED_TOPIC]: 'open',
+  [LEGACY_OPENED_TOPIC]: 'open',
+  [POSITION_CLOSED_TOPIC]: 'close',
+  [LEGACY_CLOSED_TOPIC]: 'close',
+}
 
 /** What the screen needs from a receipt. Structural, so a viem receipt fits unchanged. */
 export interface ScreenedReceipt {
@@ -66,10 +84,8 @@ export function positionEventFromReceipt(
 
   for (const [index, log] of receipt.logs.entries()) {
     if (log.address.toLowerCase() !== emitter) continue
-    const topic = log.topics[0]
-    const kind =
-      topic === POSITION_OPENED_TOPIC ? 'open' : topic === POSITION_CLOSED_TOPIC ? 'close' : null
-    if (kind === null) continue
+    const kind = log.topics[0] ? KIND_BY_TOPIC[log.topics[0]] : undefined
+    if (!kind) continue
 
     // user, collateral, debtAsset — all three indexed, so all three are topics.
     const collateral = log.topics[2] ? addressFromTopic(log.topics[2]) : null

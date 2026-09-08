@@ -96,25 +96,35 @@ contract AaveV3Strategies is Ownable {
     /*                           EVENTS                           */
     /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
 
-    /// @dev A leveraged position was opened for `user`. `collateralSupplied` includes the
-    /// margin and any swap surplus; `debtBorrowed` is net of the leftover repay.
+    /// @dev A leveraged position was opened for `user`. `margin` is what the user brought, in
+    /// the collateral or the debt asset depending on the entry point. `swapIn` is the debt asset
+    /// handed to `router`, the borrow plus any debt-side margin; `swapOut` is the collateral it
+    /// returned. `collateralSupplied` is everything now supplied on the user's behalf, margin and
+    /// swap surplus included; `debtBorrowed` is net of any leftover repaid in the same call.
     event PositionOpened(
         address indexed user,
         address indexed collateral,
         address indexed debtAsset,
+        address router,
         uint256 margin,
+        uint256 swapIn,
+        uint256 swapOut,
         uint256 collateralSupplied,
         uint256 debtBorrowed
     );
 
-    /// @dev A position was closed (fully or partially) for `user`. `returnedToUser` is the
-    /// debt-asset surplus left after the flash repayment.
+    /// @dev A position was closed, fully or partially, for `user`. `collateralWithdrawn` is what
+    /// was pulled from Aave and handed whole to `router`; `swapOut` is the debt asset it returned;
+    /// `debtRepaid` is what Aave accepted; `returnedToUser` is the debt-asset surplus after the
+    /// flash repayment.
     event PositionClosed(
         address indexed user,
         address indexed collateral,
         address indexed debtAsset,
-        uint256 debtRepaid,
+        address router,
         uint256 collateralWithdrawn,
+        uint256 swapOut,
+        uint256 debtRepaid,
         uint256 returnedToUser
     );
 
@@ -154,15 +164,15 @@ contract AaveV3Strategies is Ownable {
     /// @dev `mode` is the FIRST field of both param structs, so the callback reads it straight
     /// off the struct pointer and dispatches without a separate encoded word.
     struct OpenParam {
-        uint256 mode;
-        address user;
-        address collateral;
-        address debtAsset;
-        address router;
-        uint256 marginAmount;
-        uint256 borrowAmount;
-        uint256 minOut;
-        bytes swapData;
+        uint256 mode; //  1
+        address user; // 20
+        address collateral; // 20 
+        address debtAsset; // 20
+        address router; // 20
+        uint256 marginAmount; // 16
+        uint256 borrowAmount; // 16
+        uint256 minOut; // 16 
+        bytes swapData; // 32 
     }
 
     /// @dev See {OpenParam} for the `mode`-first layout. `collateralToWithdraw` is always
@@ -530,7 +540,9 @@ contract AaveV3Strategies is Ownable {
             if (remainder != 0) debtAsset.safeTransfer(user, remainder);
         }
 
-        emit PositionOpened(user, collateral, debtAsset, p.marginAmount, supplyTotal + surplus, debtBorrowed);
+        emit PositionOpened(
+            user, collateral, debtAsset, p.router, p.marginAmount, swapIn, received, supplyTotal + surplus, debtBorrowed
+        );
     }
 
     /// @dev The close leg. `params` is the calldata offset of the {CloseParam} inside the
@@ -592,7 +604,7 @@ contract AaveV3Strategies is Ownable {
         uint256 collateralLeft = collateral.balanceOf(address(this)) - strayColl;
         if (collateralLeft != 0) collateral.safeTransfer(user, collateralLeft);
 
-        emit PositionClosed(user, collateral, debtAsset, debtRepaid, collateralAmount, returned);
+        emit PositionClosed(user, collateral, debtAsset, p.router, collateralAmount, swapOutput, debtRepaid, returned);
     }
 
     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/

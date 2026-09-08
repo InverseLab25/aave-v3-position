@@ -1055,7 +1055,7 @@ contract AaveV3StrategiesForkTest is Test {
 
         // Topics checked exactly; the amount data carries live-fork rounding, so it is not.
         vm.expectEmit(true, true, true, false, address(strat));
-        emit AaveV3Strategies.PositionOpened(user, WETH, USDC, 0, 0, 0);
+        emit AaveV3Strategies.PositionOpened(user, WETH, USDC, address(0), 0, 0, 0, 0, 0);
 
         vm.prank(user);
         strat.openWithDebtMargin(
@@ -1075,7 +1075,7 @@ contract AaveV3StrategiesForkTest is Test {
         bytes memory swapData = abi.encodeCall(MockRouterS.swap, (WETH, USDC, debtOut));
 
         vm.expectEmit(true, true, true, false, address(strat));
-        emit AaveV3Strategies.PositionClosed(user, WETH, USDC, 0, 0, 0);
+        emit AaveV3Strategies.PositionClosed(user, WETH, USDC, address(0), 0, 0, 0, 0);
 
         vm.prank(user);
         strat.closePositionWithPermit(
