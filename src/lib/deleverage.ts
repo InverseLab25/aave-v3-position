@@ -150,29 +150,34 @@ export function quoteRate(
  * Mainnet has neither: no Nordstern Guard, and Socket's AllowanceHolder is not on the
  * Deleverager's allowlist, which holds KyberSwap's router alone. So chain 1 currently ranks
  * nothing, KyberSwap no longer being named here.
+ *
+ * `0x` is the direct 0x adapter, on the Swap API's AllowanceHolder endpoint (Socket's route
+ * through the same venue is keyed `Socket/0x`, not `0x`). It satisfies
+ * condition 1: `transaction.to` and the approval spender are both the AllowanceHolder
+ * (0x0000000000001fF3684f28c67538d4D072C22734, one address on all three chains), the output is
+ * sent to `taker`, and the adapter quotes with the Strategies contract as taker. Condition 2 is
+ * a per-chain owner broadcast of RouterSetup.s.sol with ROUTERS set to that address; on a chain
+ * where it has not run, every 0x route is rejected at build time as not allowlisted and the
+ * flow falls through to the rest of the field.
  */
-export const COMPATIBLE_ADAPTERS = ['Nordstern', 'Socket'] as const
+export const COMPATIBLE_ADAPTERS = ['Nordstern', 'Socket', '0x'] as const
 
 /**
  * How many routes are built and measured, best-quoted first.
  *
- * Six, not three. The cut is made on quotes because measuring is the expensive part and nothing
- * is measured yet — but a quote is the least reliable number in this flow, and a rank cut makes
- * the decision on the smallest differences in it. One Base field had the third and fourth quotes
- * 0.0001 apart while the third measured 0.05% under its own quote: cutting at three dropped the
- * fourth, unmeasured, on a margin far smaller than the error being measured away. Widening the
- * field is the fix, because the cut cannot be made on anything better.
+ * Four. Only the top of the ranking is ever simulated: each measurement is an `eth_simulateV1`
+ * on the user's own RPC quota (there is no public fallback, see `simulationRpc`), and a preview
+ * repeats every few seconds. Past the fourth quote the field is a tail — the quotes land within
+ * half a percent of each other and the measured drift from quote to reality is usually under
+ * 0.05%, so the winner is almost always in the first four. Direct adapters plus Socket's
+ * per-venue routes make the whole field several times this, and measuring all of it was
+ * spending quota confirming losers.
  *
- * Affordable now in a way it was not when this was three. Both adapters return prebuilt
- * transactions from `getQuotes`, so building a candidate costs no HTTP at all — an extra one is
- * one more `eth_simulateV1` and nothing else, and those run concurrently, so the cost is quota
- * rather than wall clock. Simulation has no public fallback (see `simulationRpc`), so the quota
- * spent is the user's own.
- *
- * Six rather than unbounded because Socket answers with a route per underlying aggregator, and
- * a whole field plus Nordstern lands about there — past it the tail is genuinely hopeless.
+ * The cut is on quotes because nothing has been measured yet. A quote is the least reliable
+ * number in this flow, so a route just outside the cut can in principle be the true winner; that
+ * is the price of not simulating everything, and it is deliberate.
  */
-export const MAX_MEASURED_ROUTES = 6
+export const MAX_MEASURED_ROUTES = 4
 
 
 /**

@@ -32,7 +32,7 @@ interface IRouterAllowlist {
 ///      `_checkReturnAmount` is pro-rata, so absolute output can fall below
 ///      `desc.minReturnAmount`. The contract's own `minOut` (the full debt) and its
 ///      `afterBalance < assets` check are what actually bound this — do not relax them.
-address constant KYBERSWAP_ROUTER_V2 = q;
+address constant KYBERSWAP_ROUTER_V2 = 0x6131B5fae19EA4f9D964eAc0408E4408b66337b5;
 
 /// @dev Nordstern's Guard, the `to` its aggregator API returns for a swap. Per-chain rather than
 ///      one constant like KyberSwap's: the two addresses differ, though `eth_getCode` returns
@@ -89,6 +89,26 @@ address constant NORDSTERN_GUARD_ARBITRUM = 0x57f96440f1b1cAD53B40A8924BD540b127
 ///      either way, so an unkeyed Socket route starts 0.2% behind on the same trade.
 address constant SOCKET_ALLOWANCE_HOLDER = 0x50c4E75a512F2A14A7b304787Adf79C4531A5909;
 
+/// @dev 0x's AllowanceHolder, the `to` the Swap API v2 `/swap/allowance-holder` endpoints return
+///      for every route. One address on Ethereum, Base and Arbitrum: `eth_getCode` returns
+///      byte-identical runtime code on all three (first selector `15dacbea`, `exec`), read
+///      2026-09-09. Not allowlisted anywhere yet; pass it via ROUTERS, on purpose, per chain.
+///
+///      Reviewed against the same three properties as KYBERSWAP_ROUTER_V2:
+///        - approve target equals call target. The quote's `transaction.to` and
+///          `issues.allowance.spender` are both this address; `exec` records an ephemeral
+///          allowance for the Settler it forwards to and the Settler pulls from the original
+///          sender, which is what `validateSwapTx` requires;
+///        - output lands on the caller. The API sets the Settler's recipient to `taker`, and
+///          the frontend quotes with the Strategies contract as taker (`buildTransaction`
+///          receives it as `walletAddress`);
+///        - msg.value is zero for an ERC20 input, which is all `LibCall.callContract` sends.
+///
+///      Not a Permit2 flow: that is the other 0x endpoint, `/swap/permit2`, which a contract
+///      cannot sign for and which the frontend does not use. RFQ fills inside a 0x route are
+///      signed for the quoted `taker`, so the quote and the caller must name one address.
+address constant ZEROX_ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+
 /// @dev `AaveV3Deleverager` on Ethereum mainnet.
 address constant DELEVERAGER_ETHEREUM = 0x834796774Eb472E571B5c21Da438069225C2B162;
 
@@ -137,6 +157,10 @@ address constant STRATEGIES_CREATE3 = 0x75B1AB12e47AaEe4E1033100dE1992E735c32C9c
 ///
 ///   # override the default set
 ///   ROUTERS=0xaaa…,0xbbb… \
+///     forge script script/RouterSetup.s.sol --rpc-url $RPC_URL --sender $OWNER --broadcast
+///
+///   # add 0x's AllowanceHolder on the connected chain (not in the defaults, see the constant)
+///   ROUTERS=0x0000000000001fF3684f28c67538d4D072C22734 \
 ///     forge script script/RouterSetup.s.sol --rpc-url $RPC_URL --sender $OWNER --broadcast
 ///
 ///   # revoke instead of allow
