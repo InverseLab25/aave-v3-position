@@ -76,6 +76,7 @@ vi.mock('../lib/routes', async (orig) => ({
 import { AggregatorHttpError } from '../adapters/http'
 import { selectRoute } from '../lib/routes'
 import { RECEIPT_TIMEOUT_MS, useDeleverageClose } from './useDeleverageClose'
+import { MAX_UINT128, readWord } from '../lib/strategies-sdk/packed'
 import { GAS_LIMIT_BUFFER_PERCENT } from '../utils/gas'
 
 const USER = '0x1111111111111111111111111111111111111111' as const
@@ -442,8 +443,8 @@ const route = (builtOut: bigint) => ({
 
 describe('close() — signatures, reuse and the degradation baseline', () => {
   let signTypedData: ReturnType<typeof vi.fn>
-  let writeContract: ReturnType<typeof vi.fn>
-  let estimateContractGas: ReturnType<typeof vi.fn>
+  let sendTransaction: ReturnType<typeof vi.fn>
+  let estimateGas: ReturnType<typeof vi.fn>
   let waitForTransactionReceipt: ReturnType<typeof vi.fn>
   let selectRoute: ReturnType<typeof vi.fn>
   let simulateContract: ReturnType<typeof vi.fn>
@@ -454,11 +455,11 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
   beforeEach(async () => {
     forgetContractState()
     signTypedData = vi.fn().mockResolvedValue(SIG)
-    writeContract = vi.fn().mockResolvedValue('0xhash')
-    estimateContractGas = vi.fn().mockResolvedValue(900_000n)
+    sendTransaction = vi.fn().mockResolvedValue('0xhash')
+    estimateGas = vi.fn().mockResolvedValue(900_000n)
     waitForTransactionReceipt = vi.fn().mockResolvedValue({ status: 'success' })
 
-    mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData, writeContract } })
+    mocks.useWalletClient.mockReturnValue({ data: { getChainId: async () => 1, signTypedData, sendTransaction } })
     nonce = 7n
     mocks.usePublicClient.mockReturnValue({
       readContract: vi.fn(async ({ address, functionName }: { address: string; functionName: string }) => {
@@ -469,9 +470,13 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
         throw new Error(`unmocked read: ${functionName}`)
       }),
       waitForTransactionReceipt,
-      estimateContractGas,
+      estimateGas,
+      estimateFeesPerGas: vi.fn(async () => ({
+        maxFeePerGas: 30_000_000_000n,
+        maxPriorityFeePerGas: 1_000_000_000n,
+      })),
     })
-    // The single adapter behind the real `quoteAt`, so buildFreshRoute re-quotes for real.
+    // The single adapter behind the real `quoteAt`; nothing re-quotes after `buildPlan` now.
     mocks.getAdaptersForChain.mockReturnValue([
       { name: 'Socket', getQuote: vi.fn().mockResolvedValue(quote(SIZED.expectedOut)) },
     ])
@@ -514,7 +519,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     expect(out.hash).toBeNull()
     // Grant + revoke, at sequential nonces.
     expect(signTypedData).toHaveBeenCalledTimes(2)
-    expect(writeContract).not.toHaveBeenCalled()
+    expect(sendTransaction).not.toHaveBeenCalled()
     expect(out.signatureExpiresAt).toBeGreaterThan(0)
   })
 
@@ -526,7 +531,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     const out = await r.current.close(baseInput)
 
     expect(signTypedData).not.toHaveBeenCalled()
-    expect(writeContract).toHaveBeenCalledTimes(1)
+    expect(sendTransaction).toHaveBeenCalledTimes(1)
     expect(out.status).toBe('success')
     expect(out.hash).toBe('0xhash')
   })
@@ -724,7 +729,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
 
     expect(signTypedData).toHaveBeenCalledTimes(2)
     expect(out.status).toBe('signed')
-    expect(writeContract).not.toHaveBeenCalled()
+    expect(sendTransaction).not.toHaveBeenCalled()
   })
 
   it('clearSignatures drops them, so the next press prompts again', async () => {
@@ -764,7 +769,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     })
 
     expect(out!.status).toBe('error')
-    expect(writeContract).not.toHaveBeenCalled()
+    expect(sendTransaction).not.toHaveBeenCalled()
     expect(r.current.logs.join(' ')).toContain('worse than the quote you reviewed')
   })
 
@@ -782,25 +787,22 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     const out = await r.current.close(baseInput)
 
     expect(out.status).toBe('success')
-    expect(writeContract).toHaveBeenCalledTimes(1)
+    expect(sendTransaction).toHaveBeenCalledTimes(1)
   })
 
-  /**
-   * Args order on `closePositionWithPermit` is
-   * [collateral, debtAsset, collateralToWithdraw, debtRepay, minOut, ...] — index 3.
-   */
+  /** `debtRepay` sits at 0x04 in the packed close calldata, 16 bytes wide. */
   const debtRepayArg = () =>
-    (writeContract.mock.calls.at(-1)?.[0] as { args: readonly unknown[] }).args[3]
+    readWord((sendTransaction.mock.calls.at(-1)?.[0] as { data: `0x${string}` }).data, 0x04, 16)
 
   it('broadcasts the gas limit it measured, never leaving it to the wallet', async () => {
-    // There is only one execution now: `estimateContractGas` runs the close on the node, and
+    // There is only one execution now: `estimateGas` runs the close on the node, and
     // `pinnedGasLimit` buffers upward from it, so the limit sent is always one the transaction
     // has already been shown to run in. What must not happen is `gas` going out undefined.
     const r = mount()
     await r.current.close(baseInput)
     await r.current.close(baseInput)
 
-    const sent = (writeContract.mock.calls.at(-1)?.[0] as { gas?: bigint }).gas
+    const sent = (sendTransaction.mock.calls.at(-1)?.[0] as { gas?: bigint }).gas
     expect(sent).toBe((900_000n * GAS_LIMIT_BUFFER_PERCENT) / 100n)
   })
 
@@ -811,7 +813,7 @@ describe('close() — signatures, reuse and the degradation baseline', () => {
     await r.current.close(baseInput)
     await r.current.close(baseInput)
 
-    expect(debtRepayArg()).toBe(2n ** 256n - 1n)
+    expect(debtRepayArg()).toBe(MAX_UINT128)
   })
 
   it('flashes what the BUILT route guarantees, not what the plan quoted', async () => {

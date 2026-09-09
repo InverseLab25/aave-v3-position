@@ -1,7 +1,7 @@
-import type { Address } from 'viem'
+import type { Address, Hex } from 'viem'
 import type { OutBasis } from '../../lib/routes'
 import type { StatedRate } from '../../lib/swapRoute'
-import type { Adapter, Asset, QuoteResponse } from '../../adapters/types'
+import type { Adapter, Asset, QuoteResponse, TransactionPayload } from '../../adapters/types'
 import { CloseError, type CloseErrorKind } from '../../lib/deleverage'
 
 /*//////////////////////////////////////////////////////////////
@@ -46,6 +46,14 @@ export interface CloseInput {
 
 /** The sized, quoted swap plan shared by preview() and close(). All amounts are wei. */
 export interface ClosePlan {
+  /**
+   * The measured route, ready to send. `buildPlan` builds and simulates the field itself, and
+   * the submit press runs `buildPlan` fresh, so the route it picked is seconds old at signing —
+   * re-quoting it there was a second round of aggregator calls and simulations for nothing.
+   */
+  router: Address
+  swapData: Hex
+  tx: TransactionPayload
   /** Whose word `expectedOut` is on — see `expectedOutcome`. */
   expectedBasis: OutBasis
   /** What the aggregator quoted, before anything measured it. See OpenPreview.quotedOut. */

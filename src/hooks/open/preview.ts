@@ -11,6 +11,7 @@ import { solveBorrow } from '../../lib/solveBorrow'
 import { routeCostPercent } from '../../lib/swapRoute'
 import type { QuoteResponse } from '../../adapters/types'
 import { compatibleAdapters, expectedOutcome, quoteRoutes, routeKey, selectRoute } from '../../lib/routes'
+import { warmFees } from '../../utils/gas'
 import { MAX_REFINE_ROUNDS, type LeverageOpenInput, type OpenPreview } from '../open/types'
 
 /**
@@ -77,6 +78,8 @@ export async function runPreview(ctx: PreviewRunContext): Promise<void> {
     input, pinned, forInput, client, chainId, cancelled, signal, forPair,
     setIsQuoting, setPreviewError, setPreview, setPreviewFor, setRejected, setRoutes, setMeasured,
   } = ctx
+      // Alongside the quoting, so the send reads fees from cache instead of two round trips.
+      warmFees(client)
 
       /**
        * Whether this run produced a route.

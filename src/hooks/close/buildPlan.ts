@@ -5,6 +5,7 @@ import { CloseError } from '../../lib/deleverage'
 import { COMPATIBLE_ADAPTERS, compatibleAdapters, expectedOutcome, quoteRoutes, selectRoute } from '../../lib/routes'
 import { deriveDebtRepay } from '../../lib/closePlan'
 import { FULL_CLOSE, readContractState } from '../../lib/strategies-sdk'
+import { warmFees } from '../../utils/gas'
 import { sizeSwap, oracleSeed } from '../../lib/sizing'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../../lib/aaveStatics'
 import { ACCRUAL_BUFFER_BPS, NONCES_ABI, PRICE_SCALE_DECIMALS, SIZING_ROUNDS } from './constants'
@@ -65,6 +66,8 @@ export async function buildPlan(
   const logFn = ctx.log ?? (() => {})
 
       if (!address || !publicClient) throw new CloseError('wallet', 'Wallet not connected')
+      // Alongside the quoting below, so the send that follows this plan reads fees from cache.
+      warmFees(publicClient)
 
       // AaveV3Strategies, which carries `closePositionWithPermit` alongside the open entry
       // points. The separate AaveV3Deleverager it replaced was a strict subset of this contract.
@@ -252,7 +255,7 @@ export async function buildPlan(
         tokenOut: debtAddr,
         signal,
       })
-      if (!measured.chosen || !measured.tx) {
+      if (!measured.chosen || !measured.tx || !measured.router || !measured.swapData) {
         throw new CloseError(
           'pair',
           `No usable swap route for the close. Tried: ${measured.rejected.join('; ') || 'none'}`,
@@ -291,6 +294,9 @@ export async function buildPlan(
       const selfFunding = deriveRepay && partial
 
       return {
+        router: measured.router,
+        swapData: measured.swapData,
+        tx: measured.tx,
         strategies,
         collateralAddr,
         debtAddr,

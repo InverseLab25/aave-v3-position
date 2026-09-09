@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import { useConnection, useChainId, usePublicClient, useWalletClient, useConfig } from 'wagmi'
+import { useConnection, useChainId, usePublicClient, useWalletClient } from 'wagmi'
 import { formatUnits, type Address } from 'viem'
 import { getChainConfig } from '../config/chains'
 import { CloseError, toCloseError } from '../lib/deleverage'
@@ -16,7 +16,7 @@ import type { TxOutcome } from '../lib/txOutcome'
 import { RECEIPT_TIMEOUT_MS, settleTransaction } from '../lib/settle'
 import { getPoolDataProvider, getReserveTokens, getATokenName } from '../lib/aaveStatics'
 import { buildPlan as buildPlanStep } from './close/buildPlan'
-import { buildFreshRoute, obtainPermits } from './close/signing'
+import { obtainPermits, routeFromPlan } from './close/signing'
 import { submitClose } from './close/submit'
 export { RECEIPT_TIMEOUT_MS } from '../lib/settle'
 
@@ -45,7 +45,6 @@ export function useDeleverageClose() {
   const chainId = useChainId()
   const publicClient = usePublicClient()
   const { data: walletClient } = useWalletClient()
-  const config = useConfig()
 
   const [logs, setLogs] = useState<string[]>([])
   const [step, setStep] = useState<CloseStep>('idle')
@@ -275,11 +274,9 @@ export function useDeleverageClose() {
           }
         }
 
-        const route = await buildFreshRoute(p, {
-          chainId, slippagePercent: input.slippagePercent, signatures, log,
-        })
+        const route = routeFromPlan(p, { slippagePercent: input.slippagePercent, signatures, log })
         const { hash, builtOut, minOut } = await submitClose(p, route, permits, {
-          address, chainId, config, publicClient, walletClient, input, log, setStep,
+          address, chainId, publicClient, walletClient, input, log, setStep,
         })
         log(`Tx submitted: ${hash}`)
 
@@ -354,7 +351,7 @@ export function useDeleverageClose() {
         return { hash: null, status: 'error', slippageTooTight: e instanceof SlippageTooTightError }
       }
     },
-    [address, chainId, publicClient, walletClient, log, config, buildPlan],
+    [address, chainId, publicClient, walletClient, log, buildPlan],
   )
 
   return { preview, close, logs, step, outcome, execError, settleNote, clearOutcome, clearSignatures, warmup }

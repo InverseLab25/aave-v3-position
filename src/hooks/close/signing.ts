@@ -1,6 +1,5 @@
 import { parseSignature, type Address } from 'viem'
 import type { WalletClient } from 'viem'
-import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, buildPermitTypedData } from '../../lib/deleverage'
 import {
   reuseBlocker,
@@ -10,7 +9,6 @@ import {
   type RevokeArgs,
   type Withdrawal,
 } from '../../lib/closePlan'
-import { effectiveOut, selectRoute } from '../../lib/routes'
 import { PERMIT_TTL_S } from './constants'
 import type { ClosePlan, CloseStep } from './types'
 
@@ -124,83 +122,51 @@ export async function obtainPermits(
        * build from submission — a wallet dialog, a plan carried over from the preview — ages
        * that floor until the price moves past it.
        */
-interface FreshRouteContext {
-  chainId: number
-  /** The tolerance the user is executing at — the same one the plan was sized against. */
+interface RouteCheckContext {
   slippagePercent: number
   signatures: { current: HeldSignature | null }
   log: (m: string) => void
 }
 
-export async function buildFreshRoute(p: ClosePlan, ctx: FreshRouteContext) {
-  const { chainId, signatures, log } = ctx
-  const input = { slippagePercent: ctx.slippagePercent }
-        log('Refreshing the swap route before submitting…')
-        clearQuoteCache() // the reuse window outlasts a fast signing; force the network
-        const candidates = await p.quoteAt(p.requiredIn)
-        const { router, swapData, chosen, tx, sim, rejected } = await selectRoute({
-          candidates,
-          adapters: p.adapters,
-          strategies: p.strategies,
-          allowedRouters: p.allowedRouters,
-          slippagePercent: input.slippagePercent,
-          chainId,
-          // No floor in derived mode: a route that returns less does not fail, it repays less.
-          debt: p.deriveRepay ? 0n : p.debt,
-          slipNum: p.slipNum,
-          tokenIn: p.collateralAddr,
-          tokenOut: p.debtAddr,
-        })
+/**
+ * The route the close sends, taken from the plan and checked, not re-quoted.
+ *
+ * This used to quote, build and simulate the field again "before submitting". The gap it was
+ * written for — two wallet prompts between the reviewed route and the send — no longer exists:
+ * a fresh signature returns the user to the panel, and the press that submits runs `buildPlan`
+ * again first. So the plan's route is milliseconds old here, and a second round was a second
+ * round of aggregator calls and simulations spent inside the minute a maker-signed route lives.
+ *
+ * What the refresh guaranteed is kept, on the plan's own measurement: the route must still cover
+ * the debt at this slippage, and it must not have degraded past the bound against the output the
+ * user reviewed when they signed.
+ */
+export function routeFromPlan(p: ClosePlan, ctx: RouteCheckContext) {
+  const { slippagePercent, signatures, log } = ctx
+  const builtOut = p.expectedOut
 
-        if (!router || !swapData || !chosen || !tx) {
-          throw new CloseError(
-            'pair',
-            `No usable swap route for the close. Tried: ${rejected.join('; ') || 'none'}`,
-          )
-        }
-        // A new quote at a new price has to re-clear what sizing cleared.
-        if (BigInt(chosen.amountIn) !== p.requiredIn) {
-          throw new CloseError('pair', 'Re-quote returned a different swap size — try again')
-        }
-        // What the floor, the degradation check and the receipt are all measured against.
-        // A simulation of this exact calldata against live state wins where there is one; the
-        // build's own amountOut is the fallback, and the quote's the last resort for an adapter
-        // that omits it. `effectiveOut` owns that choice so the open flow cannot diverge from it.
-        const measured = effectiveOut(tx, sim)
-        const builtOut = measured > 0n ? measured : BigInt(chosen.amountOut)
+  if (!p.deriveRepay && (builtOut * p.slipNum) / 10000n < p.needed) {
+    throw new CloseError(
+      'pair',
+      `The price moved and the route no longer guarantees repaying the debt at ${slippagePercent}% slippage. Nothing was submitted — try again, or raise the slippage.`,
+    )
+  }
 
-        // Skipped in derived mode, which has no fixed target to fall short of — a lighter
-        // route simply repays less. The degradation check below is what stops one that moved
-        // far enough to matter against the numbers the user actually reviewed.
-        if (!p.deriveRepay && (builtOut * p.slipNum) / 10000n < p.needed) {
-          throw new CloseError(
-            'pair',
-            `The price moved and the route no longer guarantees repaying the debt at ${input.slippagePercent}% slippage. Nothing was submitted — try again, or raise the slippage.`,
-          )
-        }
-
-        // Clearing the debt is not the same as being worth executing. On a well-covered
-        // position a route that degraded several percent still clears it, and the surplus —
-        // which is the user's — silently shrinks. Compare against what they actually reviewed
-        // and stop, rather than submit numbers they never saw.
-        //
-        // The baseline is the output quoted when the SIGNATURE was taken, carried on the held
-        // signature. Neither obvious alternative works: `p.expectedOut` is re-quoted by this
-        // press's own `buildPlan`, and the router's `outputChangePercent` measures its build
-        // against the re-quote it was handed seconds earlier. Both span milliseconds, so both
-        // are blind to exactly the window this guard exists to cover — the one where the user
-        // was reading the numbers.
-        const baseline = signatures.current?.reviewedOut ?? p.expectedOut
-        const degradation =
-          baseline > 0n ? (Number(builtOut - baseline) / Number(baseline)) * 100 : 0
-        if (degradation < MAX_OUTPUT_DEGRADATION_PERCENT) {
-          throw new CloseError(
-            'pair',
-            `The route got ${Math.abs(degradation).toFixed(2)}% worse than the quote you reviewed, so nothing was submitted. The numbers have been refreshed — press again to accept the new ones.`,
-          )
-        }
-        if (chosen.aggregator !== p.best.aggregator) {
-          log(`${p.best.aggregator} unusable — falling back to ${chosen.aggregator}.`)
-        }
-        return { router, swapData, chosen, builtOut, quotedOut: BigInt(chosen.amountOut), outputChangePercent: tx.outputChangePercent }
+  const baseline = signatures.current?.reviewedOut ?? builtOut
+  const degradation = baseline > 0n ? (Number(builtOut - baseline) / Number(baseline)) * 100 : 0
+  if (degradation < MAX_OUTPUT_DEGRADATION_PERCENT) {
+    throw new CloseError(
+      'pair',
+      `The route got ${Math.abs(degradation).toFixed(2)}% worse than the quote you reviewed, so nothing was submitted. The numbers have been refreshed — press again to accept the new ones.`,
+    )
+  }
+  log(`Sending via ${p.best.aggregator}.`)
+  return {
+    router: p.router,
+    swapData: p.swapData,
+    chosen: p.best,
+    builtOut,
+    quotedOut: BigInt(p.best.amountOut),
+    outputChangePercent: p.tx.outputChangePercent,
+  }
 }

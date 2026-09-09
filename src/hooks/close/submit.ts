@@ -1,21 +1,18 @@
 import { formatUnits, type Address, type PublicClient, type WalletClient } from 'viem'
-import type { Config } from 'wagmi'
-import { estimateFeesPerGas } from 'wagmi/actions'
-import { calculateAdjustedFees, gasFromMeasuredSwap, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
+import { adjustedFees, gasFromMeasuredSwap, pinnedGasLimit, GasEstimateError } from '../../utils/gas'
 import { assertWalletChain } from '../../lib/walletChain'
 import { clearQuoteCache } from '../../adapters/http'
 import { CloseError, quoteRate } from '../../lib/deleverage'
 import { computeMinOut, deriveDebtRepay, isSlippageShapedFailure, planWithdrawal } from '../../lib/closePlan'
-import { aaveV3StrategiesAbi, FULL_CLOSE, planClose } from '../../lib/strategies-sdk'
+import { FULL_CLOSE, planClose } from '../../lib/strategies-sdk'
 import type { PermitArgs, RevokeArgs } from '../../lib/closePlan'
 import { SlippageTooTightError, type ClosePlan, type CloseInput, type CloseStep } from './types'
-import type { buildFreshRoute } from './signing'
+import type { routeFromPlan } from './signing'
 
 /** What the send path needs from the hook. */
 export interface SubmitContext {
   address: Address
   chainId: number
-  config: Config
   publicClient: PublicClient
   walletClient: WalletClient
   /** The caller's own input — the debug log reports both assets, not just the tolerance. */
@@ -36,11 +33,11 @@ export interface SubmitContext {
  */
 export async function submitClose(
   p: ClosePlan,
-  route: Awaited<ReturnType<typeof buildFreshRoute>>,
+  route: ReturnType<typeof routeFromPlan>,
   permits: { permit: PermitArgs; revoke: RevokeArgs },
   ctx: SubmitContext,
 ): Promise<{ hash: `0x${string}`; builtOut: bigint; minOut: bigint }> {
-  const { address, chainId, config, publicClient, walletClient, input, log, setStep } = ctx
+  const { address, chainId, publicClient, walletClient, input, log, setStep } = ctx
   const withdrawal = planWithdrawal(p)
         const { router, swapData, builtOut, quotedOut, outputChangePercent } = route
         // Derived from the route that is actually about to execute, so the contract enforces
@@ -65,7 +62,7 @@ export async function submitClose(
           slipNum: p.slipNum,
         })
 
-        const { args } = planClose({
+        const { data } = planClose({
           collateral: p.collateralAddr,
           debtAsset: p.debtAddr,
           collateralToWithdraw: withdrawal.collateralToWithdraw,
@@ -163,9 +160,9 @@ export async function submitClose(
           console.groupEnd()
         }
 
-        const { maxFeePerGas, maxPriorityFeePerGas, gasPrice } = await estimateFeesPerGas(config)
-        const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
-          calculateAdjustedFees(maxFeePerGas, maxPriorityFeePerGas, 10n, gasPrice)
+        // Warmed by `buildPlan` alongside the quoting, so this is a cache read, not two round
+        // trips between the route and the wallet prompt.
+        const fees = await adjustedFees(publicClient)
 
         // Built from the swap the simulator already measured wherever there is one, matching the
         // open. Estimating would execute this same transaction against this same state a second
@@ -184,13 +181,7 @@ export async function submitClose(
             ? gasFromMeasuredSwap(p.swapGasUsed, { chainId, label: 'close' })
             : await pinnedGasLimit(
                 () =>
-                  publicClient.estimateContractGas({
-                    address: p.strategies,
-                    abi: aaveV3StrategiesAbi,
-                    functionName: 'closePositionWithPermit',
-                    args,
-                    account: address,
-                  }),
+                  publicClient.estimateGas({ to: p.strategies, data, account: address }),
                 { chainId, label: 'close' },
               )
         } catch (e) {
@@ -228,19 +219,13 @@ export async function submitClose(
         // Before the send, not after: a network switched in the wallet while the modal was open
         // would otherwise put this chain's calldata on another chain's address.
         await assertWalletChain(walletClient, chainId)
-        const hash = await walletClient.writeContract({
-          address: p.strategies,
-          abi: aaveV3StrategiesAbi,
-          functionName: 'closePositionWithPermit',
-          args,
+        const hash = await walletClient.sendTransaction({
+          to: p.strategies,
+          data,
           account: address,
           chain: null,
           gas,
-          // viem's fee parameters are a union: EIP-1559 OR legacy, never both. Passing all
-          // three falls outside every member of it.
-          ...(adjustedMaxFeePerGas
-            ? { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
-            : { gasPrice: adjustedGasPrice }),
+          ...fees,
         })
   return { hash, builtOut, minOut }
 }

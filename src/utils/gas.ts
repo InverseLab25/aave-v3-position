@@ -93,15 +93,9 @@ const FEE_PRIORITY_MULTIPLIER = 10n
  * Returns EITHER the 1559 pair or a legacy `gasPrice`, never both: viem's fee parameters are a
  * union and passing all three falls outside every member of it.
  */
-export async function adjustedFees(client: {
-  estimateFeesPerGas: () => Promise<{
-    maxFeePerGas?: bigint
-    maxPriorityFeePerGas?: bigint
-    gasPrice?: bigint
-  }>
-}): Promise<
-  { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | { gasPrice: bigint } | Record<string, never>
-> {
+export async function adjustedFees(client: FeeClient): Promise<Fees> {
+  const hit = feeCache.get(client)
+  if (hit && Date.now() - hit.at < FEE_CACHE_TTL_MS) return hit.fees
   const fees = await client.estimateFeesPerGas()
   const { adjustedMaxFeePerGas, adjustedMaxPriorityFeePerGas, adjustedGasPrice } =
     calculateAdjustedFees(
@@ -110,14 +104,49 @@ export async function adjustedFees(client: {
       FEE_PRIORITY_MULTIPLIER,
       fees.gasPrice,
     )
+  // Nothing usable came back: sending no fee fields lets viem fill them, which is worse than
+  // ours but far better than a half-populated union that viem rejects outright.
+  let out: Fees = {}
   if (adjustedMaxFeePerGas !== undefined && adjustedMaxPriorityFeePerGas !== undefined) {
-    return { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+    out = { maxFeePerGas: adjustedMaxFeePerGas, maxPriorityFeePerGas: adjustedMaxPriorityFeePerGas }
+  } else if (adjustedGasPrice !== undefined) {
+    out = { gasPrice: adjustedGasPrice }
   }
-  if (adjustedGasPrice !== undefined) return { gasPrice: adjustedGasPrice }
-  // Nothing usable came back. Sending no fee fields lets viem fill them, which is worse than ours
-  // but far better than a half-populated union that viem rejects outright.
-  return {}
+  feeCache.set(client, { at: Date.now(), fees: out })
+  return out
 }
+
+/**
+ * Fetches the fees now so the send does not have to.
+ *
+ * `estimateFeesPerGas` is two serial round trips (the block, then the priority fee) and it sat
+ * on the confirm path between the route and the wallet prompt. A maker-settled route is signed
+ * for about a minute, so every second there is a second off the user's window. The previews run
+ * this alongside quoting; by the time the user presses, `adjustedFees` answers from the cache.
+ * Fire-and-forget: a failed warm-up costs nothing, the send fetches for itself.
+ */
+export function warmFees(client: FeeClient | undefined): void {
+  if (client) void adjustedFees(client).catch(() => {})
+}
+
+type FeeClient = {
+  estimateFeesPerGas: () => Promise<{
+    maxFeePerGas?: bigint
+    maxPriorityFeePerGas?: bigint
+    gasPrice?: bigint
+  }>
+}
+type Fees = { maxFeePerGas: bigint; maxPriorityFeePerGas: bigint } | { gasPrice: bigint } | Record<string, never>
+
+/**
+ * How long a fetched fee is reused, 10s. The preview that warms it repeats every few seconds,
+ * so a send normally reads a figure under one block old; the bump in `calculateAdjustedFees`
+ * and viem's own base-fee margin cover the drift across the rest. Keyed on the client object
+ * because that is what both the preview and the send hold; a different instance is a miss,
+ * never a wrong answer.
+ */
+const FEE_CACHE_TTL_MS = 10_000
+const feeCache = new WeakMap<object, { at: number; fees: Fees }>()
 
 /**
  * A gas limit could not be established, so nothing was sent. Carries the original failure.
