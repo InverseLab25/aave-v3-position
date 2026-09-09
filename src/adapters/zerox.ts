@@ -2,7 +2,8 @@ import type { Adapter, Asset, QuoteResponse, TransactionPayload } from './types'
 import { formatUnits } from 'viem';
 
 /**
- * 0x Swap API v2 (AllowanceHolder), consumer-branded as "Matcha".
+ * 0x Swap API v2 (AllowanceHolder). Named `0x` here; Socket's route through the same venue is
+ * `Socket/0x`, so the two never share a key.
  *
  * Two-step like Odos: getQuote hits `/price` (indicative, no taker required) so it can
  * stream without a connected wallet; buildTransaction hits `/quote` with the real taker to
@@ -21,7 +22,7 @@ const ZEROX_BASE = '/api/zerox/swap/allowance-holder';
 const ZEROX_CHAINS = new Set([1, 10, 137, 8453, 42161]);
 
 export const zeroxAdapter: Adapter = {
-  name: 'Matcha',
+  name: '0x',
   supportsExecution: true,
 
   getQuote: async (fromAsset: Asset, toAsset: Asset, amountIn: string, slippage: number, chainId: number): Promise<QuoteResponse | null> => {
@@ -43,7 +44,7 @@ export const zeroxAdapter: Adapter = {
       const amountOutUsd = toAsset.priceInUsd ? amountOutEth * Number(toAsset.priceInUsd) : 0;
 
       return {
-        aggregator: 'Matcha',
+        aggregator: '0x',
         amountIn: json.sellAmount ?? amountIn,
         amountOut: json.buyAmount,
         amountOutUsd: amountOutUsd.toFixed(2),
@@ -58,10 +59,10 @@ export const zeroxAdapter: Adapter = {
           buyToken: toAsset.underlyingAsset,
           sellAmount: amountIn,
         },
-        routeDetails: { type: '0x', info: 'Aggregated via 0x / Matcha' },
+        routeDetails: { type: '0x', info: 'Aggregated via 0x' },
       };
     } catch (e) {
-      console.error('0x (Matcha) fetch error', e);
+      console.error('0x fetch error', e);
       return null;
     }
   },
@@ -77,11 +78,11 @@ export const zeroxAdapter: Adapter = {
       slippageBps: String(Math.round(slippage * 100)),
     });
     const res = await fetch(`${ZEROX_BASE}/quote?${params.toString()}`);
-    if (!res.ok) throw new Error(`0x (Matcha) build failed: ${res.status}`);
+    if (!res.ok) throw new Error(`0x build failed: ${res.status}`);
     const json = await res.json();
     const tx = json?.transaction;
     if (json?.liquidityAvailable === false || !tx?.to || !tx?.data) {
-      throw new Error(json?.reason || 'Failed to build 0x (Matcha) transaction');
+      throw new Error(json?.reason || 'Failed to build 0x transaction');
     }
 
     // ERC-20 approval target for the AllowanceHolder flow (native sells need no approval).
@@ -91,6 +92,10 @@ export const zeroxAdapter: Adapter = {
       data: tx.data,
       value: tx.value ?? '0',
       spender,
+      // The build's own figure, so the route ranks on it when nothing simulates; and the
+      // quoted gas, so the per-chain gas bar in validateSwapTx can refuse an oversized route.
+      amountOut: json.buyAmount,
+      gasEstimate: tx.gas,
     };
   },
 };

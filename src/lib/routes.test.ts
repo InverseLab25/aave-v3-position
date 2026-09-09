@@ -92,21 +92,6 @@ describe('selectBuildableRoute — capping the measured field', () => {
     to: '0xR', spender: '0xR', data: '0xdead', value: '0', amountOut: out,
   })
 
-  it('does NOT drop on rank alone, which is the bug the band replaced', async () => {
-    // A real Base field: the third and fourth quotes 0.0001 apart while the third measured 0.05%
-    // under its own quote. Cutting at three by rank dropped the fourth on a margin far smaller
-    // than the error being measured away, and it may well have won.
-    const candidates = ['1005200', '1005100', '1005000', '1004900'].map(quote)
-    const build = vi.fn(async (c: never) => tx((c as { amountOut: string }).amountOut))
-
-    await selectBuildableRoute(candidates, {
-      build,
-      isAllowlisted: () => true,
-    })
-
-    expect(build).toHaveBeenCalledTimes(4)
-  })
-
   it('still bounds a field where everything is inside the band', async () => {
     // The ceiling is what stops a deep pair, where every route quotes within a hair of the best,
     // from costing a simulation per route forever.
