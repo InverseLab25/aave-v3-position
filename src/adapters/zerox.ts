@@ -8,23 +8,17 @@ import { formatUnits } from 'viem';
  * stream without a connected wallet; buildTransaction hits `/quote` with the real taker to
  * get the executable, unsigned transaction + the AllowanceHolder approval target (spender).
  *
- * Requires an API key in `VITE_ZEROX_API_KEY` (https://dashboard.0x.org). Without it every
- * request 401s and the adapter simply returns null (no route shown).
+ * Requests go through the same-origin `/api/zerox`, served by `api/zerox.js` deployed, which
+ * adds the key (`ZEROX_API_KEY`, https://dashboard.0x.org) and the version header on the way
+ * through. Without a key every request 401s and the adapter simply returns null (no route shown).
  *
  * 0x uses numeric chainId directly and the standard 0xEeee… sentinel for native ETH, so no
  * per-chain string map or native-address translation is needed. Slippage is passed in bps.
  */
-const ZEROX_BASE = 'https://api.0x.org/swap/allowance-holder';
-const ZEROX_API_KEY = import.meta.env.VITE_ZEROX_API_KEY as string | undefined;
+const ZEROX_BASE = '/api/zerox/swap/allowance-holder';
 
 // Chains we configure that 0x supports.
 const ZEROX_CHAINS = new Set([1, 10, 137, 8453, 42161]);
-
-function zeroxHeaders(): HeadersInit {
-  const h: Record<string, string> = { '0x-version': 'v2' };
-  if (ZEROX_API_KEY) h['0x-api-key'] = ZEROX_API_KEY;
-  return h;
-}
 
 export const zeroxAdapter: Adapter = {
   name: 'Matcha',
@@ -40,7 +34,7 @@ export const zeroxAdapter: Adapter = {
         sellAmount: amountIn,
         slippageBps: String(Math.round(slippage * 100)),
       });
-      const res = await fetch(`${ZEROX_BASE}/price?${params.toString()}`, { headers: zeroxHeaders() });
+      const res = await fetch(`${ZEROX_BASE}/price?${params.toString()}`);
       if (!res.ok) return null;
       const json = await res.json();
       if (json?.liquidityAvailable === false || !json?.buyAmount) return null;
@@ -82,7 +76,7 @@ export const zeroxAdapter: Adapter = {
       taker: walletAddress,
       slippageBps: String(Math.round(slippage * 100)),
     });
-    const res = await fetch(`${ZEROX_BASE}/quote?${params.toString()}`, { headers: zeroxHeaders() });
+    const res = await fetch(`${ZEROX_BASE}/quote?${params.toString()}`);
     if (!res.ok) throw new Error(`0x (Matcha) build failed: ${res.status}`);
     const json = await res.json();
     const tx = json?.transaction;
