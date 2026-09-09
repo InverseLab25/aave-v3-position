@@ -5,6 +5,7 @@
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- api src public index.html package.json pnpm-lock.yaml pnpm-workspace.yaml vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json vercel.json",
   "rewrites": [
     { "source": "/api/socket/:path*", "destination": "/api/socket?path=:path*" },
+    { "source": "/api/zerox/:path*", "destination": "/api/zerox?path=:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
